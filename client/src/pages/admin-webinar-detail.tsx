@@ -23,7 +23,7 @@ import {
   Lightbulb, HelpCircle, Star, TrendingUp, Settings, Code,
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
-  Sparkles, Megaphone
+  Sparkles, Megaphone, CheckCircle2
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -258,6 +258,13 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedSessionUpcoming: "即將到來",
     schedSessionExpired: "已過期",
     schedNoSessions: "尚未新增場次，觀眾將無法選擇時段",
+    schedCurrentMode: "目前排程模式",
+    schedModeFixed: "固定時間",
+    schedModeRecurring: "循環排程",
+    schedModeOnDemand: "隨選觀看",
+    schedModeJustInTime: "即時開始",
+    schedActiveBadge: "✓ 使用中",
+    schedSessionNotNeeded: "目前為「隨選觀看」或「即時開始」模式，無需新增場次，觀眾報名後即可立即觀看。",
     notifEmailTitle: "郵件設定",
     notifEmailDesc: "控制自動郵件通知的開關和內容",
     notifEmailConfirmation: "報名確認信",
@@ -681,6 +688,13 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedSessionUpcoming: "即将到来",
     schedSessionExpired: "已过期",
     schedNoSessions: "尚未新增场次，观众将无法选择时段",
+    schedCurrentMode: "当前排程模式",
+    schedModeFixed: "固定时间",
+    schedModeRecurring: "循环排程",
+    schedModeOnDemand: "随选观看",
+    schedModeJustInTime: "即时开始",
+    schedActiveBadge: "✓ 使用中",
+    schedSessionNotNeeded: "当前为「随选观看」或「即时开始」模式，无需新增场次，观众报名后即可立即观看。",
     notifEmailTitle: "邮件设置",
     notifEmailDesc: "控制自动邮件通知的开关和内容",
     notifEmailConfirmation: "报名确认信",
@@ -1956,6 +1970,20 @@ export default function AdminWebinarDetail() {
               <div className="flex-1 min-w-0">
                 <Card>
                   <CardContent className="p-6">
+                    {(() => {
+                      const sm = webinar?.scheduleMode as any;
+                      const rs = webinar?.recurringSchedule as any;
+                      let modeLabel = s.schedModeFixed;
+                      if (sm?.onDemand) modeLabel = s.schedModeOnDemand;
+                      else if (sm?.justInTime) modeLabel = s.schedModeJustInTime;
+                      else if (rs?.enabled || sm?.recurring) modeLabel = s.schedModeRecurring;
+                      return (
+                        <div className="flex items-center gap-2 mb-6 p-3 bg-primary/5 border border-primary/20 rounded-md" data-testid="banner-current-mode">
+                          <span className="text-sm text-muted-foreground">{s.schedCurrentMode}：</span>
+                          <Badge variant="default" data-testid="badge-current-mode">{modeLabel}</Badge>
+                        </div>
+                      );
+                    })()}
                     {scheduleSubSection === "eventSettings" && (
                       <div className="space-y-6">
                         <h2 className="text-lg font-semibold" data-testid="text-event-settings-title">{s.schedEventSettingsTitle}</h2>
@@ -2274,6 +2302,12 @@ export default function AdminWebinarDetail() {
                         <div className="p-4 bg-muted rounded-md">
                           <p className="text-sm">{s.schedOnDemandNote}</p>
                         </div>
+                        {(webinar?.scheduleMode as any)?.onDemand && (
+                          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400" data-testid="status-on-demand-active">
+                            <CheckCircle2 className="h-4 w-4" />
+                            {s.schedActiveBadge}
+                          </div>
+                        )}
                         <Button
                           onClick={() => {
                             setSettingsScheduleMode("onDemand");
@@ -2283,6 +2317,7 @@ export default function AdminWebinarDetail() {
                             });
                           }}
                           disabled={updateWebinar.isPending}
+                          variant={(webinar?.scheduleMode as any)?.onDemand ? "outline" : "default"}
                           data-testid="button-enable-on-demand"
                         >
                           {updateWebinar.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
@@ -2306,6 +2341,12 @@ export default function AdminWebinarDetail() {
                           />
                           <p className="text-xs text-muted-foreground">{s.schedJitNote}</p>
                         </div>
+                        {(webinar?.scheduleMode as any)?.justInTime && (
+                          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400" data-testid="status-jit-active">
+                            <CheckCircle2 className="h-4 w-4" />
+                            {s.schedActiveBadge}
+                          </div>
+                        )}
                         <Button
                           onClick={() => {
                             setSettingsScheduleMode("justInTime");
@@ -2314,6 +2355,7 @@ export default function AdminWebinarDetail() {
                             });
                           }}
                           disabled={updateWebinar.isPending}
+                          variant={(webinar?.scheduleMode as any)?.justInTime ? "outline" : "default"}
                           data-testid="button-save-jit"
                         >
                           {updateWebinar.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
@@ -2367,6 +2409,13 @@ export default function AdminWebinarDetail() {
                       <div className="space-y-6">
                         <h2 className="text-lg font-semibold" data-testid="text-session-mgmt-title">{s.schedSessionMgmtTitle}</h2>
                         <p className="text-sm text-muted-foreground">{s.schedSessionMgmtDesc}</p>
+
+                        {((webinar?.scheduleMode as any)?.onDemand || (webinar?.scheduleMode as any)?.justInTime) && (
+                          <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md text-sm text-amber-700 dark:text-amber-400" data-testid="note-session-not-needed">
+                            <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+                            <span>{s.schedSessionNotNeeded}</span>
+                          </div>
+                        )}
 
                         <div className="flex items-center gap-2 flex-wrap">
                           <Input

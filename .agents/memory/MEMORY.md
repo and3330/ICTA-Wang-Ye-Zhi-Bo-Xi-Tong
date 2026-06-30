@@ -2,3 +2,4 @@
 - [CJK IME re-render bug](cjk-ime-rerender.md) — a per-second timer (countdown) in a component with text inputs makes forms untypeable for zh-TW/zh-CN users; isolate the ticking UI into its own child.
 - [Sequence email idempotency](email-sequence-idempotency.md) — post-webinar follow-up enqueue needs a DB partial unique index `(registration_id, sequence_id)`, not just app-level check-then-insert.
 - [AI point billing](ai-point-billing.md) — metered LLM calls reserve-then-refund (never check-then-charge); paid recharge credit must be one db transaction; verify session ownership before idempotency shortcut.
+- [Schedule mode precedence](schedule-mode-precedence.md) — /available-sessions must check onDemand/justInTime before recurringSchedule; enabling on-demand only mutates scheduleMode, never clears recurring.

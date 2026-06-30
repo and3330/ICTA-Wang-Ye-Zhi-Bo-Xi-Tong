@@ -1743,9 +1743,30 @@ export async function registerRoutes(
       const recurring = webinar.recurringSchedule as any;
       const now = new Date();
 
-      // If a recurring schedule (days+times) is configured, always offer those
-      // upcoming time slots as pickable sessions — even when scheduleMode says
-      // onDemand — so viewers can register for a specific airing.
+      // Explicit "watch now" modes take priority over any recurring config so
+      // that enabling on-demand / just-in-time always takes effect immediately,
+      // even if a recurring schedule was previously configured.
+      if (scheduleMode?.onDemand) {
+        return res.json({
+          mode: "onDemand",
+          sessions: [],
+          message: "隨時可以觀看",
+        });
+      }
+
+      if (scheduleMode?.justInTime) {
+        const minutes = scheduleMode.justInTimeMinutes || 15;
+        const nextStart = new Date(now.getTime() + minutes * 60 * 1000);
+        return res.json({
+          mode: "justInTime",
+          sessions: [{ id: "jit", scheduledStart: nextStart, status: "scheduled" }],
+          nextStartMinutes: minutes,
+          message: `下一場將在 ${minutes} 分鐘內開始`,
+        });
+      }
+
+      // If a recurring schedule (days+times) is configured, offer those
+      // upcoming time slots as pickable sessions.
       if (recurring?.enabled && recurring.times?.length && recurring.days?.length) {
         const excludeSet = new Set<string>(
           (recurring.excludeDates as string[] | undefined)?.map(d => String(d).slice(0, 10)) || []
