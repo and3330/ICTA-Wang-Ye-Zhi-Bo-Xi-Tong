@@ -31,7 +31,7 @@ const copy = {
   },
   "zh-TW": {
     nav: ["為何選擇 ICTA", "運作方式", "方案"], signIn: "登入", start: "建立直播間",
-    eyebrow: "AI 驅動的自動化研討會", title: "讓 AI 替您接待觀眾，", titleAccent: "即使休息，也持續推進成交。",
+    eyebrow: "AI 驅動的自動化研討會", title: "AI 自動化研討會系統：", titleAccent: "讓你 24 小時銷售不間斷",
     desc: "把一場最有說服力的簡報，變成全天候運作的客戶旅程。ICTA Webinar 結合 Vimeo 影片、AI 助教、自動排程、定時互動與行動呼籲，讓觀眾持續了解、信任並採取下一步，您不必每一場都親自上線。",
     primary: "開始打造 AI 研討會", secondary: "了解 AI 如何運作", note: "使用您的 Vimeo 影片即可開始",
     studioTag: "研討會直播間 · 預覽", nowPlaying: "正在播放", videoTitle: "用清楚的下一步完成教學", chat: "觀眾對話", interaction: "定時互動",
