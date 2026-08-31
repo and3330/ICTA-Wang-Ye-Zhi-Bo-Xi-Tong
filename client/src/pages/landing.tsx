@@ -10,58 +10,58 @@ const languages: Record<Lang, string> = { "zh-TW": "繁體中文", "zh-CN": "简
 const copy = {
   en: {
     nav: ["Why ICTA", "How it works", "Plans"], signIn: "Sign in", start: "Create a room",
-    eyebrow: "THE AUTOMATED WEBINAR STUDIO", title: "Set the room once.", titleAccent: "Keep the lesson in motion.",
-    desc: "ICTA Webinar turns your Vimeo recording into a scheduled, guided viewing experience. Prepare the moments that matter, then welcome every audience without being in the room.",
-    primary: "Create a webinar room", secondary: "See the studio flow", note: "Built for Vimeo video",
+    eyebrow: "BUILD YOUR AUTOMATED WEBINAR SYSTEM", title: "Turn one great presentation into", titleAccent: "an always-on growth engine.",
+    desc: "ICTA Webinar helps you build an automated webinar system that keeps attracting, engaging, and converting audiences around the clock. Combine your Vimeo video with scheduled sessions, timed interactions, and calls to action—without hosting every presentation live.",
+    primary: "Build my webinar system", secondary: "See how it works", note: "Powered by your Vimeo video",
     studioTag: "WEBINAR ROOM · PREVIEW", nowPlaying: "Now playing", videoTitle: "Teach with a clear next step", chat: "Conversation", interaction: "Timed interaction",
     chat1: "The walkthrough makes the setup much clearer.", chat2: "Saved the next session to my calendar.", poll: "Where should we go deeper?", poll1: "Video setup", poll2: "Audience interaction",
-    trustedTitle: "A clear broadcast system for the work you already do.", trustedDesc: "For educators running a course launch, creators teaching their process, and teams presenting a repeatable story.",
+    trustedTitle: "Let your best presentation keep creating opportunities.", trustedDesc: "Turn proven content into a repeatable marketing journey for course launches, lead generation, product education, and evergreen campaigns.",
     examples: [
       ["Teach on your schedule", "Record your lesson once, then offer sessions that fit different time zones and calendars."],
       ["Guide attention with timing", "Place conversation, polls, information cards, and calls to action exactly where they support the lesson."],
       ["Give viewers one destination", "Share a registration link or embed the experience on the site your audience already knows."]
     ],
-    systemKicker: "A RUN OF SHOW, MADE VISIBLE", systemTitle: "Everything that happens around the video is planned here.", systemDesc: "Use your recording as the backbone. ICTA Webinar carries the audience through a considered sequence—from registration to the final next step.",
+    systemKicker: "ONE SYSTEM, CONTINUOUS RESULTS", systemTitle: "Automate the complete journey from registration to conversion.", systemDesc: "Use your strongest presentation as the foundation. ICTA Webinar connects registration, scheduled viewing, timed engagement, and the final call to action into one automated webinar funnel.",
     flow: [["01", "Add your Vimeo video", "Start with the recording you want viewers to see."], ["02", "Build the viewing path", "Arrange timed messages, polls, content cards, and calls to action."], ["03", "Schedule and share", "Set recurring sessions or on-demand access, then publish your registration link."]],
     featureKicker: "THE STUDIO SHELF", featureTitle: "The tools behind a composed viewing experience.",
     features: [["Video-led rooms", "Keep your Vimeo recording at the center of every webinar room."], ["Timed conversation", "Release chat messages at the moments you choose."], ["Interactive checkpoints", "Ask a poll or show a content card while the topic is fresh."], ["Calls to action", "Present a next step when the context is right."], ["Flexible scheduling", "Offer recurring sessions or make a webinar available on demand."], ["Site-ready embeds", "Bring registration and viewing into your existing site."]],
     priceKicker: "STRAIGHTFORWARD PRICING", priceTitle: "Choose the number of rooms your program needs.", priceDesc: "Each room gives you a dedicated place to organise a webinar experience.", plan1: "Studio", plan2: "Program", plan1Desc: "For a focused series or core offer.", plan2Desc: "For a growing calendar of webinars.", rooms: "webinar rooms", included: "Included", perMonth: "/ month", select: "Choose this plan", addon: "Additional webinar rooms are $20 USD per room, per month.",
     workflowAlt: "A webinar producer plans video interactions and schedules a viewing room for an audience", flowLabels: ["Vimeo video", "Timed moments", "Scheduled room"], backTop: "Back to top",
-    finalTitle: "Your best session can keep showing up.", finalDesc: "Build a webinar room that gives every viewer the same clear path.", finalCta: "Open the studio", seo: "ICTA Webinar — Automated webinar studio"
+    finalTitle: "Build an automated webinar system that works beyond your calendar.", finalDesc: "Start turning every presentation into a consistent audience and conversion opportunity.", finalCta: "Build my webinar system", seo: "ICTA Webinar — Build your automated webinar system"
   },
   "zh-TW": {
     nav: ["為何選擇 ICTA", "運作方式", "方案"], signIn: "登入", start: "建立直播間",
-    eyebrow: "自動化研討會工作室", title: "一次設計好直播間。", titleAccent: "讓內容持續精準播出。",
-    desc: "ICTA Webinar 將您的 Vimeo 預錄影片轉為可排程、可引導的觀看體驗。安排重要的互動時刻，無論您是否在線，每位觀眾都能順著同一條清楚路徑前進。",
-    primary: "建立研討會直播間", secondary: "查看工作流程", note: "支援 Vimeo 影片",
+    eyebrow: "打造自動化的研討會系統", title: "讓一場精彩簡報，", titleAccent: "持續為您帶來客戶。",
+    desc: "ICTA Webinar 幫助您打造全天候運作的自動化研討會系統。結合 Vimeo 影片、排程場次、定時互動與行動呼籲，持續吸引、培育並轉換潛在客戶，不必每一場都親自直播。",
+    primary: "開始打造研討會系統", secondary: "了解如何運作", note: "使用您的 Vimeo 影片即可開始",
     studioTag: "研討會直播間 · 預覽", nowPlaying: "正在播放", videoTitle: "用清楚的下一步完成教學", chat: "觀眾對話", interaction: "定時互動",
     chat1: "這個示範讓設定方式清楚多了。", chat2: "我已將下一場加到行事曆。", poll: "您想深入了解哪個部分？", poll1: "影片設定", poll2: "觀眾互動",
-    trustedTitle: "讓既有內容成為條理分明的播出系統。", trustedDesc: "適合開設課程的教育者、分享專業的創作者，以及需要重複傳達核心內容的團隊。",
+    trustedTitle: "讓您最有價值的內容，持續創造商業機會。", trustedDesc: "無論是課程招生、名單開發、產品教育或常態行銷，都能把成功的簡報轉化為可重複運作的行銷流程。",
     examples: [["依您的時程授課", "錄製一次課程，再依不同時區與行事曆安排播放場次。"], ["用時間引導注意力", "在最適合的時間點安排對話、投票、資訊卡與行動呼籲。"], ["給觀眾一個明確入口", "分享報名連結，或將體驗嵌入觀眾熟悉的網站。"]],
-    systemKicker: "清楚呈現播出流程", systemTitle: "影片以外的每個環節，都能在此預先安排。", systemDesc: "以錄製影片為主軸，ICTA Webinar 串起從報名、觀看到最後下一步的完整體驗。",
+    systemKicker: "一套系統，持續帶來成果", systemTitle: "從報名、觀看到轉換，完整流程一次自動化。", systemDesc: "以您最有說服力的簡報為核心，ICTA Webinar 串接報名、排程觀看、定時互動與最後的行動呼籲，打造完整的自動化研討會漏斗。",
     flow: [["01", "加入 Vimeo 影片", "從您希望觀眾觀看的錄製內容開始。"], ["02", "安排觀看路徑", "設定定時訊息、投票、內容卡與行動呼籲。"], ["03", "排程並分享", "設定循環場次或隨選觀看，接著發布報名連結。"]],
     featureKicker: "工作室工具", featureTitle: "打造從容觀看體驗的每一項工具。",
     features: [["影片核心直播間", "讓 Vimeo 預錄影片成為每一場研討會的中心。"], ["定時觀眾對話", "在您指定的時間點呈現聊天訊息。"], ["互動檢核點", "趁主題仍在觀眾心中時發起投票或顯示內容卡。"], ["行動呼籲", "在脈絡最恰當的時刻帶出下一步。"], ["彈性排程", "提供循環場次，也可開放隨選觀看。"], ["網站嵌入", "把報名與觀看流程帶進您既有的網站。"]],
     priceKicker: "清楚計價", priceTitle: "依您需要的直播間數量選擇方案。", priceDesc: "每個直播間都是一個完整規劃研討會體驗的專屬空間。", plan1: "工作室", plan2: "節目方案", plan1Desc: "適合專注經營的系列內容或核心課程。", plan2Desc: "適合持續增加場次的研討會計畫。", rooms: "個研討會直播間", included: "包含", perMonth: "/月", select: "選擇此方案", addon: "每增加一個研討會直播間，費用為 $20 USD／月。",
     workflowAlt: "研討會製作人正在安排影片互動、播放時程與觀眾觀看流程", flowLabels: ["Vimeo 影片", "定時互動", "排程直播間"], backTop: "回到頂部",
-    finalTitle: "讓您最好的那一堂課，持續準時出席。", finalDesc: "建立一個研討會直播間，讓每位觀眾都走過同樣清楚的路徑。", finalCta: "開啟工作室", seo: "ICTA Webinar — 自動化研討會工作室"
+    finalTitle: "打造不受時間限制的自動化研討會系統。", finalDesc: "讓每一場精彩簡報，都持續成為吸引觀眾與創造轉換的機會。", finalCta: "開始打造研討會系統", seo: "ICTA Webinar — 打造自動化的研討會系統"
   },
   "zh-CN": {
     nav: ["为何选择 ICTA", "运作方式", "方案"], signIn: "登录", start: "创建直播间",
-    eyebrow: "自动化研讨会工作室", title: "一次设计好直播间。", titleAccent: "让内容持续精准播出。",
-    desc: "ICTA Webinar 将您的 Vimeo 预录视频转为可排期、可引导的观看体验。安排重要互动时刻，无论您是否在线，每位观众都能沿着同一条清晰路径前进。",
-    primary: "创建研讨会直播间", secondary: "查看工作流程", note: "支持 Vimeo 视频",
+    eyebrow: "打造自动化的研讨会系统", title: "让一场精彩演示，", titleAccent: "持续为您带来客户。",
+    desc: "ICTA Webinar 帮助您打造全天候运行的自动化研讨会系统。结合 Vimeo 视频、排期场次、定时互动与行动号召，持续吸引、培育并转化潜在客户，不必每一场都亲自直播。",
+    primary: "开始打造研讨会系统", secondary: "了解如何运作", note: "使用您的 Vimeo 视频即可开始",
     studioTag: "研讨会直播间 · 预览", nowPlaying: "正在播放", videoTitle: "用清晰的下一步完成教学", chat: "观众对话", interaction: "定时互动",
     chat1: "这个演示让设置方式清楚多了。", chat2: "我已将下一场加到日历。", poll: "您想深入了解哪个部分？", poll1: "视频设置", poll2: "观众互动",
-    trustedTitle: "让既有内容成为条理分明的播出系统。", trustedDesc: "适合开设课程的教育者、分享专业的创作者，以及需要重复传达核心内容的团队。",
+    trustedTitle: "让您最有价值的内容，持续创造商业机会。", trustedDesc: "无论是课程招生、名单开发、产品教育或常态营销，都能将成功的演示转化为可重复运行的营销流程。",
     examples: [["按您的日程授课", "录制一次课程，再根据不同时区与日历安排播放场次。"], ["用时间引导注意力", "在最适合的时间点安排对话、投票、信息卡与行动号召。"], ["给观众一个明确入口", "分享报名链接，或将体验嵌入观众熟悉的网站。"]],
-    systemKicker: "清晰呈现播出流程", systemTitle: "视频以外的每个环节，都能在这里预先安排。", systemDesc: "以录制视频为主轴，ICTA Webinar 串起从报名、观看到最后下一步的完整体验。",
+    systemKicker: "一套系统，持续带来成果", systemTitle: "从报名、观看到转化，完整流程一次自动化。", systemDesc: "以您最有说服力的演示为核心，ICTA Webinar 串接报名、排期观看、定时互动与最后的行动号召，打造完整的自动化研讨会漏斗。",
     flow: [["01", "添加 Vimeo 视频", "从您希望观众观看的录制内容开始。"], ["02", "安排观看路径", "设置定时消息、投票、内容卡与行动号召。"], ["03", "排期并分享", "设置循环场次或随选观看，然后发布报名链接。"]],
     featureKicker: "工作室工具", featureTitle: "打造从容观看体验的每一项工具。",
     features: [["视频核心直播间", "让 Vimeo 预录视频成为每一场研讨会的中心。"], ["定时观众对话", "在您指定的时间点呈现聊天消息。"], ["互动检查点", "趁主题仍在观众心中时发起投票或显示内容卡。"], ["行动号召", "在脉络最恰当的时刻带出下一步。"], ["灵活排期", "提供循环场次，也可开放随选观看。"], ["网站嵌入", "将报名与观看流程带进您现有的网站。"]],
     priceKicker: "清晰计价", priceTitle: "按需要的直播间数量选择方案。", priceDesc: "每个直播间都是一个完整规划研讨会体验的专属空间。", plan1: "工作室", plan2: "节目方案", plan1Desc: "适合专注经营的系列内容或核心课程。", plan2Desc: "适合持续增加场次的研讨会计划。", rooms: "个研讨会直播间", included: "包含", perMonth: "/月", select: "选择此方案", addon: "每增加一个研讨会直播间，费用为 $20 USD／月。",
     workflowAlt: "研讨会制作人正在安排视频互动、播放排期与观众观看流程", flowLabels: ["Vimeo 视频", "定时互动", "排期直播间"], backTop: "返回顶部",
-    finalTitle: "让您最好的那堂课，持续准时出席。", finalDesc: "建立一个研讨会直播间，让每位观众都走过同样清晰的路径。", finalCta: "开启工作室", seo: "ICTA Webinar — 自动化研讨会工作室"
+    finalTitle: "打造不受时间限制的自动化研讨会系统。", finalDesc: "让每一场精彩演示，都持续成为吸引观众与创造转化的机会。", finalCta: "开始打造研讨会系统", seo: "ICTA Webinar — 打造自动化的研讨会系统"
   }
 } as const;
 
