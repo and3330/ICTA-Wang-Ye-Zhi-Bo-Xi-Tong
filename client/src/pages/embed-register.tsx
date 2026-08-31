@@ -24,7 +24,10 @@ interface AvailableSessionsResponse {
   nextStartMinutes?: number;
   message?: string;
   hasSessions?: boolean;
+  onDemandAvailable?: boolean;
 }
+
+const ON_DEMAND_VALUE = "__on_demand__";
 
 const registrationSchema = z.object({
   name: z.string().min(2, "姓名至少需要2個字"),
@@ -111,7 +114,7 @@ export default function EmbedRegister() {
         utmContent: urlParams.get("utm_content") || undefined,
         landingUrl: window.location.href,
       };
-      if (selectedSession) {
+      if (selectedSession && selectedSession !== ON_DEMAND_VALUE) {
         payload.selectedSession = selectedSession;
       }
       if (Object.keys(customFieldValues).length > 0) {
@@ -178,17 +181,20 @@ export default function EmbedRegister() {
   const mode = availableSessions?.mode || "fixed";
   const hasSessions = availableSessions?.hasSessions || false;
   const hasMultipleSessions = hasSessions && availableSessions && availableSessions.sessions.length > 1;
+  const onDemandAvailable = availableSessions?.onDemandAvailable || mode === "onDemand";
+  const isOnDemandSelection = selectedSession === ON_DEMAND_VALUE || (mode === "onDemand" && !selectedSession);
+  const showSessionChoice = Boolean(onDemandAvailable || hasMultipleSessions);
 
   const customFields = (webinar?.customFields as CustomField[]) || [];
   const scarcity = webinar?.scarcitySettings as { countdownEnabled: boolean; seatsEnabled: boolean; totalSeats: number; urgencyText: string } | null;
   const thankYou = webinar?.thankYouSettings as { enabled: boolean; headline: string; message: string; ctaText: string; ctaUrl: string } | null;
 
-  const countdownTarget = selectedSession
+  const countdownTarget = selectedSession && selectedSession !== ON_DEMAND_VALUE
     ? new Date(selectedSession).getTime()
-    : (hasSessions && availableSessions?.sessions?.[0]?.scheduledStart
+    : (!showSessionChoice && hasSessions && availableSessions?.sessions?.[0]?.scheduledStart
         ? new Date(availableSessions.sessions[0].scheduledStart).getTime()
         : (webinar?.startTime ? new Date(webinar.startTime).getTime() : 0));
-  const showCountdown = scarcity?.countdownEnabled && mode !== "onDemand" && countdownTarget > Date.now();
+  const showCountdown = scarcity?.countdownEnabled && !isOnDemandSelection && countdownTarget > Date.now();
 
   const validateAndSubmit = (data: RegistrationForm) => {
     setErrorMessage(null);
@@ -250,7 +256,7 @@ export default function EmbedRegister() {
         </p>
         <div className="bg-muted rounded-md p-3 mb-4">
           <h4 className="font-semibold text-sm mb-1">{webinar.title}</h4>
-          {mode === "onDemand" ? (
+          {isOnDemandSelection ? (
             <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
               <Play className="h-3 w-3" />
               <span>隨時可以觀看</span>
@@ -279,7 +285,7 @@ export default function EmbedRegister() {
           onClick={() => window.open(`${window.location.origin}/webinar/${id}`, "_blank")}
           data-testid="button-embed-enter-webinar"
         >
-          {mode === "onDemand" ? "立即觀看" : "進入直播間"}
+          {isOnDemandSelection ? "立即觀看" : "進入直播間"}
         </Button>
       </div>
     );
@@ -325,10 +331,10 @@ export default function EmbedRegister() {
         </div>
       )}
 
-      {mode === "onDemand" && (
+      {onDemandAvailable && (
         <div className="flex items-center justify-center gap-1.5 mb-4 p-2.5 bg-muted rounded-md">
           <Play className="h-4 w-4 text-green-600" />
-          <span className="text-xs font-medium">立即點播觀看</span>
+          <span className="text-xs font-medium">可選擇隨到隨看，或預約指定場次</span>
         </div>
       )}
 
@@ -341,14 +347,14 @@ export default function EmbedRegister() {
         </div>
       )}
 
-      {mode === "fixed" && !hasMultipleSessions && (
+      {mode === "fixed" && !showSessionChoice && (
         <div className="flex items-center justify-center gap-1.5 mb-4 text-xs text-muted-foreground">
           <Calendar className="h-3.5 w-3.5" />
           <span>{formatDate(hasSessions && availableSessions?.sessions?.[0]?.scheduledStart ? availableSessions.sessions[0].scheduledStart : webinar.startTime)}</span>
         </div>
       )}
 
-      {hasMultipleSessions && (
+      {showSessionChoice && (
         <div className="mb-4 relative">
           <div
             className="border rounded-md p-2.5 flex items-center justify-between cursor-pointer hover-elevate"
@@ -356,13 +362,18 @@ export default function EmbedRegister() {
             data-testid="button-embed-session-dropdown"
           >
             <span className="text-sm">
-              {selectedSession ? (
+              {selectedSession === ON_DEMAND_VALUE ? (
+                <span className="flex items-center gap-1.5">
+                  <Play className="h-3.5 w-3.5 flex-shrink-0" />
+                  隨到隨看－報名後立即觀看
+                </span>
+              ) : selectedSession ? (
                 <span className="flex items-center gap-1.5">
                   <Clock className="h-3.5 w-3.5 flex-shrink-0" />
                   {formatShortDate(selectedSession)} @ {formatTimeWithZone(selectedSession)}
                 </span>
               ) : (
-                <span className="text-muted-foreground">選擇要加入的會議</span>
+                <span className="text-muted-foreground">選擇隨到隨看或預約場次</span>
               )}
             </span>
             <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showSessionPicker ? "rotate-180" : ""}`} />
@@ -372,6 +383,21 @@ export default function EmbedRegister() {
             <div className="absolute left-0 right-0 top-full mt-1 border rounded-md bg-card shadow-lg z-50">
               <ScrollArea className="max-h-56">
                 <div className="p-2 space-y-1">
+                  {onDemandAvailable && (
+                    <div
+                      className={`flex items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer text-sm hover-elevate ${
+                        selectedSession === ON_DEMAND_VALUE ? "bg-accent font-medium" : ""
+                      }`}
+                      onClick={() => {
+                        setSelectedSession(ON_DEMAND_VALUE);
+                        setShowSessionPicker(false);
+                      }}
+                      data-testid="button-embed-session-on-demand"
+                    >
+                      <Play className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                      <span>隨到隨看－報名後立即觀看</span>
+                    </div>
+                  )}
                   {Object.entries(groupedSessions).map(([dateLabel, sessions]) => (
                     <div key={dateLabel}>
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2.5 py-1.5">{dateLabel}</p>
@@ -515,7 +541,7 @@ export default function EmbedRegister() {
             type="submit"
             className="w-full"
             style={{ backgroundColor: accentColor }}
-            disabled={registerMutation.isPending || (hasMultipleSessions && !selectedSession)}
+            disabled={registerMutation.isPending || (showSessionChoice && !selectedSession)}
             data-testid="button-embed-register"
           >
             {registerMutation.isPending ? (

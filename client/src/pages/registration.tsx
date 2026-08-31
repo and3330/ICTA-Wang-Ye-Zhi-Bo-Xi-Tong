@@ -25,7 +25,10 @@ interface AvailableSessionsResponse {
   nextStartMinutes?: number;
   message?: string;
   hasSessions?: boolean;
+  onDemandAvailable?: boolean;
 }
+
+const ON_DEMAND_VALUE = "__on_demand__";
 
 const registrationSchema = z.object({
   name: z.string().min(2, "姓名至少需要2個字"),
@@ -118,7 +121,7 @@ export default function Registration() {
         utmContent: urlParams.get("utm_content") || undefined,
         landingUrl: window.location.href,
       };
-      if (selectedSession) {
+      if (selectedSession && selectedSession !== ON_DEMAND_VALUE) {
         payload.selectedSession = selectedSession;
       }
       if (Object.keys(customFieldValues).length > 0) {
@@ -168,7 +171,7 @@ export default function Registration() {
     if (
       availableSessions &&
       availableSessions.sessions.length === 1 &&
-      availableSessions.mode !== "onDemand" &&
+      !availableSessions.onDemandAvailable &&
       !selectedSession
     ) {
       setSelectedSession(availableSessions.sessions[0].scheduledStart);
@@ -214,19 +217,20 @@ export default function Registration() {
 
   const mode = availableSessions?.mode || "fixed";
   const hasSessions = availableSessions?.hasSessions || false;
-  const showSessionPicker = hasSessions && availableSessions && availableSessions.sessions.length >= 1 && mode !== "onDemand";
-  const showSelectedTime = selectedSession || mode === "onDemand" || (mode === "fixed" && !showSessionPicker);
+  const onDemandAvailable = availableSessions?.onDemandAvailable || mode === "onDemand";
+  const isOnDemandSelection = selectedSession === ON_DEMAND_VALUE || (mode === "onDemand" && !selectedSession);
+  const showSessionPicker = Boolean(availableSessions && (onDemandAvailable || (hasSessions && availableSessions.sessions.length >= 1)));
 
   const customFields = (webinar.customFields as CustomField[]) || [];
   const scarcity = webinar.scarcitySettings as { countdownEnabled: boolean; seatsEnabled: boolean; totalSeats: number; urgencyText: string } | null;
   const thankYou = webinar.thankYouSettings as { enabled: boolean; headline: string; message: string; ctaText: string; ctaUrl: string } | null;
 
-  const countdownTarget = selectedSession
+  const countdownTarget = selectedSession && selectedSession !== ON_DEMAND_VALUE
     ? new Date(selectedSession).getTime()
-    : (hasSessions && availableSessions?.sessions?.[0]?.scheduledStart
+    : (!showSessionPicker && hasSessions && availableSessions?.sessions?.[0]?.scheduledStart
         ? new Date(availableSessions.sessions[0].scheduledStart).getTime()
         : (webinar.startTime ? new Date(webinar.startTime).getTime() : 0));
-  const showCountdown = scarcity?.countdownEnabled && mode !== "onDemand" && countdownTarget > Date.now();
+  const showCountdown = scarcity?.countdownEnabled && !isOnDemandSelection && countdownTarget > Date.now();
 
   const validateAndSubmit = (data: RegistrationForm) => {
     const errors: Record<string, boolean> = {};
@@ -262,11 +266,15 @@ export default function Registration() {
               {thankYou?.enabled && thankYou.headline ? thankYou.headline : "報名成功！"}
             </h2>
             <p className="text-muted-foreground mb-6">
-              {thankYou?.enabled && thankYou.message ? thankYou.message : "我們已將直播連結發送至您的 Email，請在直播時間準時加入。"}
+              {thankYou?.enabled && thankYou.message
+                ? thankYou.message
+                : isOnDemandSelection
+                  ? "我們已將觀看連結發送至您的 Email，您現在即可開始觀看。"
+                  : "我們已將直播連結發送至您的 Email，請在直播時間準時加入。"}
             </p>
             <div className="bg-muted rounded-md p-4 mb-6 text-left">
               <h3 className="font-semibold mb-3 text-center">{webinar.title}</h3>
-              {mode === "onDemand" ? (
+              {isOnDemandSelection ? (
                 <div className="flex items-center justify-center gap-2 text-sm">
                   <Play className="h-4 w-4 text-green-600" />
                   <span>隨時可以觀看</span>
@@ -298,7 +306,7 @@ export default function Registration() {
               variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
               data-testid="button-enter-webinar"
             >
-              {mode === "onDemand" ? "立即觀看" : "進入直播間"}
+              {isOnDemandSelection ? "立即觀看" : "進入直播間"}
             </Button>
           </CardContent>
         </Card>
@@ -348,10 +356,10 @@ export default function Registration() {
             </div>
           )}
 
-          {mode === "onDemand" && (
+          {onDemandAvailable && (
             <div className="flex items-center justify-center gap-2 mb-6 p-3 bg-muted rounded-md">
               <Play className="h-5 w-5 text-green-600" />
-              <span className="text-sm font-medium">隨選觀看 - 報名後隨時可以觀看</span>
+              <span className="text-sm font-medium">可選擇「隨到隨看」，或預約下方場次參加</span>
             </div>
           )}
 
@@ -375,15 +383,20 @@ export default function Registration() {
 
           {showSessionPicker && (
             <div className="mb-6">
-              <label className="text-sm font-medium mb-2 block">選擇場次時間</label>
+              <label className="text-sm font-medium mb-2 block">選擇觀看方式或場次</label>
               <Select
                 value={selectedSession || ""}
                 onValueChange={(val) => setSelectedSession(val)}
               >
                 <SelectTrigger data-testid="select-session" className="w-full">
-                  <SelectValue placeholder="請選擇場次時段" />
+                  <SelectValue placeholder="請選擇隨到隨看或場次時段" />
                 </SelectTrigger>
                 <SelectContent>
+                  {onDemandAvailable && (
+                    <SelectItem value={ON_DEMAND_VALUE} data-testid="option-session-on-demand">
+                      隨到隨看－報名後立即觀看
+                    </SelectItem>
+                  )}
                   {availableSessions?.sessions.map((session) => (
                     <SelectItem
                       key={session.id}
@@ -396,7 +409,7 @@ export default function Registration() {
                 </SelectContent>
               </Select>
               {!selectedSession && (
-                <p className="text-xs text-destructive mt-2">請先選擇一個時段</p>
+                <p className="text-xs text-destructive mt-2">請先選擇觀看方式或場次</p>
               )}
             </div>
           )}

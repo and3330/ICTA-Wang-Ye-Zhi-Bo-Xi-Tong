@@ -1,22 +1,21 @@
 ---
-name: Webinar schedule mode precedence
-description: How /available-sessions must resolve scheduleMode vs recurringSchedule, and why on-demand felt "broken".
+name: Hybrid webinar scheduling
+description: How on-demand viewing coexists with recurring and scheduled registration choices.
 ---
 
-# Schedule mode resolution
+# Hybrid schedule resolution
 
-`GET /api/webinars/:id/available-sessions` (server/routes.ts) decides the viewer
-registration UX. Explicit "watch now" modes (`scheduleMode.onDemand`,
-`scheduleMode.justInTime`) MUST be checked BEFORE the recurringSchedule branch.
+On-demand viewing is an additive registration choice, not an exclusive schedule
+mode. When enabled, viewers must be able to choose either "隨到隨看" or one of
+the webinar's available recurring/persisted sessions.
 
-**Why:** Admin "enable on-demand" only mutates `scheduleMode`; it does not clear a
-previously-saved `recurringSchedule`. If recurring is checked first, enabling
-on-demand silently has no effect — viewer still sees recurring session picker.
-Non-technical owners read this as "the button does nothing / can't pick a session".
+**Why:** Owners use on-demand to add immediate access without removing scheduled
+attendance. Treating it as exclusive made all existing session choices disappear.
 
-**How to apply:** Keep onDemand → justInTime → recurring → fixed ordering. Do NOT
-auto-clear recurring config when switching (it would destroy saved days/times);
-precedence ordering is the correct fix.
+**How to apply:** Preserve recurring configuration and scheduled sessions, return
+on-demand availability alongside them, and let registration UIs add a non-date
+"隨到隨看" choice. Only real session timestamps should be stored as a selected
+session. Keep just-in-time behavior separate unless product requirements change.
 
 # Admin UX
 Schedule sub-section saves only flash a toast. Owners need persistent state, so the

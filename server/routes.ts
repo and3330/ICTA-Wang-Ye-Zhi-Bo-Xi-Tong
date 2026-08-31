@@ -1742,17 +1742,7 @@ export async function registerRoutes(
       const scheduleMode = webinar.scheduleMode as any;
       const recurring = webinar.recurringSchedule as any;
       const now = new Date();
-
-      // Explicit "watch now" modes take priority over any recurring config so
-      // that enabling on-demand / just-in-time always takes effect immediately,
-      // even if a recurring schedule was previously configured.
-      if (scheduleMode?.onDemand) {
-        return res.json({
-          mode: "onDemand",
-          sessions: [],
-          message: "隨時可以觀看",
-        });
-      }
+      const onDemandAvailable = Boolean(scheduleMode?.onDemand);
 
       if (scheduleMode?.justInTime) {
         const minutes = scheduleMode.justInTimeMinutes || 15;
@@ -1760,6 +1750,7 @@ export async function registerRoutes(
         return res.json({
           mode: "justInTime",
           sessions: [{ id: "jit", scheduledStart: nextStart, status: "scheduled" }],
+          onDemandAvailable,
           nextStartMinutes: minutes,
           message: `下一場將在 ${minutes} 分鐘內開始`,
         });
@@ -1801,30 +1792,12 @@ export async function registerRoutes(
             mode: "recurring",
             sessions: generated,
             hasSessions: true,
+            onDemandAvailable,
           });
         }
       }
 
-      if (scheduleMode?.onDemand) {
-        return res.json({
-          mode: "onDemand",
-          sessions: [],
-          message: "隨時可以觀看",
-        });
-      }
-
-      if (scheduleMode?.justInTime) {
-        const minutes = scheduleMode.justInTimeMinutes || 15;
-        const nextStart = new Date(now.getTime() + minutes * 60 * 1000);
-        return res.json({
-          mode: "justInTime",
-          sessions: [{ id: "jit", scheduledStart: nextStart, status: "scheduled" }],
-          nextStartMinutes: minutes,
-          message: `下一場將在 ${minutes} 分鐘內開始`,
-        });
-      }
-
-      const isRecurring = scheduleMode?.recurring && !scheduleMode?.onDemand && !scheduleMode?.justInTime;
+      const isRecurring = scheduleMode?.recurring && !scheduleMode?.justInTime;
       const mode = isRecurring ? "recurring" : "fixed";
 
       const allSessions = await storage.getWebinarSessions(webinar.id);
@@ -1845,6 +1818,7 @@ export async function registerRoutes(
           mode,
           sessions: futureSessions,
           hasSessions: true,
+          onDemandAvailable,
         });
       }
 
@@ -1852,6 +1826,7 @@ export async function registerRoutes(
         mode,
         sessions: [{ id: "main", scheduledStart: webinar.startTime, status: "scheduled" }],
         hasSessions: false,
+        onDemandAvailable,
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
