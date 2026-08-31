@@ -38,6 +38,7 @@ import {
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
+import { canViewWebinar } from "./webinarAccess";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -94,8 +95,7 @@ async function requireWebinarOwner(req: Request, res: Response, next: NextFuncti
 async function requirePublishedOrOwner(req: Request, res: Response, next: NextFunction) {
   const webinar = await storage.getWebinar(req.params.id as string);
   if (!webinar) return res.status(404).json({ message: "Webinar not found" });
-  const isOwner = Boolean(req.session?.userId && webinar.userId === req.session.userId);
-  if (webinar.publishStatus !== "published" && !isOwner) {
+  if (!canViewWebinar(webinar, req.session?.userId)) {
     return res.status(404).json({ message: "Webinar not found" });
   }
   next();
@@ -104,8 +104,14 @@ async function requirePublishedOrOwner(req: Request, res: Response, next: NextFu
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
-  sessionMiddleware?: any
+  sessionMiddleware?: any,
+  dependencies: {
+    refreshEntitlement?: typeof refreshSubscriptionEntitlement;
+    startScheduler?: typeof startEmailScheduler;
+  } = {},
 ): Promise<Server> {
+  const refreshEntitlement = dependencies.refreshEntitlement ?? refreshSubscriptionEntitlement;
+  const startScheduler = dependencies.startScheduler ?? startEmailScheduler;
   // 發問通知信節流：每個直播間最短寄送間隔
   const questionNotifyThrottle = new Map<string, number>();
   const QUESTION_NOTIFY_COOLDOWN_MS = 60 * 1000;
@@ -234,8 +240,7 @@ export async function registerRoutes(
             if (typeof webinarId !== "string" || typeof sessionId !== "string") break;
             await sessionReady;
             const requestedWebinar = await storage.getWebinar(webinarId);
-            const isOwnerPreview = Boolean(sessionUserId && requestedWebinar?.userId === sessionUserId);
-            if (!requestedWebinar || (requestedWebinar.publishStatus !== "published" && !isOwnerPreview)) {
+            if (!canViewWebinar(requestedWebinar, sessionUserId)) {
               ws.send(JSON.stringify({
                 type: "error",
                 data: { message: "Webinar not found or unavailable" },
@@ -778,7 +783,7 @@ export async function registerRoutes(
     try {
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
-      const entitlement = await refreshSubscriptionEntitlement(user);
+      const entitlement = await refreshEntitlement(user);
       const webinarCount = await storage.getWebinarCountByUser(user.id);
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
       res.json({
@@ -943,7 +948,7 @@ export async function registerRoutes(
       if (!user || !user.isActive) {
         return res.status(403).json({ message: "帳號已停用" });
       }
-      const entitlement = await refreshSubscriptionEntitlement(user);
+      const entitlement = await refreshEntitlement(user);
       if (!entitlement.active) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
@@ -1912,7 +1917,7 @@ export async function registerRoutes(
   });
 
   // Start email scheduler
-  startEmailScheduler();
+  startScheduler();
 
   // ============ Mark Attendance ============
   app.post("/api/registrations/:id/attend", async (req, res) => {

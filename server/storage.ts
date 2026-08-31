@@ -163,6 +163,40 @@ export interface IStorage {
   deleteSocialPost(webinarId: string, id: string): Promise<void>;
 }
 
+export async function claimWebinarPublicationWithinLimit(
+  database: typeof db,
+  userId: string,
+  webinarId: string,
+  maxPublished: number,
+): Promise<{ webinarId?: string; limitExceeded: boolean }> {
+  return database.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+    const existing = await tx
+      .select({ id: webinars.id, publishStatus: webinars.publishStatus })
+      .from(webinars)
+      .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)));
+    if (!existing[0]) return { webinarId: undefined, limitExceeded: false };
+    if (existing[0].publishStatus === "published") {
+      return { webinarId: existing[0].id, limitExceeded: false };
+    }
+
+    const result = await tx
+      .select({ value: count() })
+      .from(webinars)
+      .where(and(eq(webinars.userId, userId), eq(webinars.publishStatus, "published")));
+    if ((result[0]?.value || 0) >= maxPublished) {
+      return { webinarId: undefined, limitExceeded: true };
+    }
+
+    const updated = await tx
+      .update(webinars)
+      .set({ publishStatus: "published" })
+      .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)))
+      .returning({ id: webinars.id });
+    return { webinarId: updated[0]?.id, limitExceeded: false };
+  });
+}
+
 export class DatabaseStorage implements IStorage {
   // Users (Admin)
   async getUser(id: string): Promise<User | undefined> {
@@ -200,25 +234,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }> {
-    return db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
-      const existing = await tx.select().from(webinars).where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)));
-      if (!existing[0]) return { webinar: undefined, limitExceeded: false };
-      if (existing[0].publishStatus === "published") return { webinar: existing[0], limitExceeded: false };
-
-      const result = await tx
-        .select({ value: count() })
-        .from(webinars)
-        .where(and(eq(webinars.userId, userId), eq(webinars.publishStatus, "published")));
-      if ((result[0]?.value || 0) >= maxPublished) return { webinar: undefined, limitExceeded: true };
-
-      const updated = await tx
-        .update(webinars)
-        .set({ publishStatus: "published" })
-        .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)))
-        .returning();
-      return { webinar: updated[0], limitExceeded: false };
-    });
+    const result = await claimWebinarPublicationWithinLimit(db, userId, webinarId, maxPublished);
+    if (!result.webinarId) return { webinar: undefined, limitExceeded: result.limitExceeded };
+    return { webinar: await this.getWebinar(result.webinarId), limitExceeded: false };
   }
 
   async getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined> {

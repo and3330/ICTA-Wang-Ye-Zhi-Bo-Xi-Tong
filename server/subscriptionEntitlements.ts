@@ -22,6 +22,23 @@ export type SubscriptionEntitlement = {
   stripeSubscriptionId: string | null;
 };
 
+export type EntitlementSubscription = {
+  id: string;
+  status: string;
+  created: number;
+  cancel_at_period_end: boolean;
+  current_period_start?: number | null;
+  current_period_end?: number | null;
+  items: {
+    data: Array<{
+      quantity?: number | null;
+      current_period_start?: number | null;
+      current_period_end?: number | null;
+      price: { lookup_key?: string | null };
+    }>;
+  };
+};
+
 function freeEntitlement(status = "inactive"): SubscriptionEntitlement {
   return {
     plan: "free",
@@ -33,6 +50,38 @@ function freeEntitlement(status = "inactive"): SubscriptionEntitlement {
     currentPeriodEnd: null,
     cancelAtPeriodEnd: false,
     stripeSubscriptionId: null,
+  };
+}
+
+export function computeSubscriptionEntitlement(
+  subscription: EntitlementSubscription,
+  planKey: SubscriptionPlanKey | "legacy",
+  addonWebinars: number,
+  now = new Date(),
+): SubscriptionEntitlement {
+  const periodStart = subscription.current_period_start
+    || subscription.items.data[0]?.current_period_start;
+  const periodEnd = subscription.current_period_end
+    || subscription.items.data[0]?.current_period_end;
+  const currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000) : null;
+  const statusAllowsAccess = ["active", "trialing"].includes(subscription.status);
+  const periodAllowsAccess = !currentPeriodEnd || currentPeriodEnd.getTime() > now.getTime();
+  const active = statusAllowsAccess && periodAllowsAccess;
+
+  return {
+    plan: planKey,
+    status: subscription.status,
+    active,
+    maxWebinars: active
+      ? (planKey === "legacy" ? 3 : SUBSCRIPTION_PLANS[planKey].baseWebinars) + addonWebinars
+      : 0,
+    addonWebinars,
+    startedAt: periodStart
+      ? new Date(periodStart * 1000)
+      : new Date(subscription.created * 1000),
+    currentPeriodEnd,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    stripeSubscriptionId: subscription.id,
   };
 }
 
@@ -137,20 +186,11 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
     return result;
   }
 
-  const active = ["active", "trialing"].includes(subscription.status);
-  const periodStart = (subscription as any).current_period_start || subscription.items.data[0]?.current_period_start;
-  const periodEnd = (subscription as any).current_period_end || subscription.items.data[0]?.current_period_end;
-  const entitlement: SubscriptionEntitlement = {
-    plan: planKey,
-    status: subscription.status,
-    active,
-    maxWebinars: active ? (planKey === "legacy" ? 3 : SUBSCRIPTION_PLANS[planKey].baseWebinars) + addonWebinars : 0,
+  const entitlement = computeSubscriptionEntitlement(
+    subscription as EntitlementSubscription,
+    planKey,
     addonWebinars,
-    startedAt: periodStart ? new Date(periodStart * 1000) : new Date(subscription.created * 1000),
-    currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : null,
-    cancelAtPeriodEnd: subscription.cancel_at_period_end,
-    stripeSubscriptionId: subscription.id,
-  };
+  );
 
   await storage.updateUser(user.id, {
     subscriptionPlan: entitlement.plan,

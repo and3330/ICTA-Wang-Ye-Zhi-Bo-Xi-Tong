@@ -7,4 +7,6 @@ Free accounts may create, edit, retain, and owner-preview drafts. Public access 
 
 **Why:** Client-controlled price IDs, redirect-based activation, or check-then-publish quota logic can grant the wrong capacity, activate unpaid accounts, or exceed a plan during concurrent requests. Draft protection must also cover WebSocket and child-resource access, not only the main page.
 
+An `active` or `trialing` Stripe status grants publishing only while its current period has not ended. `cancel_at_period_end` does not revoke access early; `past_due`, `canceled`, `expired`, or a reached period end blocks new publication while preserving existing content.
+
 **How to apply:** Resolve plan capacity from stable approved Stripe price lookup keys, preserve explicit legacy price mappings until those subscriptions migrate, treat webhook/backfill plus Stripe state as authoritative, preserve canceled content and lifecycle history, and serialize each account's count-and-publish transition in one database transaction.
