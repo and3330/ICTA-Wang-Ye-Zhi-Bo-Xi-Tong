@@ -1,706 +1,120 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useLocation } from "wouter";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Play, MessageCircle, BarChart3, Zap, Users, Clock,
-  Shield, ArrowRight, CheckCircle2, MousePointerClick, Bot,
-  Globe, ChevronRight, Layers, Languages
-} from "lucide-react";
+import { ArrowRight, CalendarDays, Check, ChevronDown, CirclePlay, Clock3, Globe2, Languages, LayoutPanelTop, MessageSquareText, Radio, Sparkles, TimerReset, Video, Vote } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
+import workflowImage from "@assets/generated_images/icta-webinar-workflow.png";
 
 type Lang = LangFull;
+const languages: Record<Lang, string> = { "zh-TW": "繁體中文", "zh-CN": "简体中文", en: "English" };
 
-const langLabels: Record<Lang, string> = {
-  "zh-TW": "繁體中文",
-  "zh-CN": "简体中文",
-  "en": "English",
-};
-
-const langShort: Record<Lang, string> = {
-  "zh-TW": "繁",
-  "zh-CN": "简",
-  "en": "EN",
-};
-
-const t = {
+const copy = {
+  en: {
+    nav: ["Why ICTA", "How it works", "Plans"], signIn: "Sign in", start: "Create a room",
+    eyebrow: "THE AUTOMATED WEBINAR STUDIO", title: "Set the room once.", titleAccent: "Keep the lesson in motion.",
+    desc: "ICTA Webinar turns your Vimeo recording into a scheduled, guided viewing experience. Prepare the moments that matter, then welcome every audience without being in the room.",
+    primary: "Create a webinar room", secondary: "See the studio flow", note: "Built for Vimeo video",
+    studioTag: "WEBINAR ROOM · PREVIEW", nowPlaying: "Now playing", videoTitle: "Teach with a clear next step", chat: "Conversation", interaction: "Timed interaction",
+    chat1: "The walkthrough makes the setup much clearer.", chat2: "Saved the next session to my calendar.", poll: "Where should we go deeper?", poll1: "Video setup", poll2: "Audience interaction",
+    trustedTitle: "A clear broadcast system for the work you already do.", trustedDesc: "For educators running a course launch, creators teaching their process, and teams presenting a repeatable story.",
+    examples: [
+      ["Teach on your schedule", "Record your lesson once, then offer sessions that fit different time zones and calendars."],
+      ["Guide attention with timing", "Place conversation, polls, information cards, and calls to action exactly where they support the lesson."],
+      ["Give viewers one destination", "Share a registration link or embed the experience on the site your audience already knows."]
+    ],
+    systemKicker: "A RUN OF SHOW, MADE VISIBLE", systemTitle: "Everything that happens around the video is planned here.", systemDesc: "Use your recording as the backbone. ICTA Webinar carries the audience through a considered sequence—from registration to the final next step.",
+    flow: [["01", "Add your Vimeo video", "Start with the recording you want viewers to see."], ["02", "Build the viewing path", "Arrange timed messages, polls, content cards, and calls to action."], ["03", "Schedule and share", "Set recurring sessions or on-demand access, then publish your registration link."]],
+    featureKicker: "THE STUDIO SHELF", featureTitle: "The tools behind a composed viewing experience.",
+    features: [["Video-led rooms", "Keep your Vimeo recording at the center of every webinar room."], ["Timed conversation", "Release chat messages at the moments you choose."], ["Interactive checkpoints", "Ask a poll or show a content card while the topic is fresh."], ["Calls to action", "Present a next step when the context is right."], ["Flexible scheduling", "Offer recurring sessions or make a webinar available on demand."], ["Site-ready embeds", "Bring registration and viewing into your existing site."]],
+    priceKicker: "STRAIGHTFORWARD PRICING", priceTitle: "Choose the number of rooms your program needs.", priceDesc: "Each room gives you a dedicated place to organise a webinar experience.", plan1: "Studio", plan2: "Program", plan1Desc: "For a focused series or core offer.", plan2Desc: "For a growing calendar of webinars.", rooms: "webinar rooms", included: "Included", perMonth: "/ month", select: "Choose this plan", addon: "Additional webinar rooms are $20 USD per room, per month.",
+    workflowAlt: "A webinar producer plans video interactions and schedules a viewing room for an audience", flowLabels: ["Vimeo video", "Timed moments", "Scheduled room"], backTop: "Back to top",
+    finalTitle: "Your best session can keep showing up.", finalDesc: "Build a webinar room that gives every viewer the same clear path.", finalCta: "Open the studio", seo: "ICTA Webinar — Automated webinar studio"
+  },
   "zh-TW": {
-    navFeatures: "功能特色",
-    navHow: "運作方式",
-    navPricing: "方案價格",
-    signIn: "登入",
-    getStarted: "立即開始",
-    heroBadge: "自動化研討會平台",
-    heroTitle1: "將預錄影片轉化為",
-    heroTitle2: "直播研討會",
-    heroTitle3: "體驗",
-    heroDesc: "打造彷彿直播的自動化研討會。透過模擬聊天、定時 CTA、投票互動等功能，全程自動運行，吸引觀眾參與。",
-    heroStart: "免費開始",
-    heroDemo: "了解運作方式",
-    trustNoCc: "無需信用卡",
-    trustFree: "提供免費方案",
-    trustSetup: "幾分鐘內完成設定",
-    previewChat: "即時聊天",
-    previewMsg1: "內容真的很棒！",
-    previewMsg2: "超級實用的分享",
-    previewMsg3: "哪裡可以學更多？",
-    previewDesc: "您的研討會在此播放 — 搭配即時聊天、CTA 按鈕和投票功能",
-    featuresBadge: "功能特色",
-    featuresTitle: "自動化研討會所需的一切功能",
-    featuresSubtitle: "完整的工具組，幫助您建立、管理和分析能帶來轉換的研討會 — 無需真正直播。",
-    feat1Title: "Vimeo 影片播放",
-    feat1Desc: "使用預錄的 Vimeo 影片，打造無縫的直播研討會體驗。",
-    feat2Title: "模擬即時聊天",
-    feat2Desc: "預排假人角色的聊天訊息，營造真實的觀眾互動氛圍。",
-    feat3Title: "定時 CTA 按鈕",
-    feat3Desc: "在最佳時機顯示行動呼籲按鈕，提升轉換率。",
-    feat4Title: "投票與互動",
-    feat4Desc: "在特定影片時間點觸發投票、小提示卡和問答功能。",
-    feat5Title: "全自動化",
-    feat5Desc: "設定一次，全天候自動運行。支援循環排程。",
-    feat6Title: "嵌入任何網站",
-    feat6Desc: "透過簡單的嵌入代碼，將報名表和直播間嵌入任何網站。",
-    howBadge: "運作方式",
-    howTitle: "3 個簡單步驟即可上線",
-    howSubtitle: "從設定到第一場自動化研討會，不到 10 分鐘。",
-    step1Title: "上傳您的影片",
-    step1Desc: "貼上 Vimeo 連結，設定研討會參數。",
-    step2Title: "設定互動元素",
-    step2Desc: "新增聊天角色、CTA 按鈕、投票和小提示卡，依影片時間觸發。",
-    step3Title: "排程與分享",
-    step3Desc: "設定循環排程或隨選播放，然後分享報名連結。",
-    trustBadge: "值得信賴",
-    trustTitle: "行銷人與教育者的首選",
-    statWebinars: "場研討會",
-    statAttendees: "位參與者",
-    statUptime: "運行時間",
-    statAuto: "全自動化",
-    pricingBadge: "方案價格",
-    pricingTitle: "簡單透明的定價",
-    pricingSubtitle: "免費開始，隨業務成長擴展。無隱藏費用。",
-    planStarterName: "入門版",
-    planStarterDesc: "開始使用自動化研討會",
-    planStarterF1: "1 場研討會",
-    planStarterF2: "最多 50 位報名者",
-    planStarterF3: "基本聊天模擬",
-    planStarterF4: "Email 通知",
-    planStarterF5: "嵌入支援",
-    planStarterCta: "免費開始",
-    planProName: "專業版",
-    planProDesc: "適合成長中的企業與行銷人",
-    planProF1: "無限場研討會",
-    planProF2: "無限報名人數",
-    planProF3: "進階聊天與投票",
-    planProF4: "CTA 按鈕與小提示卡",
-    planProF5: "數據分析儀表板",
-    planProF6: "Webhook 整合",
-    planProF7: "CSV 匯出",
-    planProF8: "優先客服",
-    planProCta: "免費試用",
-    planEntName: "企業版",
-    planEntDesc: "適合大型團隊與組織",
-    planEntF1: "專業版全部功能",
-    planEntF2: "自訂品牌",
-    planEntF3: "專屬客服",
-    planEntF4: "SLA 保證",
-    planEntF5: "API 存取",
-    planEntF6: "SSO 整合",
-    planEntCta: "聯繫銷售",
-    mostPopular: "最受歡迎",
-    ctaTitle: "準備好自動化您的研討會了嗎？",
-    ctaDesc: "加入數千位使用 ICTA-WEBINAR 全天候舉辦精彩自動化研討會的行銷人和教育者。",
-    ctaButton: "建立您的第一場研討會",
-    footerRights: "保留所有權利。",
-    seoTitle: "ICTA-WEBINAR 亞洲教育自動化行銷研討會系統",
-    seoDesc: "打造彷彿直播的自動化研討會。透過模擬聊天、定時 CTA、投票等功能，全程自動運行。",
-    price_free: "免費",
-    price_pro: "$49",
-    price_pro_period: "/月",
-    price_ent: "洽詢",
+    nav: ["為何選擇 ICTA", "運作方式", "方案"], signIn: "登入", start: "建立直播間",
+    eyebrow: "自動化研討會工作室", title: "一次設計好直播間。", titleAccent: "讓內容持續精準播出。",
+    desc: "ICTA Webinar 將您的 Vimeo 預錄影片轉為可排程、可引導的觀看體驗。安排重要的互動時刻，無論您是否在線，每位觀眾都能順著同一條清楚路徑前進。",
+    primary: "建立研討會直播間", secondary: "查看工作流程", note: "支援 Vimeo 影片",
+    studioTag: "研討會直播間 · 預覽", nowPlaying: "正在播放", videoTitle: "用清楚的下一步完成教學", chat: "觀眾對話", interaction: "定時互動",
+    chat1: "這個示範讓設定方式清楚多了。", chat2: "我已將下一場加到行事曆。", poll: "您想深入了解哪個部分？", poll1: "影片設定", poll2: "觀眾互動",
+    trustedTitle: "讓既有內容成為條理分明的播出系統。", trustedDesc: "適合開設課程的教育者、分享專業的創作者，以及需要重複傳達核心內容的團隊。",
+    examples: [["依您的時程授課", "錄製一次課程，再依不同時區與行事曆安排播放場次。"], ["用時間引導注意力", "在最適合的時間點安排對話、投票、資訊卡與行動呼籲。"], ["給觀眾一個明確入口", "分享報名連結，或將體驗嵌入觀眾熟悉的網站。"]],
+    systemKicker: "清楚呈現播出流程", systemTitle: "影片以外的每個環節，都能在此預先安排。", systemDesc: "以錄製影片為主軸，ICTA Webinar 串起從報名、觀看到最後下一步的完整體驗。",
+    flow: [["01", "加入 Vimeo 影片", "從您希望觀眾觀看的錄製內容開始。"], ["02", "安排觀看路徑", "設定定時訊息、投票、內容卡與行動呼籲。"], ["03", "排程並分享", "設定循環場次或隨選觀看，接著發布報名連結。"]],
+    featureKicker: "工作室工具", featureTitle: "打造從容觀看體驗的每一項工具。",
+    features: [["影片核心直播間", "讓 Vimeo 預錄影片成為每一場研討會的中心。"], ["定時觀眾對話", "在您指定的時間點呈現聊天訊息。"], ["互動檢核點", "趁主題仍在觀眾心中時發起投票或顯示內容卡。"], ["行動呼籲", "在脈絡最恰當的時刻帶出下一步。"], ["彈性排程", "提供循環場次，也可開放隨選觀看。"], ["網站嵌入", "把報名與觀看流程帶進您既有的網站。"]],
+    priceKicker: "清楚計價", priceTitle: "依您需要的直播間數量選擇方案。", priceDesc: "每個直播間都是一個完整規劃研討會體驗的專屬空間。", plan1: "工作室", plan2: "節目方案", plan1Desc: "適合專注經營的系列內容或核心課程。", plan2Desc: "適合持續增加場次的研討會計畫。", rooms: "個研討會直播間", included: "包含", perMonth: "/月", select: "選擇此方案", addon: "每增加一個研討會直播間，費用為 $20 USD／月。",
+    workflowAlt: "研討會製作人正在安排影片互動、播放時程與觀眾觀看流程", flowLabels: ["Vimeo 影片", "定時互動", "排程直播間"], backTop: "回到頂部",
+    finalTitle: "讓您最好的那一堂課，持續準時出席。", finalDesc: "建立一個研討會直播間，讓每位觀眾都走過同樣清楚的路徑。", finalCta: "開啟工作室", seo: "ICTA Webinar — 自動化研討會工作室"
   },
   "zh-CN": {
-    navFeatures: "功能特色",
-    navHow: "运作方式",
-    navPricing: "方案价格",
-    signIn: "登录",
-    getStarted: "立即开始",
-    heroBadge: "自动化研讨会平台",
-    heroTitle1: "将预录视频转化为",
-    heroTitle2: "直播研讨会",
-    heroTitle3: "体验",
-    heroDesc: "打造仿佛直播的自动化研讨会。通过模拟聊天、定时 CTA、投票互动等功能，全程自动运行，吸引观众参与。",
-    heroStart: "免费开始",
-    heroDemo: "了解运作方式",
-    trustNoCc: "无需信用卡",
-    trustFree: "提供免费方案",
-    trustSetup: "几分钟内完成设置",
-    previewChat: "即时聊天",
-    previewMsg1: "内容真的很棒！",
-    previewMsg2: "超级实用的分享",
-    previewMsg3: "哪里可以学更多？",
-    previewDesc: "您的研讨会在此播放 — 搭配即时聊天、CTA 按钮和投票功能",
-    featuresBadge: "功能特色",
-    featuresTitle: "自动化研讨会所需的一切功能",
-    featuresSubtitle: "完整的工具组，帮助您创建、管理和分析能带来转化的研讨会 — 无需真正直播。",
-    feat1Title: "Vimeo 视频播放",
-    feat1Desc: "使用预录的 Vimeo 视频，打造无缝的直播研讨会体验。",
-    feat2Title: "模拟即时聊天",
-    feat2Desc: "预排假人角色的聊天消息，营造真实的观众互动氛围。",
-    feat3Title: "定时 CTA 按钮",
-    feat3Desc: "在最佳时机显示行动呼吁按钮，提升转化率。",
-    feat4Title: "投票与互动",
-    feat4Desc: "在特定视频时间点触发投票、小提示卡和问答功能。",
-    feat5Title: "全自动化",
-    feat5Desc: "设置一次，全天候自动运行。支持循环排程。",
-    feat6Title: "嵌入任何网站",
-    feat6Desc: "通过简单的嵌入代码，将报名表和直播间嵌入任何网站。",
-    howBadge: "运作方式",
-    howTitle: "3 个简单步骤即可上线",
-    howSubtitle: "从设置到第一场自动化研讨会，不到 10 分钟。",
-    step1Title: "上传您的视频",
-    step1Desc: "粘贴 Vimeo 链接，设置研讨会参数。",
-    step2Title: "设置互动元素",
-    step2Desc: "添加聊天角色、CTA 按钮、投票和小提示卡，依视频时间触发。",
-    step3Title: "排程与分享",
-    step3Desc: "设置循环排程或随选播放，然后分享报名链接。",
-    trustBadge: "值得信赖",
-    trustTitle: "营销人与教育者的首选",
-    statWebinars: "场研讨会",
-    statAttendees: "位参与者",
-    statUptime: "运行时间",
-    statAuto: "全自动化",
-    pricingBadge: "方案价格",
-    pricingTitle: "简单透明的定价",
-    pricingSubtitle: "免费开始，随业务增长扩展。无隐藏费用。",
-    planStarterName: "入门版",
-    planStarterDesc: "开始使用自动化研讨会",
-    planStarterF1: "1 场研讨会",
-    planStarterF2: "最多 50 位报名者",
-    planStarterF3: "基本聊天模拟",
-    planStarterF4: "Email 通知",
-    planStarterF5: "嵌入支持",
-    planStarterCta: "免费开始",
-    planProName: "专业版",
-    planProDesc: "适合成长中的企业与营销人",
-    planProF1: "无限场研讨会",
-    planProF2: "无限报名人数",
-    planProF3: "进阶聊天与投票",
-    planProF4: "CTA 按钮与小提示卡",
-    planProF5: "数据分析仪表板",
-    planProF6: "Webhook 集成",
-    planProF7: "CSV 导出",
-    planProF8: "优先客服",
-    planProCta: "免费试用",
-    planEntName: "企业版",
-    planEntDesc: "适合大型团队与组织",
-    planEntF1: "专业版全部功能",
-    planEntF2: "自定义品牌",
-    planEntF3: "专属客服",
-    planEntF4: "SLA 保证",
-    planEntF5: "API 访问",
-    planEntF6: "SSO 集成",
-    planEntCta: "联系销售",
-    mostPopular: "最受欢迎",
-    ctaTitle: "准备好自动化您的研讨会了吗？",
-    ctaDesc: "加入数千位使用 ICTA-WEBINAR 全天候举办精彩自动化研讨会的营销人和教育者。",
-    ctaButton: "创建您的第一场研讨会",
-    footerRights: "保留所有权利。",
-    seoTitle: "ICTA-WEBINAR 亚洲教育自动化行销研讨会系统",
-    seoDesc: "打造仿佛直播的自动化研讨会。通过模拟聊天、定时 CTA、投票等功能，全程自动运行。",
-    price_free: "免费",
-    price_pro: "$49",
-    price_pro_period: "/月",
-    price_ent: "洽询",
-  },
-  "en": {
-    navFeatures: "Features",
-    navHow: "How It Works",
-    navPricing: "Pricing",
-    signIn: "Sign In",
-    getStarted: "Get Started",
-    heroBadge: "Automated Webinar Platform",
-    heroTitle1: "Turn Pre-Recorded Videos Into ",
-    heroTitle2: "Live Webinar",
-    heroTitle3: " Experiences",
-    heroDesc: "Create automated webinars that feel live. Engage your audience with simulated chat, timed CTAs, polls, and more — all running on autopilot.",
-    heroStart: "Start For Free",
-    heroDemo: "See How It Works",
-    trustNoCc: "No credit card required",
-    trustFree: "Free tier available",
-    trustSetup: "Set up in minutes",
-    previewChat: "Live Chat",
-    previewMsg1: "Great content!",
-    previewMsg2: "This is so helpful",
-    previewMsg3: "Where can I learn more?",
-    previewDesc: "Your webinar plays here — complete with live chat, CTAs, and polls",
-    featuresBadge: "Features",
-    featuresTitle: "Everything You Need to Run Automated Webinars",
-    featuresSubtitle: "A complete toolkit to create, manage, and analyze webinars that convert — without going live.",
-    feat1Title: "Vimeo Video Playback",
-    feat1Desc: "Use pre-recorded Vimeo videos to create a seamless live webinar experience.",
-    feat2Title: "Simulated Live Chat",
-    feat2Desc: "Pre-schedule chat messages with fake personas to create authentic audience engagement.",
-    feat3Title: "Timed CTA Buttons",
-    feat3Desc: "Display call-to-action buttons at the perfect moment to drive conversions.",
-    feat4Title: "Polls & Interactions",
-    feat4Desc: "Trigger polls, tip cards, and Q&A at specific video timestamps.",
-    feat5Title: "Full Automation",
-    feat5Desc: "Set it up once. Your webinar runs on autopilot 24/7 with recurring schedules.",
-    feat6Title: "Embed Anywhere",
-    feat6Desc: "Embed registration forms and webinar rooms on any website with a simple script.",
-    howBadge: "How It Works",
-    howTitle: "Up and Running in 3 Simple Steps",
-    howSubtitle: "From setup to your first automated webinar in under 10 minutes.",
-    step1Title: "Upload Your Video",
-    step1Desc: "Paste your Vimeo URL and configure your webinar settings.",
-    step2Title: "Set Up Interactions",
-    step2Desc: "Add chat personas, CTAs, polls, and tip cards timed to your video.",
-    step3Title: "Schedule & Share",
-    step3Desc: "Set recurring schedules or on-demand access, then share your registration link.",
-    trustBadge: "Built for Scale",
-    trustTitle: "Trusted by Marketers & Educators",
-    statWebinars: "Webinars hosted",
-    statAttendees: "Attendees served",
-    statUptime: "Uptime",
-    statAuto: "Automation",
-    pricingBadge: "Pricing",
-    pricingTitle: "Simple, Transparent Pricing",
-    pricingSubtitle: "Start free and scale as you grow. No hidden fees.",
-    planStarterName: "Starter",
-    planStarterDesc: "Get started with automated webinars",
-    planStarterF1: "1 Webinar",
-    planStarterF2: "Up to 50 registrations",
-    planStarterF3: "Basic chat simulation",
-    planStarterF4: "Email notifications",
-    planStarterF5: "Embed support",
-    planStarterCta: "Get Started",
-    planProName: "Professional",
-    planProDesc: "For growing businesses and marketers",
-    planProF1: "Unlimited Webinars",
-    planProF2: "Unlimited registrations",
-    planProF3: "Advanced chat & polls",
-    planProF4: "CTA buttons & tip cards",
-    planProF5: "Analytics dashboard",
-    planProF6: "Webhook integrations",
-    planProF7: "CSV export",
-    planProF8: "Priority support",
-    planProCta: "Start Free Trial",
-    planEntName: "Enterprise",
-    planEntDesc: "For large teams and organizations",
-    planEntF1: "Everything in Pro",
-    planEntF2: "Custom branding",
-    planEntF3: "Dedicated support",
-    planEntF4: "SLA guarantee",
-    planEntF5: "API access",
-    planEntF6: "SSO integration",
-    planEntCta: "Contact Sales",
-    mostPopular: "Most Popular",
-    ctaTitle: "Ready to Automate Your Webinars?",
-    ctaDesc: "Join thousands of marketers and educators who use ICTA-WEBINAR to run engaging, automated webinars around the clock.",
-    ctaButton: "Create Your First Webinar",
-    footerRights: "All rights reserved.",
-    seoTitle: "ICTA-WEBINAR - Asia Education Automated Marketing Webinar System",
-    seoDesc: "Create automated webinars that feel live. Engage your audience with simulated chat, timed CTAs, polls, and more — all running on autopilot with ICTA-WEBINAR.",
-    price_free: "Free",
-    price_pro: "$49",
-    price_pro_period: "/mo",
-    price_ent: "Custom",
-  },
-};
+    nav: ["为何选择 ICTA", "运作方式", "方案"], signIn: "登录", start: "创建直播间",
+    eyebrow: "自动化研讨会工作室", title: "一次设计好直播间。", titleAccent: "让内容持续精准播出。",
+    desc: "ICTA Webinar 将您的 Vimeo 预录视频转为可排期、可引导的观看体验。安排重要互动时刻，无论您是否在线，每位观众都能沿着同一条清晰路径前进。",
+    primary: "创建研讨会直播间", secondary: "查看工作流程", note: "支持 Vimeo 视频",
+    studioTag: "研讨会直播间 · 预览", nowPlaying: "正在播放", videoTitle: "用清晰的下一步完成教学", chat: "观众对话", interaction: "定时互动",
+    chat1: "这个演示让设置方式清楚多了。", chat2: "我已将下一场加到日历。", poll: "您想深入了解哪个部分？", poll1: "视频设置", poll2: "观众互动",
+    trustedTitle: "让既有内容成为条理分明的播出系统。", trustedDesc: "适合开设课程的教育者、分享专业的创作者，以及需要重复传达核心内容的团队。",
+    examples: [["按您的日程授课", "录制一次课程，再根据不同时区与日历安排播放场次。"], ["用时间引导注意力", "在最适合的时间点安排对话、投票、信息卡与行动号召。"], ["给观众一个明确入口", "分享报名链接，或将体验嵌入观众熟悉的网站。"]],
+    systemKicker: "清晰呈现播出流程", systemTitle: "视频以外的每个环节，都能在这里预先安排。", systemDesc: "以录制视频为主轴，ICTA Webinar 串起从报名、观看到最后下一步的完整体验。",
+    flow: [["01", "添加 Vimeo 视频", "从您希望观众观看的录制内容开始。"], ["02", "安排观看路径", "设置定时消息、投票、内容卡与行动号召。"], ["03", "排期并分享", "设置循环场次或随选观看，然后发布报名链接。"]],
+    featureKicker: "工作室工具", featureTitle: "打造从容观看体验的每一项工具。",
+    features: [["视频核心直播间", "让 Vimeo 预录视频成为每一场研讨会的中心。"], ["定时观众对话", "在您指定的时间点呈现聊天消息。"], ["互动检查点", "趁主题仍在观众心中时发起投票或显示内容卡。"], ["行动号召", "在脉络最恰当的时刻带出下一步。"], ["灵活排期", "提供循环场次，也可开放随选观看。"], ["网站嵌入", "将报名与观看流程带进您现有的网站。"]],
+    priceKicker: "清晰计价", priceTitle: "按需要的直播间数量选择方案。", priceDesc: "每个直播间都是一个完整规划研讨会体验的专属空间。", plan1: "工作室", plan2: "节目方案", plan1Desc: "适合专注经营的系列内容或核心课程。", plan2Desc: "适合持续增加场次的研讨会计划。", rooms: "个研讨会直播间", included: "包含", perMonth: "/月", select: "选择此方案", addon: "每增加一个研讨会直播间，费用为 $20 USD／月。",
+    workflowAlt: "研讨会制作人正在安排视频互动、播放排期与观众观看流程", flowLabels: ["Vimeo 视频", "定时互动", "排期直播间"], backTop: "返回顶部",
+    finalTitle: "让您最好的那堂课，持续准时出席。", finalDesc: "建立一个研讨会直播间，让每位观众都走过同样清晰的路径。", finalCta: "开启工作室", seo: "ICTA Webinar — 自动化研讨会工作室"
+  }
+} as const;
 
-const featureIcons = [Play, MessageCircle, MousePointerClick, BarChart3, Bot, Globe];
-
-function getFeatures(lang: Lang) {
-  const s = t[lang];
-  return [
-    { icon: featureIcons[0], title: s.feat1Title, desc: s.feat1Desc },
-    { icon: featureIcons[1], title: s.feat2Title, desc: s.feat2Desc },
-    { icon: featureIcons[2], title: s.feat3Title, desc: s.feat3Desc },
-    { icon: featureIcons[3], title: s.feat4Title, desc: s.feat4Desc },
-    { icon: featureIcons[4], title: s.feat5Title, desc: s.feat5Desc },
-    { icon: featureIcons[5], title: s.feat6Title, desc: s.feat6Desc },
-  ];
-}
-
-function getSteps(lang: Lang) {
-  const s = t[lang];
-  return [
-    { num: "01", title: s.step1Title, desc: s.step1Desc },
-    { num: "02", title: s.step2Title, desc: s.step2Desc },
-    { num: "03", title: s.step3Title, desc: s.step3Desc },
-  ];
-}
-
-function getPlans(lang: Lang) {
-  const s = t[lang];
-  return [
-    {
-      name: s.planStarterName,
-      price: s.price_free,
-      period: "",
-      desc: s.planStarterDesc,
-      features: [s.planStarterF1, s.planStarterF2, s.planStarterF3, s.planStarterF4, s.planStarterF5],
-      cta: s.planStarterCta,
-      popular: false,
-    },
-    {
-      name: s.planProName,
-      price: s.price_pro,
-      period: s.price_pro_period,
-      desc: s.planProDesc,
-      features: [s.planProF1, s.planProF2, s.planProF3, s.planProF4, s.planProF5, s.planProF6, s.planProF7, s.planProF8],
-      cta: s.planProCta,
-      popular: true,
-    },
-    {
-      name: s.planEntName,
-      price: s.price_ent,
-      period: "",
-      desc: s.planEntDesc,
-      features: [s.planEntF1, s.planEntF2, s.planEntF3, s.planEntF4, s.planEntF5, s.planEntF6],
-      cta: s.planEntCta,
-      popular: false,
-    },
-  ];
-}
-
-function getStats(lang: Lang) {
-  const s = t[lang];
-  return [
-    { value: "10K+", label: s.statWebinars },
-    { value: "500K+", label: s.statAttendees },
-    { value: "99.9%", label: s.statUptime },
-    { value: "24/7", label: s.statAuto },
-  ];
-}
+const icons = [Video, MessageSquareText, Vote, CirclePlay, CalendarDays, Globe2];
 
 export default function Landing() {
   const [, setLocation] = useLocation();
   const { lang, setLang } = useLang();
   const [langOpen, setLangOpen] = useState(false);
-
-  const s = t[lang];
-  const features = getFeatures(lang);
-  const steps = getSteps(lang);
-  const plans = getPlans(lang);
-  const stats = getStats(lang);
-
-  const switchLang = useCallback((newLang: Lang) => {
-    setLang(newLang);
-    setLangOpen(false);
-  }, [setLang]);
-
+  const languageTriggerRef = useRef<HTMLButtonElement>(null);
+  const languageMenuRef = useRef<HTMLDivElement>(null);
+  const s = copy[lang];
+  const goAdmin = useCallback(() => setLocation("/admin"), [setLocation]);
+  useEffect(() => { document.title = s.seo; document.documentElement.lang = lang; document.querySelector('meta[name="description"]')?.setAttribute("content", s.desc); }, [lang, s]);
   useEffect(() => {
-    document.title = s.seoTitle;
-    document.documentElement.lang = lang === "zh-CN" ? "zh-CN" : lang === "zh-TW" ? "zh-TW" : "en";
-    const meta = document.querySelector('meta[name="description"]');
-    if (meta) meta.setAttribute("content", s.seoDesc);
-    const ogTitle = document.querySelector('meta[property="og:title"]');
-    if (ogTitle) ogTitle.setAttribute("content", s.seoTitle);
-    const ogDesc = document.querySelector('meta[property="og:description"]');
-    if (ogDesc) ogDesc.setAttribute("content", s.seoDesc);
-  }, [lang, s.seoTitle, s.seoDesc]);
-
-  useEffect(() => {
-    if (!langOpen) return;
-    const handler = () => setLangOpen(false);
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
+    if (langOpen) requestAnimationFrame(() => languageMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus());
   }, [langOpen]);
 
-  return (
-    <div className="min-h-screen bg-background">
-      <nav className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-md">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 min-w-0">
-            <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain shrink-0" />
-            <div className="min-w-0" data-testid="text-brand-name">
-              <span className="font-bold text-base sm:text-lg tracking-tight block truncate">ICTA-WEBINAR</span>
-              <span className="hidden sm:block text-xs text-muted-foreground leading-tight truncate">亞洲教育自動化行銷研討會系統</span>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center gap-6">
-            <a href="#features" className="text-sm text-muted-foreground transition-colors" data-testid="link-features">{s.navFeatures}</a>
-            <a href="#how-it-works" className="text-sm text-muted-foreground transition-colors" data-testid="link-how">{s.navHow}</a>
-            <a href="#pricing" className="text-sm text-muted-foreground transition-colors" data-testid="link-pricing">{s.navPricing}</a>
-          </div>
-          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            <div className="relative" onClick={(e) => e.stopPropagation()}>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setLangOpen(!langOpen)}
-                data-testid="button-lang-toggle"
-              >
-                <Languages className="w-4 h-4" />
-              </Button>
-              {langOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-md border bg-popover p-1 shadow-md">
-                  {(["zh-TW", "zh-CN", "en"] as Lang[]).map((l) => (
-                    <button
-                      key={l}
-                      onClick={() => switchLang(l)}
-                      className={`w-full text-left px-3 py-2 text-sm rounded-sm hover-elevate flex items-center justify-between gap-2 ${lang === l ? "bg-accent text-accent-foreground" : ""}`}
-                      data-testid={`button-lang-${l}`}
-                    >
-                      <span>{langLabels[l]}</span>
-                      <span className="text-xs text-muted-foreground">{langShort[l]}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => setLocation("/admin")} data-testid="button-sign-in">
-              {s.signIn}
-            </Button>
-            <Button size="sm" onClick={() => setLocation("/admin")} data-testid="button-get-started-nav">
-              {s.getStarted}
-              <ArrowRight className="ml-1 h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </nav>
+  const handleLanguageMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(languageMenuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setLangOpen(false);
+      languageTriggerRef.current?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const offset = event.key === "ArrowDown" ? 1 : -1;
+      items[(current + offset + items.length) % items.length]?.focus();
+    }
+  };
 
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-primary/5 pointer-events-none" />
-        <div className="absolute top-20 left-1/4 w-72 h-72 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-10 right-1/4 w-96 h-96 bg-primary/5 rounded-full blur-3xl pointer-events-none" />
+  return <main className="icta-home">
+    <nav className="ih-nav" aria-label="Main navigation">
+      <a href="#top" className="ih-brand" aria-label="ICTA Webinar home"><span className="ih-mark"><i /><i /><i /></span><span>ICTA <b>WEBINAR</b></span></a>
+      <div className="ih-links">{["why", "workflow", "pricing"].map((id, i) => <a href={`#${id}`} key={id}>{s.nav[i]}</a>)}</div>
+      <div className="ih-nav-actions"><div className="ih-language"><button ref={languageTriggerRef} onClick={() => setLangOpen(v => !v)} aria-expanded={langOpen} aria-haspopup="menu" aria-controls="icta-language-menu" aria-label="Change language"><Languages size={16} />{lang === "en" ? "EN" : lang === "zh-TW" ? "繁" : "简"}<ChevronDown size={13} /></button>{langOpen && <div id="icta-language-menu" ref={languageMenuRef} role="menu" onKeyDown={handleLanguageMenuKeyDown}>{(Object.keys(languages) as Lang[]).map(l => <button role="menuitem" key={l} className={l === lang ? "selected" : ""} onClick={() => { setLang(l); setLangOpen(false); languageTriggerRef.current?.focus(); }}>{languages[l]} {l === lang && <Check size={14} />}</button>)}</div>}</div><button className="ih-signin" onClick={goAdmin}>{s.signIn}</button><button className="ih-button small" onClick={goAdmin}>{s.start}<ArrowRight size={15} /></button></div>
+    </nav>
 
-        <div className="container mx-auto px-4 pt-20 pb-24 md:pt-28 md:pb-32 relative">
-          <div className="max-w-3xl mx-auto text-center">
-            <Badge variant="secondary" className="mb-6" data-testid="badge-hero">
-              <Zap className="w-3 h-3 mr-1" />
-              {s.heroBadge}
-            </Badge>
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight leading-tight mb-6" data-testid="text-hero-title">
-              {s.heroTitle1}
-              <span className="text-primary">{s.heroTitle2}</span>
-              {s.heroTitle3}
-            </h1>
-            <p className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed" data-testid="text-hero-desc">
-              {s.heroDesc}
-            </p>
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <Button size="lg" onClick={() => setLocation("/admin")} data-testid="button-hero-start">
-                {s.heroStart}
-                <ArrowRight className="ml-1 h-4 w-4" />
-              </Button>
-              <Button size="lg" variant="outline" onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })} data-testid="button-hero-demo">
-                <Play className="mr-1 h-4 w-4" />
-                {s.heroDemo}
-              </Button>
-            </div>
+    <section id="top" className="ih-hero">
+      <div className="ih-hero-copy"><p className="ih-kicker"><Radio size={14} />{s.eyebrow}</p><h1>{s.title}<span>{s.titleAccent}</span></h1><p className="ih-lead">{s.desc}</p><div className="ih-hero-actions"><button className="ih-button" onClick={goAdmin}>{s.primary}<ArrowRight size={18} /></button><a className="ih-quiet-button" href="#workflow"><LayoutPanelTop size={18} />{s.secondary}</a></div><p className="ih-note"><Check size={15} />{s.note}<i /><Check size={15} />{s.nav[1]}</p></div>
+      <div className="ih-preview" aria-label="Webinar room example"><div className="ih-preview-top"><span><i />{s.studioTag}</span><span>ROOM / 01</span></div><div className="ih-screen"><div className="ih-screen-lines" /><div className="ih-playing"><small>{s.nowPlaying}</small><strong>{s.videoTitle}</strong><span>18:42 / 42:00</span></div><CirclePlay className="ih-play" /></div><div className="ih-progress"><b /></div><div className="ih-preview-bottom"><div className="ih-chat"><h3><MessageSquareText size={15} />{s.chat}<b>12</b></h3><p><i className="a" />{s.chat1}<small>18:44</small></p><p><i className="b" />{s.chat2}<small>18:47</small></p></div><div className="ih-poll"><small><TimerReset size={13} />{s.interaction}</small><strong>{s.poll}</strong><span>{s.poll1}<ArrowRight size={14} /></span><span>{s.poll2}<ArrowRight size={14} /></span></div></div></div>
+    </section>
 
-            <div className="mt-14 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-muted-foreground" data-testid="hero-trust-signals">
-              <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4 text-primary" /> {s.trustNoCc}</span>
-              <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4 text-primary" /> {s.trustFree}</span>
-              <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4 text-primary" /> {s.trustSetup}</span>
-            </div>
-          </div>
+    <section id="why" className="ih-intro"><div><p className="ih-kicker">{s.eyebrow}</p><h2>{s.trustedTitle}</h2><p>{s.trustedDesc}</p></div><div className="ih-example-grid">{s.examples.map(([title, desc], i) => { const Icon = [Clock3, Sparkles, Globe2][i]; return <article key={title}><Icon size={21} /><h3>{title}</h3><p>{desc}</p></article>; })}</div></section>
 
-          <div className="mt-16 max-w-4xl mx-auto">
-            <Card className="overflow-visible">
-              <CardContent className="p-0">
-                <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-md aspect-video flex items-center justify-center relative">
-                  <div className="absolute top-3 left-3 flex gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-red-400/70" />
-                    <div className="w-3 h-3 rounded-full bg-yellow-400/70" />
-                    <div className="w-3 h-3 rounded-full bg-green-400/70" />
-                  </div>
-                  <div className="text-center px-4">
-                    <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
-                      <Play className="w-7 h-7 text-primary" />
-                    </div>
-                    <p className="text-white/60 text-sm">{s.previewDesc}</p>
-                  </div>
-                  <div className="absolute right-4 top-12 bottom-4 w-56 bg-white/5 backdrop-blur rounded-md border border-white/10 hidden lg:flex flex-col">
-                    <div className="px-3 py-2 border-b border-white/10">
-                      <p className="text-white/80 text-xs font-medium">{s.previewChat}</p>
-                    </div>
-                    <div className="flex-1 p-2 space-y-2 overflow-hidden">
-                      {[s.previewMsg1, s.previewMsg2, s.previewMsg3].map((msg, i) => (
-                        <div key={i} className="flex items-start gap-2">
-                          <div className="w-5 h-5 rounded-full bg-primary/30 flex-shrink-0 mt-0.5" />
-                          <p className="text-white/50 text-[10px] leading-tight">{msg}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </section>
+    <section id="workflow" className="ih-workflow"><div className="ih-work-copy"><p className="ih-kicker">{s.systemKicker}</p><h2>{s.systemTitle}</h2><p>{s.systemDesc}</p><div className="ih-steps">{s.flow.map(([no, title, desc]) => <article key={no}><b>{no}</b><div><h3>{title}</h3><p>{desc}</p></div></article>)}</div></div><figure><img src={workflowImage} alt={s.workflowAlt} /><figcaption><span><Video size={15} />{s.flowLabels[0]}</span><ArrowRight size={15} /><span><TimerReset size={15} />{s.flowLabels[1]}</span><ArrowRight size={15} /><span><CalendarDays size={15} />{s.flowLabels[2]}</span></figcaption></figure></section>
 
-      <section id="features" className="py-20 md:py-28">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-14">
-            <Badge variant="secondary" className="mb-4">
-              <Layers className="w-3 h-3 mr-1" />
-              {s.featuresBadge}
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold tracking-tight mb-4" data-testid="text-features-title">
-              {s.featuresTitle}
-            </h2>
-            <p className="text-muted-foreground max-w-2xl mx-auto">
-              {s.featuresSubtitle}
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
-            {features.map((f) => (
-              <Card key={f.title} className="hover-elevate" data-testid={`card-feature-${f.title.toLowerCase().replace(/\s+/g, "-")}`}>
-                <CardContent className="p-6">
-                  <div className="w-10 h-10 rounded-md bg-primary/10 flex items-center justify-center mb-4">
-                    <f.icon className="w-5 h-5 text-primary" />
-                  </div>
-                  <h3 className="font-semibold mb-2">{f.title}</h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{f.desc}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
+    <section className="ih-features"><div className="ih-center-title"><p className="ih-kicker">{s.featureKicker}</p><h2>{s.featureTitle}</h2></div><div className="ih-feature-grid">{s.features.map(([title, desc], i) => { const Icon = icons[i]; return <article key={title}><span><Icon size={20} /></span><h3>{title}</h3><p>{desc}</p></article>; })}</div></section>
 
-      <section id="how-it-works" className="py-20 md:py-28 bg-muted/30">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-14">
-            <Badge variant="secondary" className="mb-4">
-              <Clock className="w-3 h-3 mr-1" />
-              {s.howBadge}
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold tracking-tight mb-4" data-testid="text-how-title">
-              {s.howTitle}
-            </h2>
-            <p className="text-muted-foreground max-w-xl mx-auto">
-              {s.howSubtitle}
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl mx-auto">
-            {steps.map((st) => (
-              <div key={st.num} className="text-center" data-testid={`step-${st.num}`}>
-                <div className="w-14 h-14 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-lg font-bold mx-auto mb-5">
-                  {st.num}
-                </div>
-                <h3 className="font-semibold text-lg mb-2">{st.title}</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">{st.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
+    <section id="pricing" className="ih-pricing"><div className="ih-center-title"><p className="ih-kicker">{s.priceKicker}</p><h2>{s.priceTitle}</h2><p>{s.priceDesc}</p></div><div className="ih-plans">{[["$49", "2", s.plan1, s.plan1Desc], ["$99", "5", s.plan2, s.plan2Desc]].map(([price, rooms, title, desc], i) => <article className={i === 1 ? "featured" : ""} key={price}><small>{i === 1 ? s.included : "ICTA Webinar"}</small><h3>{title}</h3><p>{desc}</p><div className="ih-price"><b>{price}</b><span>USD {s.perMonth}</span></div><div className="ih-room"><strong>{rooms}</strong><span>{s.rooms}</span></div><button className="ih-plan-button" onClick={goAdmin}>{s.select}<ArrowRight size={16} /></button></article>)}</div><p className="ih-addon"><Sparkles size={17} />{s.addon}</p></section>
 
-      <section className="py-20 md:py-28">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-5">
-            <Badge variant="secondary" className="mb-4">
-              <Shield className="w-3 h-3 mr-1" />
-              {s.trustBadge}
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold tracking-tight mb-4" data-testid="text-trust-title">
-              {s.trustTitle}
-            </h2>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 max-w-3xl mx-auto text-center mt-10">
-            {stats.map((stat) => (
-              <div key={stat.label} data-testid={`stat-${stat.label.toLowerCase().replace(/\s+/g, "-")}`}>
-                <p className="text-3xl md:text-4xl font-bold text-primary mb-1">{stat.value}</p>
-                <p className="text-sm text-muted-foreground">{stat.label}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="pricing" className="py-20 md:py-28 bg-muted/30">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-14">
-            <Badge variant="secondary" className="mb-4">
-              <Users className="w-3 h-3 mr-1" />
-              {s.pricingBadge}
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold tracking-tight mb-4" data-testid="text-pricing-title">
-              {s.pricingTitle}
-            </h2>
-            <p className="text-muted-foreground max-w-xl mx-auto">
-              {s.pricingSubtitle}
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-4xl mx-auto items-start">
-            {plans.map((plan) => (
-              <Card
-                key={plan.name}
-                className={plan.popular ? "border-primary relative" : ""}
-                data-testid={`card-plan-${plan.name.toLowerCase()}`}
-              >
-                {plan.popular && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                    <Badge>{s.mostPopular}</Badge>
-                  </div>
-                )}
-                <CardContent className={`p-6 ${plan.popular ? "pt-8" : ""}`}>
-                  <h3 className="font-semibold text-lg mb-1">{plan.name}</h3>
-                  <p className="text-sm text-muted-foreground mb-4">{plan.desc}</p>
-                  <div className="mb-6">
-                    <span className="text-4xl font-bold">{plan.price}</span>
-                    {plan.period && <span className="text-muted-foreground">{plan.period}</span>}
-                  </div>
-                  <Button
-                    className="w-full mb-6"
-                    variant={plan.popular ? "default" : "outline"}
-                    onClick={() => setLocation("/admin")}
-                    data-testid={`button-plan-${plan.name.toLowerCase()}`}
-                  >
-                    {plan.cta}
-                    <ChevronRight className="ml-1 h-4 w-4" />
-                  </Button>
-                  <ul className="space-y-2.5">
-                    {plan.features.map((f) => (
-                      <li key={f} className="flex items-start gap-2 text-sm">
-                        <CheckCircle2 className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-                        <span>{f}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="py-20 md:py-28">
-        <div className="container mx-auto px-4">
-          <Card className="max-w-3xl mx-auto overflow-visible">
-            <CardContent className="p-8 md:p-12 text-center">
-              <h2 className="text-2xl md:text-3xl font-bold tracking-tight mb-4" data-testid="text-cta-title">
-                {s.ctaTitle}
-              </h2>
-              <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
-                {s.ctaDesc}
-              </p>
-              <Button size="lg" onClick={() => setLocation("/admin")} data-testid="button-cta-final">
-                {s.ctaButton}
-                <ArrowRight className="ml-1 h-4 w-4" />
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      <footer className="border-t py-8">
-        <div className="container mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <img src="/favicon.png" alt="ICTA" className="w-6 h-6 object-contain" />
-            <span className="text-sm font-semibold">ICTA-WEBINAR 亞洲教育自動化行銷研討會系統</span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} ICTA-WEBINAR. {s.footerRights}
-          </p>
-        </div>
-      </footer>
-    </div>
-  );
+    <section className="ih-final"><div><p className="ih-kicker"><Radio size={14} />ICTA WEBINAR</p><h2>{s.finalTitle}</h2><p>{s.finalDesc}</p><button className="ih-button" onClick={goAdmin}>{s.finalCta}<ArrowRight size={18} /></button></div><div className="ih-final-orbit"><i /><i /><i /></div></section>
+    <footer><span>ICTA <b>WEBINAR</b></span><span>© {new Date().getFullYear()} ICTA Webinar</span><a href="#top">{s.backTop} <ArrowRight size={14} /></a></footer>
+  </main>;
 }

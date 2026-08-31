@@ -227,7 +227,7 @@ export default function AdminLogin() {
   }, [langOpen]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex flex-col items-center justify-center p-4">
+    <div className="admin-login min-h-[100dvh] flex flex-col items-center justify-center p-4">
       <div className="absolute top-4 right-4 relative" onClick={(e) => e.stopPropagation()}>
         <Button
           variant="ghost"
@@ -257,7 +257,9 @@ export default function AdminLogin() {
 
       <div className="mb-8 text-center">
         <div className="flex items-center justify-center gap-3 mb-3">
-          <img src="/favicon.png" alt="ICTA" className="w-10 h-10 object-contain" />
+          <div className="grid h-11 w-11 place-items-center rounded-xl border border-teal-200/30 bg-teal-200/10 p-1">
+            <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
+          </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">ICTA-WEBINAR 亞洲教育自動化行銷研討會系統</h1>
         </div>
         <p className="text-slate-400 text-sm">{s.subtitle}</p>
@@ -339,7 +341,7 @@ export default function AdminLogin() {
             <button
               type="button"
               onClick={() => setMode(mode === "login" ? "register" : "login")}
-              className="text-sm text-primary hover:underline"
+              className="text-sm font-semibold text-primary transition-colors hover:text-teal-700 hover:underline"
               data-testid="button-toggle-mode"
             >
               {mode === "login" ? s.noAccount : s.hasAccount}
