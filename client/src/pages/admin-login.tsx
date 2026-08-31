@@ -227,7 +227,7 @@ export default function AdminLogin() {
   }, [langOpen]);
 
   return (
-    <div className="admin-login min-h-[100dvh] flex flex-col items-center justify-center p-4">
+    <div className="admin-login min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6">
       <div className="absolute top-4 right-4 relative" onClick={(e) => e.stopPropagation()}>
         <Button
           variant="ghost"
@@ -255,7 +255,7 @@ export default function AdminLogin() {
         )}
       </div>
 
-      <div className="mb-8 text-center">
+      <div className="admin-login-brand mb-8 text-center">
         <div className="flex items-center justify-center gap-3 mb-3">
           <div className="grid h-11 w-11 place-items-center rounded-xl border border-teal-200/30 bg-teal-200/10 p-1">
             <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
@@ -265,7 +265,7 @@ export default function AdminLogin() {
         <p className="text-slate-400 text-sm">{s.subtitle}</p>
       </div>
 
-      <Card className="max-w-md w-full">
+      <Card className="admin-login-card max-w-md w-full">
         <CardHeader className="text-center pb-4">
           <CardTitle className="text-xl">
             {mode === "login" ? s.signInTitle : s.createTitle}

@@ -1707,7 +1707,7 @@ export default function AdminWebinarDetail() {
   const webinarUrl = `${window.location.origin}/webinar/${id}`;
 
   return (
-    <div className="admin-shell">
+    <div className="admin-shell admin-webinar-detail">
       <header className="border-b bg-card sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4 flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => setLocation("/admin/dashboard")}>
@@ -1900,7 +1900,7 @@ export default function AdminWebinarDetail() {
 
       <main className="container mx-auto px-4 py-6">
         <Tabs defaultValue="schedule">
-          <TabsList className="mb-4 flex-wrap h-auto gap-1">
+          <TabsList className="admin-detail-tabs mb-4 flex-wrap h-auto gap-1">
             <TabsTrigger value="schedule" data-testid="tab-schedule">
               <Calendar className="h-4 w-4 mr-1" />
               {s.tabSchedule}

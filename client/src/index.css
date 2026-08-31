@@ -10,12 +10,12 @@
   --opaque-button-border-intensity: -8;
   --elevate-1: rgba(0,0,0, .03);
   --elevate-2: rgba(0,0,0, .08);
-  --background: 0 0% 100%;
-  --foreground: 0 0% 10%;
-  --border: 0 0% 92%;
-  --card: 0 0% 98%;
-  --card-foreground: 0 0% 10%;
-  --card-border: 0 0% 94%;
+  --background: 198 42% 96%;
+  --foreground: 212 52% 15%;
+  --border: 199 27% 86%;
+  --card: 190 38% 99%;
+  --card-foreground: 212 52% 15%;
+  --card-border: 199 30% 87%;
   --sidebar: 0 0% 96%;
   --sidebar-foreground: 0 0% 10%;
   --sidebar-border: 0 0% 92%;
@@ -44,10 +44,10 @@
   --chart-3: 197 37% 24%;
   --chart-4: 43 74% 49%;
   --chart-5: 27 87% 67%;
-  --font-sans: Open Sans, sans-serif;
-  --font-serif: Georgia, serif;
-  --font-mono: Menlo, monospace;
-  --radius: .5rem;
+  --font-sans: Manrope, sans-serif;
+  --font-serif: "Space Grotesk", sans-serif;
+  --font-mono: "DM Mono", monospace;
+  --radius: .75rem;
   --shadow-2xs: 0px 2px 0px 0px hsl(217 91% 60% / 0.00);
   --shadow-xs: 0px 2px 0px 0px hsl(217 91% 60% / 0.00);
   --shadow-sm: 0px 2px 0px 0px hsl(217 91% 60% / 0.00), 0px 1px 2px -1px hsl(217 91% 60% / 0.00);
@@ -350,6 +350,23 @@
 .admin-login .shadcn-card{position:relative;background:rgba(236,254,252,.97);border:1px solid rgba(160,244,231,.35);box-shadow:0 32px 80px rgba(1,25,54,.38);border-radius:18px}
 .admin-login h1{font-family:"Space Grotesk",sans-serif;letter-spacing:-.04em}.admin-login .text-slate-400{color:#b3d8d9}
 @media(max-width:640px){.admin-shell header .container{padding-top:.75rem;padding-bottom:.75rem}.admin-shell header h1{font-size:.83rem}.admin-shell main{padding-top:1rem}.admin-shell [role=tablist]{overflow-x:auto;justify-content:flex-start}.admin-shell [role=tab]{white-space:nowrap}.admin-shell .shadcn-card:hover{transform:none}}
+
+/* Operations console: mobile is a deliberate field mode, not a compressed desktop. */
+.admin-shell{overflow-x:clip}.admin-shell .container{width:100%;max-width:1440px}.admin-shell input,.admin-shell textarea,.admin-shell button{min-height:2.5rem}.admin-shell [role=dialog]{border-color:hsl(191 48% 69%);box-shadow:0 24px 70px hsl(208 65% 14%/.25)}.admin-shell [data-radix-popper-content-wrapper]{max-width:calc(100vw - 16px);z-index:70!important}.admin-shell [role=menu]{max-width:calc(100vw - 16px)}.admin-shell [role=alertdialog]{max-height:calc(100dvh - 1.5rem);width:calc(100% - 1.5rem);overflow-y:auto}
+.admin-shell .recharts-responsive-container{min-width:0}.admin-shell .recharts-wrapper{max-width:100%}.admin-shell pre{max-width:100%}
+@media(max-width:767px){
+  .admin-shell{background:radial-gradient(circle at 92% -10%,hsl(181 55% 85%/.62),transparent 26%),linear-gradient(145deg,hsl(198 42% 96%),hsl(190 32% 94%))}
+  .admin-shell header{position:sticky}.admin-shell header .container{min-height:60px;padding:.65rem 1rem;gap:.5rem}.admin-shell header h1{line-height:1.2;max-width:188px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-shell main{padding:1rem!important;space-y:1rem}.admin-shell .shadcn-card{border-radius:14px}.admin-shell .shadcn-card:hover{box-shadow:0 8px 22px hsl(204 42% 26%/.07)}
+  .admin-shell button:not([role=switch]){min-height:2.75rem}.admin-shell [role=tablist]{-ms-overflow-style:none;scrollbar-width:none}.admin-shell [role=tablist]::-webkit-scrollbar{display:none}.admin-shell [role=tab]{min-height:2.5rem;padding:.55rem .75rem}
+  .admin-login{justify-content:flex-start;padding-top:max(3.5rem,env(safe-area-inset-top))}.admin-login-brand{margin:0 0 1.75rem;max-width:330px}.admin-login-brand>div{align-items:flex-start}.admin-login-brand h1{font-size:1.25rem;line-height:1.3;text-align:left}.admin-login-card .p-6{padding:1.25rem}.admin-login-card input{min-height:3rem}.admin-login-card button[type=submit]{min-height:3.15rem}.admin-login>p{padding-bottom:env(safe-area-inset-bottom)}
+  .admin-dashboard header h1{max-width:170px}.admin-dashboard header .container>div:last-child{gap:0}.admin-dashboard header button{padding:.5rem;min-width:2.5rem}.admin-dashboard header [data-testid=button-logout]{font-size:0}.admin-dashboard header [data-testid=button-logout] svg{margin:0}.admin-dashboard header [data-testid=button-super-admin]{font-size:0}.admin-dashboard header [data-testid=button-super-admin] svg{margin:0}
+  .admin-dashboard .admin-subscription-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.admin-dashboard .admin-subscription-actions button{width:100%;padding:.5rem;font-size:.75rem}.admin-dashboard .admin-dashboard-titlebar{align-items:end}.admin-dashboard .admin-dashboard-titlebar h2{font-size:1.35rem}.admin-dashboard .admin-dashboard-titlebar p{font-size:.8rem}.admin-dashboard .admin-create-button{width:100%;justify-content:center;min-height:3rem}
+  .admin-dashboard .admin-webinar-actions{display:grid;grid-template-columns:repeat(5,1fr);width:100%;padding:.45rem .5rem;gap:.25rem}.admin-dashboard .admin-webinar-actions button{width:100%;min-width:0;justify-content:center;padding:.5rem}.admin-dashboard .admin-webinar-actions button svg{margin:0}.admin-dashboard .admin-webinar-actions [data-testid^=button-more-]{display:flex}.admin-dashboard [data-testid^=card-webinar-] .text-center{min-width:58px}.admin-dashboard [data-testid^=card-webinar-] .flex.items-center.gap-6{justify-content:space-between;gap:.5rem}.admin-dashboard [data-testid^=card-webinar-] h3{max-width:100%;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.admin-dashboard [data-testid^=card-webinar-] .md\\:w-48{height:148px}
+  .admin-webinar-detail header .container{align-items:flex-start}.admin-webinar-detail header .flex-1{min-width:0}.admin-webinar-detail header h1{font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:145px}.admin-webinar-detail header p{font-size:.7rem}.admin-webinar-detail header [data-testid=button-go-control]{min-width:2.75rem;padding:.5rem}.admin-webinar-detail header [data-testid=button-go-control] svg{margin:0}.admin-webinar-detail header [data-testid=button-go-control]{font-size:0}.admin-webinar-detail .admin-detail-tabs{display:flex;flex-wrap:nowrap!important;overflow-x:auto;width:calc(100% + 2rem);margin-left:-1rem;padding:.25rem 1rem!important;border-radius:0}.admin-webinar-detail .admin-detail-tabs [role=tab]{flex:none}.admin-webinar-detail .admin-detail-tabs svg{margin-right:.25rem}.admin-webinar-detail .md\\:w-52{width:100%}.admin-webinar-detail nav{padding-bottom:.3rem}.admin-webinar-detail nav button{flex:none}.admin-webinar-detail .grid-cols-2,.admin-webinar-detail .grid-cols-3,.admin-webinar-detail .grid-cols-4,.admin-webinar-detail .grid-cols-6{grid-template-columns:1fr!important}.admin-webinar-detail [class*="sm:grid-cols-2"]{grid-template-columns:1fr}.admin-webinar-detail .flex.items-center.gap-2:has(>input[type=datetime-local]){align-items:stretch;flex-direction:column}.admin-webinar-detail input[type=datetime-local]{width:100%!important;min-width:0!important}
+  .admin-control header .container{align-items:center}.admin-control header h1{font-size:.95rem;max-width:135px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.admin-control header p{display:none}.admin-control header .flex.items-center.gap-4{gap:.4rem}.admin-control header .text-sm{font-size:.72rem}.admin-control main{padding-bottom:calc(1rem + env(safe-area-inset-bottom))}.admin-control .grid.gap-6{gap:1rem}.admin-control [class*="h-[500px]"]{height:260px}.admin-control [class*="h-[350px]"]{height:300px}.admin-control [class*="max-w-[120px]"]{max-width:none;width:100%}.admin-control .grid-cols-2{grid-template-columns:1fr}.admin-control iframe{width:100%;min-height:210px}
+  .super-admin header h1{font-size:1rem}.super-admin header [data-testid=button-back-dashboard]{font-size:0;min-width:2.5rem;padding:.5rem}.super-admin header [data-testid=button-back-dashboard] svg{margin:0}.super-admin main{padding-bottom:calc(1rem + env(safe-area-inset-bottom))}.super-admin .grid.grid-cols-2{gap:.6rem}.super-admin .grid.grid-cols-2 .p-4{padding:.75rem}.super-admin .grid.grid-cols-2 svg{width:1.35rem;height:1.35rem}.super-admin .grid.grid-cols-2 .text-2xl{font-size:1.3rem}.super-admin [data-testid^=text-email-]{overflow-wrap:anywhere}.super-admin [data-testid^=button-edit-],.super-admin [data-testid^=button-toggle-active-]{flex:1;justify-content:center}.super-admin .flex.items-center.gap-2:has(>button[data-testid^=button-edit-]){width:100%;display:grid;grid-template-columns:1fr 1fr}
+}
+@media(max-width:390px){.admin-dashboard .admin-webinar-actions{grid-template-columns:repeat(3,1fr)}.admin-dashboard [data-testid^=card-webinar-] .flex.items-center.gap-6{display:grid;grid-template-columns:repeat(2,1fr)}.admin-dashboard [data-testid^=card-webinar-] .text-center{text-align:left}.admin-control header .flex.items-center.gap-4>div:nth-child(2){display:none}}
 
 /* ICTA Webinar homepage: editorial broadcast studio, deliberately namespaced. */
 body footer b{color:inherit;font-weight:inherit}.icta-home footer b{color:var(--ih-teal);font-weight:700}

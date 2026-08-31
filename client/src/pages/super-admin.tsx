@@ -275,7 +275,7 @@ export default function SuperAdmin() {
   const totalMonthly = users.filter((u) => u.subscriptionPlan === "monthly").length;
 
   return (
-    <div className="admin-shell">
+    <div className="admin-shell super-admin">
       <header className="border-b bg-card sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">

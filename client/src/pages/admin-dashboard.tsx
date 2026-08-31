@@ -622,9 +622,9 @@ export default function AdminDashboard() {
   };
 
   return (
-    <div className="admin-shell">
+    <div className="admin-shell admin-dashboard">
       <header className="border-b bg-card sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-2">
+          <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
             <h1 className="text-xl font-bold tracking-tight">ICTA-WEBINAR 亞洲教育自動化行銷研討會系統</h1>
@@ -671,7 +671,7 @@ export default function AdminDashboard() {
                     免費帳號可建立、編輯與預覽草稿；發布及公開分享需要有效訂閱。
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 admin-subscription-actions">
                   <Button
                     size="sm"
                     onClick={() => subscription.active && subscription.hasStripeCustomer ? portalMutation.mutate() : setIsUpgradeOpen(true)}
@@ -832,13 +832,14 @@ export default function AdminDashboard() {
           </DialogContent>
         </Dialog>
 
-        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center justify-between flex-wrap gap-3 admin-dashboard-titlebar">
           <div>
             <h2 className="text-2xl font-bold">{s.management}</h2>
             <p className="text-muted-foreground">{s.managementDesc}</p>
           </div>
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <Button
+              className="admin-create-button"
               data-testid="button-create-webinar"
               onClick={() => setIsCreateOpen(true)}
             >
@@ -1030,12 +1031,14 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
-                      <div className="flex md:flex-col items-center md:items-stretch gap-1 p-3 md:border-l border-t md:border-t-0 flex-wrap justify-center md:w-36 shrink-0">
+                       <div className="admin-webinar-actions flex md:flex-col items-center md:items-stretch gap-1 p-3 md:border-l border-t md:border-t-0 flex-wrap justify-center md:w-36 shrink-0">
                         <Button
                           variant="ghost"
                           size="sm"
                           className="justify-start gap-2 text-xs w-full"
                           onClick={() => setLocation(`/admin/webinar/${webinar.id}`)}
+                          aria-label={s.actionEdit}
+                          title={s.actionEdit}
                           data-testid={`button-edit-${webinar.id}`}
                         >
                           <Pencil className="h-3.5 w-3.5" />
@@ -1046,6 +1049,8 @@ export default function AdminDashboard() {
                           size="sm"
                           className="justify-start gap-2 text-xs w-full"
                           onClick={() => setLocation(`/admin/webinar/${webinar.id}/control`)}
+                          aria-label={s.actionControl}
+                          title={s.actionControl}
                           data-testid={`button-control-${webinar.id}`}
                         >
                           <Radio className="h-3.5 w-3.5" />
@@ -1057,6 +1062,8 @@ export default function AdminDashboard() {
                             size="sm"
                             className="justify-start gap-2 text-xs w-full"
                             onClick={(e) => { e.stopPropagation(); unpublishMutation.mutate(webinar.id); }}
+                            aria-label={s.unpublishBtn}
+                            title={s.unpublishBtn}
                             disabled={unpublishMutation.isPending}
                             data-testid={`button-unpublish-${webinar.id}`}
                           >
@@ -1069,6 +1076,8 @@ export default function AdminDashboard() {
                             size="sm"
                             className="justify-start gap-2 text-xs w-full text-green-600"
                             onClick={(e) => { e.stopPropagation(); publishMutation.mutate(webinar.id); }}
+                            aria-label={s.publishBtn}
+                            title={s.publishBtn}
                             disabled={publishMutation.isPending}
                             data-testid={`button-publish-${webinar.id}`}
                           >
@@ -1084,6 +1093,8 @@ export default function AdminDashboard() {
                             e.stopPropagation();
                             handleShare(webinar);
                           }}
+                          aria-label={s.actionShare}
+                          title={s.actionShare}
                           disabled={webinar.publishStatus !== "published"}
                           data-testid={`button-share-${webinar.id}`}
                         >
@@ -1096,6 +1107,8 @@ export default function AdminDashboard() {
                               variant="ghost"
                               size="sm"
                               className="justify-start gap-2 text-xs w-full"
+                              aria-label={s.actionMore}
+                              title={s.actionMore}
                               data-testid={`button-more-${webinar.id}`}
                             >
                               <MoreVertical className="h-3.5 w-3.5" />
