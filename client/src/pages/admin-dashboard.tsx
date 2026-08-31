@@ -1009,7 +1009,7 @@ export default function AdminDashboard() {
                           <p className="text-sm text-muted-foreground line-clamp-1 mb-3">{webinar.description}</p>
                         )}
 
-                        <div className="flex items-center gap-6 flex-wrap">
+                        <div className="admin-webinar-stats grid grid-cols-3 gap-3">
                           <div className="text-center" data-testid={`stat-registered-${webinar.id}`}>
                             <div className="text-xl font-bold">{webinarStats?.registered ?? "—"}</div>
                             <div className="text-xs text-muted-foreground">{s.statRegistered}</div>
@@ -1022,12 +1022,6 @@ export default function AdminDashboard() {
                             <div className="text-xl font-bold">{webinarStats?.engaged !== undefined ? `${webinarStats.engaged}%` : "—"}</div>
                             <div className="text-xs text-muted-foreground">{s.statEngagement}</div>
                           </div>
-                          {onlineCount > 0 && (
-                            <div className="text-center">
-                              <div className="text-xl font-bold text-red-500">{onlineCount}</div>
-                              <div className="text-xs text-muted-foreground">{s.statOnline}</div>
-                            </div>
-                          )}
                         </div>
                       </div>
 
@@ -1042,7 +1036,7 @@ export default function AdminDashboard() {
                           data-testid={`button-edit-${webinar.id}`}
                         >
                           <Pencil className="h-3.5 w-3.5" />
-                          <span className="hidden md:inline">{s.actionEdit}</span>
+                          <span>{s.actionEdit}</span>
                         </Button>
                         <Button
                           variant="ghost"
@@ -1054,7 +1048,7 @@ export default function AdminDashboard() {
                           data-testid={`button-control-${webinar.id}`}
                         >
                           <Radio className="h-3.5 w-3.5" />
-                          <span className="hidden md:inline">{s.actionControl}</span>
+                          <span>{s.actionControl}</span>
                         </Button>
                         {webinar.publishStatus === "published" ? (
                           <Button
@@ -1068,7 +1062,7 @@ export default function AdminDashboard() {
                             data-testid={`button-unpublish-${webinar.id}`}
                           >
                             <Eye className="h-3.5 w-3.5" />
-                            <span className="hidden md:inline">{s.unpublishBtn}</span>
+                            <span>{s.unpublishBtn}</span>
                           </Button>
                         ) : (
                           <Button
@@ -1082,7 +1076,7 @@ export default function AdminDashboard() {
                             data-testid={`button-publish-${webinar.id}`}
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
-                            <span className="hidden md:inline">{s.publishBtn}</span>
+                            <span>{s.publishBtn}</span>
                           </Button>
                         )}
                         <Button
@@ -1099,7 +1093,7 @@ export default function AdminDashboard() {
                           data-testid={`button-share-${webinar.id}`}
                         >
                           <Share2 className="h-3.5 w-3.5" />
-                          <span className="hidden md:inline">{s.actionShare}</span>
+                          <span>{s.actionShare}</span>
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -1112,7 +1106,7 @@ export default function AdminDashboard() {
                               data-testid={`button-more-${webinar.id}`}
                             >
                               <MoreVertical className="h-3.5 w-3.5" />
-                              <span className="hidden md:inline">{s.actionMore}</span>
+                              <span>{s.actionMore}</span>
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
