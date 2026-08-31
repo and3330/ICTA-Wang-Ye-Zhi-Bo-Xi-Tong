@@ -35,6 +35,7 @@ export interface IStorage {
   updateUser(id: string, data: Partial<Omit<User, "id" | "password" | "createdAt">>): Promise<User | undefined>;
   getWebinarCountByUser(userId: string): Promise<number>;
   getPublishedWebinarCountByUser(userId: string): Promise<number>;
+  publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }>;
   getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined>;
   // AI 點數
   deductAiPoints(userId: string, points: number): Promise<number | null>; // 原子扣點；不足回 null
@@ -196,6 +197,28 @@ export class DatabaseStorage implements IStorage {
   async getPublishedWebinarCountByUser(userId: string): Promise<number> {
     const result = await db.select({ value: count() }).from(webinars).where(and(eq(webinars.userId, userId), eq(webinars.publishStatus, "published")));
     return result[0]?.value || 0;
+  }
+
+  async publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+      const existing = await tx.select().from(webinars).where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)));
+      if (!existing[0]) return { webinar: undefined, limitExceeded: false };
+      if (existing[0].publishStatus === "published") return { webinar: existing[0], limitExceeded: false };
+
+      const result = await tx
+        .select({ value: count() })
+        .from(webinars)
+        .where(and(eq(webinars.userId, userId), eq(webinars.publishStatus, "published")));
+      if ((result[0]?.value || 0) >= maxPublished) return { webinar: undefined, limitExceeded: true };
+
+      const updated = await tx
+        .update(webinars)
+        .set({ publishStatus: "published" })
+        .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)))
+        .returning();
+      return { webinar: updated[0], limitExceeded: false };
+    });
   }
 
   async getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined> {

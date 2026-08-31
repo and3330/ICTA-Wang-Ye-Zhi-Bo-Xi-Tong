@@ -343,6 +343,9 @@ export default function AdminDashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<"starter" | "growth">("starter");
+  const [addonWebinars, setAddonWebinars] = useState(0);
   const [isRechargeOpen, setIsRechargeOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
   const { lang, setLang } = useAdminLang();
@@ -361,25 +364,31 @@ export default function AdminDashboard() {
 
   const { data: subscription } = useQuery<{
     plan: string;
+    status: string;
+    active: boolean;
+    planStartedAt: string | null;
     planExpiresAt: string | null;
+    cancelAtPeriodEnd: boolean;
+    addonWebinars: number;
     maxWebinars: number;
     webinarCount: number;
     publishedCount: number;
     isActive: boolean;
     isExpired: boolean;
     isSuperAdmin: boolean;
-    stripeCustomerId: string | null;
-    stripeSubscriptionId: string | null;
+    hasStripeCustomer: boolean;
   }>({
     queryKey: ["/api/admin/subscription"],
   });
 
   const { data: stripeConfig } = useQuery<{
     publishableKey: string;
-    monthlyPriceId: string;
+    catalogReady: boolean;
+    plans: { key: "starter" | "growth"; amountUsd: number; includedWebinars: number }[];
+    addonAmountUsd: number;
   }>({
     queryKey: ["/api/stripe/config"],
-    enabled: subscription?.plan === "free",
+    enabled: !subscription?.isSuperAdmin,
   });
 
   const { data: aiPoints } = useQuery<{
@@ -471,6 +480,10 @@ export default function AdminDashboard() {
     onError: (error: any) => {
       if (error.message === "PUBLISH_LIMIT" || error.message?.includes("PUBLISH_LIMIT")) {
         toast({ title: s.publishLimitReached, description: s.publishLimitReachedDesc, variant: "destructive" });
+        setIsUpgradeOpen(true);
+      } else if (error.message?.includes("SUBSCRIPTION_REQUIRED")) {
+        toast({ title: s.toastUpgradeNeeded, description: "發布與取得公開網址需要有效訂閱。您的草稿仍會完整保留。", variant: "destructive" });
+        setIsUpgradeOpen(true);
       } else {
         toast({ title: s.toastCreateFail, description: error.message, variant: "destructive" });
       }
@@ -493,7 +506,7 @@ export default function AdminDashboard() {
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/stripe/checkout", { priceId: stripeConfig?.monthlyPriceId });
+      const res = await apiRequest("POST", "/api/stripe/checkout", { planKey: selectedPlan, addonWebinars });
       return await res.json();
     },
     onSuccess: (data: { url: string }) => {
@@ -530,13 +543,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("checkout") === "success") {
-      apiRequest("POST", "/api/stripe/handle-subscription", {})
-        .then(() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
-          toast({ title: s.toastCreateSuccess, description: "訂閱已啟用" });
-          window.history.replaceState({}, "", "/admin/dashboard");
-        })
-        .catch(() => {});
+      window.history.replaceState({}, "", "/admin/dashboard");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
+      toast({ title: s.toastCreateSuccess, description: "付款已完成，訂閱狀態正在同步" });
     }
     if (params.get("recharge") === "success") {
       const sessionId = params.get("session_id");
@@ -601,6 +610,11 @@ export default function AdminDashboard() {
   };
 
   const handleShare = (webinar: Webinar) => {
+    if (webinar.publishStatus !== "published") {
+      toast({ title: s.toastUpgradeNeeded, description: "草稿不能取得公開分享網址，請先發布。", variant: "destructive" });
+      setIsUpgradeOpen(true);
+      return;
+    }
     const baseUrl = window.location.origin;
     const registerUrl = `${baseUrl}/register/${webinar.id}`;
     navigator.clipboard.writeText(registerUrl);
@@ -642,47 +656,104 @@ export default function AdminDashboard() {
       <main className="container mx-auto px-4 py-8 space-y-6">
         {subscription && !subscription.isSuperAdmin && (
           <Card>
-            <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-4 flex-wrap">
+            <CardContent className="p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div>
-                  <span className="text-sm text-muted-foreground">{s.subPlanLabel}: </span>
-                  <Badge variant={subscription.plan === "monthly" ? "default" : "outline"} data-testid="badge-current-plan">
-                    {subscription.plan === "monthly" ? s.subPlanMonthly : s.subPlanFree}
-                  </Badge>
-                  {subscription.isExpired && <Badge variant="destructive" className="ml-2" data-testid="badge-expired">{s.subExpired}</Badge>}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold">{s.subPlanLabel}</span>
+                    <Badge variant={subscription.active ? "default" : "outline"} data-testid="badge-current-plan">
+                      {subscription.plan === "starter" ? "$49 Starter" : subscription.plan === "growth" ? "$99 Growth" : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
+                    </Badge>
+                    {subscription.cancelAtPeriodEnd && <Badge variant="secondary">期末取消</Badge>}
+                    {!subscription.active && subscription.plan !== "free" && <Badge variant="destructive">{s.subExpired}</Badge>}
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    免費帳號可建立、編輯與預覽草稿；發布及公開分享需要有效訂閱。
+                  </p>
                 </div>
-                {subscription.plan === "monthly" && (
-                  <>
-                    <div className="text-sm">
-                      <span className="text-muted-foreground">{s.subPublishLimit}: </span>
-                      <span className="font-semibold" data-testid="text-published-count">{subscription.publishedCount}{s.subOf}{subscription.maxWebinars} {s.subRooms}</span>
-                    </div>
-                    {subscription.planExpiresAt && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">{s.subExpires}: </span>
-                        <span data-testid="text-plan-expires">{new Date(subscription.planExpiresAt).toLocaleDateString()}</span>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                {subscription.plan === "free" && (
-                  <Button size="sm" onClick={() => checkoutMutation.mutate()} disabled={checkoutMutation.isPending || !stripeConfig?.monthlyPriceId} data-testid="button-upgrade">
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => subscription.active && subscription.hasStripeCustomer ? portalMutation.mutate() : setIsUpgradeOpen(true)}
+                    disabled={portalMutation.isPending}
+                    data-testid="button-upgrade"
+                  >
                     <Crown className="h-4 w-4 mr-1" />
-                    {checkoutMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                    {s.upgradeBtn}
+                    {subscription.active ? "變更方案／增加額度" : s.upgradeBtn}
                   </Button>
-                )}
-                {subscription.plan === "monthly" && subscription.stripeCustomerId && (
-                  <Button variant="outline" size="sm" onClick={() => portalMutation.mutate()} disabled={portalMutation.isPending} data-testid="button-manage-subscription">
-                    {s.manageSubscription}
-                  </Button>
-                )}
+                  {subscription.hasStripeCustomer && (
+                    <Button variant="outline" size="sm" onClick={() => portalMutation.mutate()} disabled={portalMutation.isPending} data-testid="button-manage-subscription">
+                      {s.manageSubscription}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">已發布／額度</div>
+                  <div className="text-xl font-bold" data-testid="text-published-count">{subscription.publishedCount} / {subscription.maxWebinars}</div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">草稿數量</div>
+                  <div className="text-xl font-bold">{Math.max(0, subscription.webinarCount - subscription.publishedCount)}</div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">訂閱開始日</div>
+                  <div className="text-sm font-semibold">{subscription.planStartedAt ? new Date(subscription.planStartedAt).toLocaleDateString() : "—"}</div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">{subscription.cancelAtPeriodEnd ? "服務到期日" : "下次續訂日"}</div>
+                  <div className="text-sm font-semibold" data-testid="text-plan-expires">
+                    {subscription.planExpiresAt ? `${new Date(subscription.planExpiresAt).toLocaleDateString()}（剩 ${Math.max(0, Math.ceil((new Date(subscription.planExpiresAt).getTime() - Date.now()) / 86400000))} 天）` : "—"}
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
         )}
+
+        <Dialog open={isUpgradeOpen} onOpenChange={setIsUpgradeOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>選擇發布方案</DialogTitle>
+              <DialogDescription>草稿功能永久免費。訂閱後可發布直播間並取得公開網址。</DialogDescription>
+            </DialogHeader>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {stripeConfig?.plans.map((plan) => (
+                <button
+                  type="button"
+                  key={plan.key}
+                  onClick={() => setSelectedPlan(plan.key)}
+                  className={`rounded-xl border p-4 text-left transition ${selectedPlan === plan.key ? "border-primary ring-2 ring-primary/20" : "hover:border-primary/50"}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold">{plan.key === "starter" ? "Starter" : "Growth"}</span>
+                    <span className="text-2xl font-bold">${plan.amountUsd}<span className="text-sm font-normal text-muted-foreground">／月</span></span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
+                </button>
+              ))}
+            </div>
+            <div className="rounded-lg bg-muted/60 p-4 flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">加購直播間</div>
+                <div className="text-sm text-muted-foreground">每增加 1 間 ${stripeConfig?.addonAmountUsd || 20} USD／月</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="icon" onClick={() => setAddonWebinars(Math.max(0, addonWebinars - 1))}>−</Button>
+                <span className="w-8 text-center font-bold">{addonWebinars}</span>
+                <Button variant="outline" size="icon" onClick={() => setAddonWebinars(Math.min(50, addonWebinars + 1))}>+</Button>
+              </div>
+            </div>
+            <Button onClick={() => checkoutMutation.mutate()} disabled={checkoutMutation.isPending || !stripeConfig?.catalogReady}>
+              {checkoutMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              前往 Stripe 安全結帳
+            </Button>
+            {stripeConfig && !stripeConfig.catalogReady && (
+              <p className="text-sm text-destructive">Stripe 方案正在設定中，請稍後再試。</p>
+            )}
+          </DialogContent>
+        </Dialog>
 
         {aiPoints && (
           <Card>
@@ -769,13 +840,7 @@ export default function AdminDashboard() {
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <Button
               data-testid="button-create-webinar"
-              onClick={() => {
-                if (subscription && subscription.plan === "free" && !subscription.isSuperAdmin) {
-                  toast({ title: s.toastUpgradeNeeded, description: s.toastUpgradeNeededDesc, variant: "destructive" });
-                  return;
-                }
-                setIsCreateOpen(true);
-              }}
+              onClick={() => setIsCreateOpen(true)}
             >
               <Plus className="h-4 w-4 mr-2" />
               {s.createWebinar}

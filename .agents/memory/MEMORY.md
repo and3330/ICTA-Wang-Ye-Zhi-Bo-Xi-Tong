@@ -3,3 +3,4 @@
 - [Sequence email idempotency](email-sequence-idempotency.md) — post-webinar follow-up enqueue needs a DB partial unique index `(registration_id, sequence_id)`, not just app-level check-then-insert.
 - [AI point billing](ai-point-billing.md) — metered LLM calls reserve-then-refund (never check-then-charge); paid recharge credit must be one db transaction; verify session ownership before idempotency shortcut.
 - [Hybrid webinar scheduling](schedule-mode-precedence.md) — on-demand is an additive registration choice beside scheduled sessions; retain recurring data and keep JIT behavior separate.
+- [Subscription publication entitlement](subscription-publication-entitlement.md) — Stripe-approved recurring prices grant publish capacity; draft editing stays free and publish admission must be atomic.

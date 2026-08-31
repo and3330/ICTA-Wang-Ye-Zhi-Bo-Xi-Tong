@@ -4467,9 +4467,14 @@ export default function AdminWebinarDetail() {
                   <CardDescription>{s.settingsLinksDesc}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {webinar.publishStatus !== "published" && (
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                      目前是草稿。您可以使用右側按鈕登入預覽，但公開連結與嵌入碼要在訂閱並發布後才會啟用。
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Input value={registrationUrl} readOnly className="flex-1" />
-                    <Button variant="outline" size="icon" onClick={() => copyToClipboard(registrationUrl)}>
+                    <Button variant="outline" size="icon" disabled={webinar.publishStatus !== "published"} onClick={() => copyToClipboard(registrationUrl)}>
                       <Copy className="h-4 w-4" />
                     </Button>
                     <Button variant="outline" size="icon" onClick={() => window.open(registrationUrl, "_blank")}>
@@ -4499,6 +4504,7 @@ export default function AdminWebinarDetail() {
                         navigator.clipboard.writeText(`<iframe src="${window.location.origin}/embed/register/${id}" width="100%" height="500" frameborder="0" style="border:none;border-radius:12px;max-width:460px;"></iframe>`);
                         toast({ title: s.toastEmbedCodeCopied });
                       }}
+                      disabled={webinar.publishStatus !== "published"}
                       data-testid="button-copy-embed-register"
                     >
                       <Copy className="h-4 w-4" />
@@ -4535,6 +4541,7 @@ export default function AdminWebinarDetail() {
                         navigator.clipboard.writeText(`<iframe src="${window.location.origin}/embed/webinar/${id}" width="100%" height="700" frameborder="0" style="border:none;border-radius:12px;" allow="autoplay; fullscreen"></iframe>`);
                         toast({ title: s.toastEmbedCodeCopied });
                       }}
+                      disabled={webinar.publishStatus !== "published"}
                       data-testid="button-copy-embed-webinar"
                     >
                       <Copy className="h-4 w-4" />
@@ -4561,6 +4568,7 @@ export default function AdminWebinarDetail() {
                           navigator.clipboard.writeText(`<script src="${window.location.origin}/livecast-widget.js"></script>\n<button data-livecast-register="${id}">${s.settingsRegisterNow}</button>`);
                           toast({ title: s.toastEmbedCodeCopied });
                         }}
+                        disabled={webinar.publishStatus !== "published"}
                         data-testid="button-copy-embed-allinone"
                       >
                         <Copy className="h-4 w-4 mr-1" />
@@ -4598,6 +4606,7 @@ export default function AdminWebinarDetail() {
                           navigator.clipboard.writeText(`<button data-livecast-register="${id}">${s.settingsRegisterNow}</button>`);
                           toast({ title: s.toastButtonCodeCopied });
                         }}
+                        disabled={webinar.publishStatus !== "published"}
                         data-testid="button-copy-embed-button"
                       >
                         <Copy className="h-4 w-4" />
@@ -4616,6 +4625,7 @@ export default function AdminWebinarDetail() {
                           navigator.clipboard.writeText(`ICTA_WEBINAR.openRegister("${id}");`);
                           toast({ title: s.toastCopiedSimple });
                         }}
+                        disabled={webinar.publishStatus !== "published"}
                       >
                         <Copy className="h-4 w-4" />
                       </Button>

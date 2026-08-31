@@ -9,6 +9,8 @@ import { getStripeSync } from "./stripeClient";
 import { WebhookHandlers } from "./webhookHandlers";
 import bcrypt from "bcryptjs";
 import { storage } from "./storage";
+import { runAppMigrations } from "./db";
+import { getApprovedPriceIds, SUBSCRIPTION_PLANS, ADDON_LOOKUP_KEY } from "./subscriptionEntitlements";
 
 const app = express();
 const httpServer = createServer(app);
@@ -115,6 +117,10 @@ app.use((req, res, next) => {
   try {
     const databaseUrl = process.env.DATABASE_URL;
     if (databaseUrl) {
+      log('Running application migrations...', 'db');
+      await runAppMigrations();
+      log('Application schema ready', 'db');
+
       log('Initializing Stripe schema...', 'stripe');
       await runMigrations({ databaseUrl });
       log('Stripe schema ready', 'stripe');
@@ -122,14 +128,25 @@ app.use((req, res, next) => {
       const stripeSync = await getStripeSync();
 
       const webhookBaseUrl = `https://${process.env.REPLIT_DOMAINS?.split(',')[0]}`;
-      const { webhook } = await stripeSync.findOrCreateManagedWebhook(
+      const webhookResult = await stripeSync.findOrCreateManagedWebhook(
         `${webhookBaseUrl}/api/stripe/webhook`
       );
-      log(`Webhook configured: ${webhook.url}`, 'stripe');
+      const webhookUrl = webhookResult?.webhook?.url;
+      log(webhookUrl ? `Webhook configured: ${webhookUrl}` : 'Managed webhook ready', 'stripe');
 
-      stripeSync.syncBackfill()
-        .then(() => log('Stripe data synced', 'stripe'))
-        .catch((err: any) => console.error('Error syncing Stripe data:', err));
+      await stripeSync.syncBackfill();
+      log('Stripe data synced', 'stripe');
+
+      const { byLookupKey } = await getApprovedPriceIds();
+      const catalogReady = [
+        ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
+        ADDON_LOOKUP_KEY,
+      ].every((lookupKey) => byLookupKey.has(lookupKey));
+      if (!catalogReady) {
+        console.warn('Stripe subscription catalog is incomplete; Checkout will remain unavailable.');
+      } else {
+        log('Stripe subscription catalog ready', 'stripe');
+      }
     }
   } catch (error) {
     console.error('Failed to initialize Stripe:', error);

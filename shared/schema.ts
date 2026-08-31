@@ -430,10 +430,14 @@ export const users = pgTable("users", {
   aiPoints: integer("ai_points").notNull().default(20), // AI 回覆點數餘額（新廠商送 20 點試用）
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
+  subscriptionStatus: text("subscription_status").notNull().default("inactive"),
+  subscriptionStartedAt: timestamp("subscription_started_at"),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  addonWebinars: integer("addon_webinars").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 

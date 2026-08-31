@@ -31,6 +31,13 @@ import { generateInteractions, generateEmailSequence, generateSocialPosts, getWe
 import bcrypt from "bcryptjs";
 import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClient";
 import { looksLikeQuestion, answerViewerQuestion } from "./aiAssistant";
+import {
+  ADDON_LOOKUP_KEY,
+  SUBSCRIPTION_PLANS,
+  getApprovedPriceIds,
+  refreshSubscriptionEntitlement,
+  type SubscriptionPlanKey,
+} from "./subscriptionEntitlements";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -80,6 +87,16 @@ async function requireWebinarOwner(req: Request, res: Response, next: NextFuncti
     if (!webinar || webinar.userId !== req.session.userId) {
       return res.status(403).json({ message: "Forbidden" });
     }
+  }
+  next();
+}
+
+async function requirePublishedOrOwner(req: Request, res: Response, next: NextFunction) {
+  const webinar = await storage.getWebinar(req.params.id as string);
+  if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+  const isOwner = Boolean(req.session?.userId && webinar.userId === req.session.userId);
+  if (webinar.publishStatus !== "published" && !isOwner) {
+    return res.status(404).json({ message: "Webinar not found" });
   }
   next();
 }
@@ -174,7 +191,14 @@ export async function registerRoutes(
   }));
 
   // WebSocket Server
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  const wss = new WebSocketServer({ noServer: true });
+  httpServer.on("upgrade", (request, socket, head) => {
+    const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    if (pathname !== "/ws") return;
+    wss.handleUpgrade(request, socket, head, (client) => {
+      wss.emit("connection", client, request);
+    });
+  });
 
   wss.on("connection", (ws, req) => {
     let currentWebinarId: string | null = null;
@@ -207,6 +231,17 @@ export async function registerRoutes(
             if (isHost) break;
             // Each viewer gets a unique session - complete isolation
             const { webinarId, sessionId, nickname } = message.data;
+            if (typeof webinarId !== "string" || typeof sessionId !== "string") break;
+            await sessionReady;
+            const requestedWebinar = await storage.getWebinar(webinarId);
+            const isOwnerPreview = Boolean(sessionUserId && requestedWebinar?.userId === sessionUserId);
+            if (!requestedWebinar || (requestedWebinar.publishStatus !== "published" && !isOwnerPreview)) {
+              ws.send(JSON.stringify({
+                type: "error",
+                data: { message: "Webinar not found or unavailable" },
+              }));
+              break;
+            }
             currentWebinarId = webinarId;
             currentSessionId = sessionId;
             
@@ -743,20 +778,24 @@ export async function registerRoutes(
     try {
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const entitlement = await refreshSubscriptionEntitlement(user);
       const webinarCount = await storage.getWebinarCountByUser(user.id);
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
-      const isExpired = user.planExpiresAt ? new Date(user.planExpiresAt) < new Date() : false;
       res.json({
-        plan: user.subscriptionPlan,
-        planExpiresAt: user.planExpiresAt,
-        maxWebinars: user.maxWebinars,
+        plan: entitlement.plan,
+        status: entitlement.status,
+        active: entitlement.active,
+        planStartedAt: entitlement.startedAt,
+        planExpiresAt: entitlement.currentPeriodEnd,
+        cancelAtPeriodEnd: entitlement.cancelAtPeriodEnd,
+        addonWebinars: entitlement.addonWebinars,
+        maxWebinars: entitlement.maxWebinars,
         webinarCount,
         publishedCount,
         isActive: user.isActive,
-        isExpired,
+        isExpired: !entitlement.active && entitlement.plan !== "enterprise",
         isSuperAdmin: user.isSuperAdmin,
-        stripeCustomerId: user.stripeCustomerId,
-        stripeSubscriptionId: user.stripeSubscriptionId,
+        hasStripeCustomer: Boolean(user.stripeCustomerId),
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -817,7 +856,7 @@ export async function registerRoutes(
       return res.json(webinars);
     }
     const webinars = await storage.getAllWebinars();
-    res.json(webinars);
+    res.json(webinars.filter((webinar) => webinar.publishStatus === "published"));
   });
 
   app.get("/api/webinars/stats/summary", requireAdmin, async (req, res) => {
@@ -848,8 +887,8 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/webinars/:id", async (req, res) => {
-    const webinar = await storage.getWebinar(req.params.id);
+  app.get("/api/webinars/:id", requirePublishedOrOwner, async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) {
       return res.status(404).json({ message: "Webinar not found" });
     }
@@ -862,13 +901,11 @@ export async function registerRoutes(
       if (!user || !user.isActive) {
         return res.status(403).json({ message: "帳號已停用" });
       }
-      if (!user.isSuperAdmin && user.subscriptionPlan === "free") {
-        return res.status(403).json({ message: "FREE_PLAN", code: "FREE_PLAN" });
-      }
-      if (!user.isSuperAdmin && user.planExpiresAt && new Date(user.planExpiresAt) < new Date()) {
-        return res.status(403).json({ message: "SUBSCRIPTION_EXPIRED", code: "SUBSCRIPTION_EXPIRED" });
-      }
-      const data = insertWebinarSchema.parse({ ...req.body, userId: req.session.userId });
+      const data = insertWebinarSchema.parse({
+        ...req.body,
+        userId: req.session.userId,
+        publishStatus: "draft",
+      });
       const webinar = await storage.createWebinar(data);
       res.json(webinar);
     } catch (error: any) {
@@ -884,6 +921,8 @@ export async function registerRoutes(
   app.patch("/api/webinars/:id", requireWebinarOwner, async (req, res) => {
     try {
       const data = { ...req.body };
+      delete data.publishStatus;
+      delete data.userId;
       if (data.startTime && typeof data.startTime === "string") {
         data.startTime = new Date(data.startTime);
       }
@@ -904,18 +943,16 @@ export async function registerRoutes(
       if (!user || !user.isActive) {
         return res.status(403).json({ message: "帳號已停用" });
       }
-      if (!user.isSuperAdmin && user.subscriptionPlan === "free") {
-        return res.status(403).json({ message: "FREE_PLAN", code: "FREE_PLAN" });
+      const entitlement = await refreshSubscriptionEntitlement(user);
+      if (!entitlement.active) {
+        return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
-      if (!user.isSuperAdmin && user.planExpiresAt && new Date(user.planExpiresAt) < new Date()) {
-        return res.status(403).json({ message: "SUBSCRIPTION_EXPIRED", code: "SUBSCRIPTION_EXPIRED" });
-      }
-      const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
-      const maxPublished = user.isSuperAdmin ? 999 : (user.maxWebinars || 3);
-      if (publishedCount >= maxPublished) {
+      const maxPublished = entitlement.maxWebinars;
+      const publishResult = await storage.publishWebinarWithinLimit(user.id, req.params.id as string, maxPublished);
+      if (publishResult.limitExceeded) {
         return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished });
       }
-      const webinar = await storage.updateWebinar(req.params.id as string, { publishStatus: "published" } as any);
+      const webinar = publishResult.webinar;
       if (!webinar) {
         return res.status(404).json({ message: "Webinar not found" });
       }
@@ -950,9 +987,19 @@ export async function registerRoutes(
   app.get("/api/stripe/config", async (_req, res) => {
     try {
       const key = await getStripePublishableKey();
+      const { byLookupKey } = await getApprovedPriceIds();
+      const catalogReady = [
+        ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
+        ADDON_LOOKUP_KEY,
+      ].every((lookupKey) => byLookupKey.has(lookupKey));
       res.json({
         publishableKey: key,
-        monthlyPriceId: process.env.STRIPE_MONTHLY_PRICE_ID || "",
+        catalogReady,
+        plans: [
+          { key: "starter", amountUsd: 49, includedWebinars: 2 },
+          { key: "growth", amountUsd: 99, includedWebinars: 5 },
+        ],
+        addonAmountUsd: 20,
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -963,6 +1010,12 @@ export async function registerRoutes(
     try {
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
+      if (user.stripeCustomerId) {
+        const current = await refreshSubscriptionEntitlement(user);
+        if (current.active) {
+          return res.status(409).json({ message: "ACTIVE_SUBSCRIPTION_EXISTS", code: "ACTIVE_SUBSCRIPTION_EXISTS" });
+        }
+      }
 
       const stripe = await getUncachableStripeClient();
 
@@ -976,17 +1029,32 @@ export async function registerRoutes(
         customerId = customer.id;
       }
 
-      const priceId = req.body.priceId;
-      if (!priceId) {
-        return res.status(400).json({ message: "priceId is required" });
+      const planKey = req.body.planKey as SubscriptionPlanKey;
+      const addonWebinars = Number(req.body.addonWebinars || 0);
+      if (!(planKey in SUBSCRIPTION_PLANS)) return res.status(400).json({ message: "Invalid plan" });
+      if (!Number.isInteger(addonWebinars) || addonWebinars < 0 || addonWebinars > 50) {
+        return res.status(400).json({ message: "Invalid add-on quantity" });
+      }
+      const { byLookupKey } = await getApprovedPriceIds();
+      const basePriceId = byLookupKey.get(SUBSCRIPTION_PLANS[planKey].lookupKey);
+      const addonPriceId = byLookupKey.get(ADDON_LOOKUP_KEY);
+      if (!basePriceId || (addonWebinars > 0 && !addonPriceId)) {
+        return res.status(503).json({ message: "Subscription catalog is not ready" });
       }
 
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
         payment_method_types: ["card"],
-        line_items: [{ price: priceId, quantity: 1 }],
+        line_items: [
+          { price: basePriceId, quantity: 1 },
+          ...(addonWebinars > 0 ? [{ price: addonPriceId!, quantity: addonWebinars }] : []),
+        ],
         mode: "subscription",
+        client_reference_id: user.id,
+        subscription_data: {
+          metadata: { userId: user.id, planKey, addonWebinars: String(addonWebinars) },
+        },
         success_url: `${baseUrl}/admin/dashboard?checkout=success`,
         cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
       });
@@ -1022,56 +1090,8 @@ export async function registerRoutes(
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-      if (!user.stripeSubscriptionId) {
-        return res.json({ active: false, plan: user.subscriptionPlan });
-      }
-
-      const stripe = await getUncachableStripeClient();
-      try {
-        const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId) as any;
-        const isActive = subscription.status === "active" || subscription.status === "trialing";
-        return res.json({
-          active: isActive,
-          plan: user.subscriptionPlan,
-          status: subscription.status,
-          currentPeriodEnd: subscription.current_period_end,
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        });
-      } catch {
-        return res.json({ active: false, plan: user.subscriptionPlan });
-      }
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.post("/api/stripe/handle-subscription", requireAdmin, async (req, res) => {
-    try {
-      const user = await storage.getUser(req.session.userId!);
-      if (!user || !user.stripeCustomerId) {
-        return res.status(400).json({ message: "No customer" });
-      }
-
-      const stripe = await getUncachableStripeClient();
-      const subscriptions = await stripe.subscriptions.list({
-        customer: user.stripeCustomerId,
-        status: "active",
-        limit: 1,
-      });
-
-      if (subscriptions.data.length > 0) {
-        const sub = subscriptions.data[0] as any;
-        const periodEnd = new Date(sub.current_period_end * 1000);
-        await storage.updateUser(user.id, {
-          subscriptionPlan: "monthly",
-          stripeSubscriptionId: sub.id,
-          maxWebinars: 3,
-          planExpiresAt: periodEnd,
-        } as any);
-        return res.json({ success: true, plan: "monthly" });
-      }
-
-      return res.json({ success: false, message: "No active subscription found" });
+      const entitlement = await refreshSubscriptionEntitlement(user);
+      return res.json(entitlement);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1322,8 +1342,8 @@ export async function registerRoutes(
   });
 
   // ============ Fake Users Routes ============
-  app.get("/api/webinars/:id/fake-users", async (req, res) => {
-    const fakeUsers = await storage.getFakeUsersByWebinar(req.params.id);
+  app.get("/api/webinars/:id/fake-users", requirePublishedOrOwner, async (req, res) => {
+    const fakeUsers = await storage.getFakeUsersByWebinar(req.params.id as string);
     res.json(fakeUsers);
   });
 
@@ -1346,8 +1366,8 @@ export async function registerRoutes(
   });
 
   // ============ Scheduled Messages Routes ============
-  app.get("/api/webinars/:id/scheduled-messages", async (req, res) => {
-    const messages = await storage.getScheduledMessagesByWebinar(req.params.id);
+  app.get("/api/webinars/:id/scheduled-messages", requirePublishedOrOwner, async (req, res) => {
+    const messages = await storage.getScheduledMessagesByWebinar(req.params.id as string);
     res.json(messages);
   });
 
@@ -1370,8 +1390,8 @@ export async function registerRoutes(
   });
 
   // ============ CTA Buttons Routes ============
-  app.get("/api/webinars/:id/ctas", async (req, res) => {
-    const ctas = await storage.getCtaButtonsByWebinar(req.params.id);
+  app.get("/api/webinars/:id/ctas", requirePublishedOrOwner, async (req, res) => {
+    const ctas = await storage.getCtaButtonsByWebinar(req.params.id as string);
     res.json(ctas);
   });
 
@@ -1394,8 +1414,8 @@ export async function registerRoutes(
   });
 
   // ============ Polls Routes ============
-  app.get("/api/webinars/:id/polls", async (req, res) => {
-    const polls = await storage.getPollsByWebinar(req.params.id);
+  app.get("/api/webinars/:id/polls", requirePublishedOrOwner, async (req, res) => {
+    const polls = await storage.getPollsByWebinar(req.params.id as string);
     res.json(polls);
   });
 
@@ -1418,8 +1438,8 @@ export async function registerRoutes(
   });
 
   // ============ Tips Routes ============
-  app.get("/api/webinars/:id/tips", async (req, res) => {
-    const tipsList = await storage.getTipsByWebinar(req.params.id);
+  app.get("/api/webinars/:id/tips", requirePublishedOrOwner, async (req, res) => {
+    const tipsList = await storage.getTipsByWebinar(req.params.id as string);
     res.json(tipsList);
   });
 
@@ -1442,17 +1462,17 @@ export async function registerRoutes(
   });
 
   // ============ Questions (Q&A) Routes ============
-  app.get("/api/webinars/:id/questions", async (req, res) => {
-    const questionsList = await storage.getQuestionsByWebinar(req.params.id);
+  app.get("/api/webinars/:id/questions", requirePublishedOrOwner, async (req, res) => {
+    const questionsList = await storage.getQuestionsByWebinar(req.params.id as string);
     res.json(questionsList);
   });
 
-  app.get("/api/webinars/:id/questions/preset", async (req, res) => {
-    const presetQuestions = await storage.getPresetQuestions(req.params.id);
+  app.get("/api/webinars/:id/questions/preset", requirePublishedOrOwner, async (req, res) => {
+    const presetQuestions = await storage.getPresetQuestions(req.params.id as string);
     res.json(presetQuestions);
   });
 
-  app.post("/api/webinars/:id/questions", async (req, res) => {
+  app.post("/api/webinars/:id/questions", requirePublishedOrOwner, async (req, res) => {
     try {
       const data = insertQuestionSchema.parse({
         ...req.body,
@@ -1464,7 +1484,7 @@ export async function registerRoutes(
       if (!data.isPreset) {
         (async () => {
           try {
-            const webinar = await storage.getWebinar(req.params.id);
+            const webinar = await storage.getWebinar(req.params.id as string);
             const notify = webinar?.notifySettings as any;
             if (!webinar || !notify?.questionEmailEnabled) return;
             const lastSent = questionNotifyThrottle.get(webinar.id) || 0;
@@ -1508,8 +1528,8 @@ export async function registerRoutes(
   });
 
   // ============ Feedback Survey Routes ============
-  app.get("/api/webinars/:id/feedback-survey", async (req, res) => {
-    const survey = await storage.getFeedbackSurveyByWebinar(req.params.id);
+  app.get("/api/webinars/:id/feedback-survey", requirePublishedOrOwner, async (req, res) => {
+    const survey = await storage.getFeedbackSurveyByWebinar(req.params.id as string);
     res.json(survey || null);
   });
 
@@ -1552,12 +1572,12 @@ export async function registerRoutes(
   });
 
   // ============ Viewer Progress Routes ============
-  app.get("/api/webinars/:id/progress/:sessionId", async (req, res) => {
+  app.get("/api/webinars/:id/progress/:sessionId", requirePublishedOrOwner, async (req, res) => {
     const progress = await storage.getViewerProgress(req.params.id as string, req.params.sessionId as string);
     res.json(progress || { lastPosition: 0, totalWatched: 0 });
   });
 
-  app.post("/api/webinars/:id/progress", async (req, res) => {
+  app.post("/api/webinars/:id/progress", requirePublishedOrOwner, async (req, res) => {
     try {
       const data = insertViewerProgressSchema.parse({
         ...req.body,
@@ -1603,7 +1623,7 @@ export async function registerRoutes(
   });
 
   // ============ Webinar Sessions Routes ============
-  app.get("/api/webinars/:id/sessions", async (req, res) => {
+  app.get("/api/webinars/:id/sessions", requirePublishedOrOwner, async (req, res) => {
     const sessions = await storage.getWebinarSessions(req.params.id as string);
     res.json(sessions);
   });
@@ -1725,7 +1745,7 @@ export async function registerRoutes(
   });
 
   // ============ Public: Available Sessions ============
-  app.get("/api/webinars/:id/registration-count", async (req, res) => {
+  app.get("/api/webinars/:id/registration-count", requirePublishedOrOwner, async (req, res) => {
     try {
       const regs = await storage.getRegistrationsByWebinar(req.params.id as string);
       res.json({ count: regs.length });
@@ -1734,7 +1754,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/webinars/:id/available-sessions", async (req, res) => {
+  app.get("/api/webinars/:id/available-sessions", requirePublishedOrOwner, async (req, res) => {
     try {
       const webinar = await storage.getWebinar(req.params.id as string);
       if (!webinar) return res.status(404).json({ message: "Webinar not found" });
