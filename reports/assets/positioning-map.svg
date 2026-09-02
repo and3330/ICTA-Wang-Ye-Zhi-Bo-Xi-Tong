@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" rx="28" fill="#F5F7FA"/>
+  <line x1="110" y1="610" x2="1110" y2="610" stroke="#1B2945" stroke-width="4"/>
+  <line x1="110" y1="610" x2="110" y2="70" stroke="#1B2945" stroke-width="4"/>
+  <line x1="610" y1="70" x2="610" y2="610" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="12 12"/>
+  <line x1="110" y1="340" x2="1110" y2="340" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="12 12"/>
+  <text x="610" y="682" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#334155">成交與在地營運整合：低 → 高</text>
+  <text x="34" y="340" text-anchor="middle" transform="rotate(-90 34 340)" font-family="sans-serif" font-size="28" fill="#334155">AI 與個人化能力：低 → 高</text>
+  <text x="290" y="120" font-family="sans-serif" font-size="22" fill="#94A3B8">內容／AI 工具</text>
+  <text x="845" y="120" font-family="sans-serif" font-size="22" fill="#94A3B8">智慧成交平台</text>
+  <text x="290" y="570" font-family="sans-serif" font-size="22" fill="#94A3B8">基礎活動工具</text>
+  <text x="850" y="570" font-family="sans-serif" font-size="22" fill="#94A3B8">傳統漏斗平台</text>
+  <circle cx="565" cy="190" r="28" fill="#0EA5A8"/>
+  <text x="605" y="198" font-family="sans-serif" font-size="28" font-weight="700" fill="#0F172A">ICTA Webinar</text>
+  <circle cx="930" cy="315" r="28" fill="#F97316"/>
+  <text x="970" y="323" font-family="sans-serif" font-size="28" font-weight="700" fill="#0F172A">Bombmy</text>
+  <circle cx="515" cy="465" r="25" fill="#64748B"/>
+  <text x="555" y="473" font-family="sans-serif" font-size="25" font-weight="700" fill="#0F172A">GitHub 範例</text>
+</svg>

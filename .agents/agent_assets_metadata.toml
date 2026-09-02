@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "wut9YZ1cqhMvY8M6VB26Y"
+uri = "file://reports/ICTA-Webinar-Competitive-Analysis-2026-09.pdf"
+type = "pdf"
+title = "ICTA Webinar × Bombmy 綜合競品分析"
+description = "8 頁正式書面報告：完成度評估、功能矩陣、定位地圖、180 天路線與 GitHub 專案判讀。"
+logical_id = "6bbc4ff6-79f2-49c2-834c-be32dca86fd1"
+content_hash = "sha256:002ab0270769965c61ab6f5866a827a1c361457da7f2cf13e4f70fc065e1b04e"
+size = 7408919
+mtime_ms = 1788377690009
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/6bbc4ff6-79f2-49c2-834c-be32dca86fd1/1d7e81dd-2077-4b2f-ad80-8d01024e7142"
+storage_version_token = "1788377743899448"
+content_type = "application/pdf"
+
+[[outputs]]
+id = "0w8wK5n6Oe9pWP5oyiXDU"
+uri = "file://reports/ICTA-Webinar-Competitive-Analysis-2026-09.html"
+type = "text"
+title = "競品分析網頁預覽"
+description = "與 PDF 逐頁對應的可閱讀網頁版本，內含 PDF 下載入口。"
+logical_id = "66b63193-ab9d-4b60-815c-2ed8d9d4e883"
+content_hash = "sha256:8e5a1c4ec38157798c32bf20133cf3e5d82695ae997d9553e2081a87ce8cba96"
+size = 15089
+mtime_ms = 1788377664417
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/66b63193-ab9d-4b60-815c-2ed8d9d4e883/ab127f9c-1b19-4091-8a8e-b9c72039d36b"
+storage_version_token = "1788377745070343"
+content_type = "text/html"
