@@ -15,6 +15,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Clock, Play } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
+import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
+import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 interface WebSocketMessage {
   type: string;
@@ -40,6 +42,7 @@ export default function WebinarRoom() {
   });
   
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
   const playerRef = useRef<any>(null);
@@ -203,8 +206,9 @@ export default function WebinarRoom() {
           }
         } catch {}
 
-        player.on("timeupdate", (data: { seconds: number }) => {
+        player.on("timeupdate", (data: { seconds: number; duration?: number }) => {
           setCurrentTime(Math.floor(data.seconds));
+          if (data.duration) setVideoDuration(data.duration);
         });
 
         player.on("play", () => setIsPlaying(true));
@@ -212,6 +216,14 @@ export default function WebinarRoom() {
         player.on("ended", () => {
           setVideoEnded(true);
           setIsPlaying(false);
+          Promise.all([player.getCurrentTime(), player.getDuration()])
+            .then(([position, duration]: [number, number]) => {
+              trackWebinarEvent(id, "video_progress", {
+                positionSeconds: duration || position,
+                metadata: { progressPercent: 100 },
+              });
+            })
+            .catch(() => {});
           if (feedbackSurvey && feedbackSurvey.isActive && !surveySubmitted) {
             setShowSurvey(true);
           }
@@ -225,6 +237,33 @@ export default function WebinarRoom() {
       }
     };
   }, [webinar?.vimeoUrl, isJoined, waitingForStart, savedProgress]);
+
+  useEffect(() => {
+    if (!id || !isJoined || !videoDuration) return;
+    const percent = (currentTime / videoDuration) * 100;
+    ([25, 50, 75, 100] as const).forEach((checkpoint) => {
+      if (percent >= checkpoint) {
+        trackWebinarEvent(id, "video_progress", {
+          positionSeconds: currentTime,
+          metadata: { progressPercent: checkpoint },
+        });
+      }
+    });
+  }, [id, isJoined, currentTime, videoDuration]);
+
+  useEffect(() => {
+    if (!id || !isJoined) return;
+    const onPageHide = () => {
+      trackWebinarEvent(
+        id,
+        "dropoff",
+        { positionSeconds: currentTime, metadata: { reason: "navigate" } },
+        { beacon: true },
+      );
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [id, isJoined, currentTime]);
 
   useEffect(() => {
     if (!isJoined || !isPlaying) return;
@@ -251,6 +290,12 @@ export default function WebinarRoom() {
     });
     setVisibleCtas(visible);
   }, [currentTime, ctas]);
+
+  useEffect(() => {
+    if (!id) return;
+    visibleCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaId: cta.id }));
+    liveCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaKey: cta.id }));
+  }, [id, visibleCtas, liveCtas]);
   
   useEffect(() => {
     if (!scheduledMessages || !fakeUsers || !isPlaying) return;
@@ -391,6 +436,7 @@ export default function WebinarRoom() {
     }
     setNickname(nicknameInput.trim());
     setIsJoined(true);
+    trackWebinarEvent(id, "webinar_enter");
   };
 
   const sendMessage = () => {
@@ -517,10 +563,19 @@ export default function WebinarRoom() {
   const brandGradient = brandSettings?.primaryColor && brandSettings?.secondaryColor
     ? { background: `linear-gradient(135deg, ${brandSettings.primaryColor} 0%, ${brandSettings.secondaryColor} 100%)` }
     : undefined;
+  const tracking = webinar as Webinar & TrackingWebinar;
+  const trackingProvider = (
+    <WebinarTrackingProvider
+      webinarId={id}
+      metaPixelId={tracking.metaPixelId}
+      gtmContainerId={tracking.gtmContainerId}
+    />
+  );
 
   if (!isJoined) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
+        {trackingProvider}
         <Card className="max-w-md w-full">
           <CardContent className="pt-6">
             {brandSettings?.logo && (
@@ -566,6 +621,7 @@ export default function WebinarRoom() {
   if (waitingForStart) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
+        {trackingProvider}
         <Card className="max-w-lg w-full">
           <CardContent className="pt-8 pb-8 text-center">
             {brandSettings?.logo && (
@@ -598,6 +654,7 @@ export default function WebinarRoom() {
 
   return (
     <div className="min-h-screen bg-background">
+      {trackingProvider}
       {brandSettings?.logo && (
         <div className="h-10 flex items-center px-4 border-b" style={brandAccentStyle}>
           <img src={brandSettings.logo} alt="Logo" className="max-h-6 object-contain" data-testid="brand-logo" />
@@ -651,7 +708,11 @@ export default function WebinarRoom() {
                     key={cta.id}
                     variant={cta.style === "primary" ? "default" : cta.style === "danger" ? "destructive" : "secondary"}
                     className="w-full sm:w-auto animate-pulse"
-                    onClick={() => window.open(cta.url, "_blank")}
+                    onClick={() => openTrackedExternalUrl(
+                      id,
+                      cta.url,
+                      liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
+                    )}
                     data-testid={`cta-button-${cta.id}`}
                   >
                     <ExternalLink className="w-4 h-4 mr-2" />
@@ -705,7 +766,7 @@ export default function WebinarRoom() {
                     </p>
                     {replay?.ctaText && replay?.ctaUrl && (
                       <Button
-                        onClick={() => window.open(replay.ctaUrl, "_blank")}
+                        onClick={() => openTrackedExternalUrl(id, replay.ctaUrl!)}
                         className="mb-3 w-full"
                         data-testid="button-replay-cta"
                       >

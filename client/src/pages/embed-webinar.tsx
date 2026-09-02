@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { Heart, Send, ExternalLink, Loader2 } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
+import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
+import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -27,6 +29,7 @@ export default function EmbedWebinar() {
   });
 
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const playerRef = useRef<any>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -116,13 +119,51 @@ export default function EmbedWebinar() {
       if (iframeRef.current && (window as any).Vimeo) {
         const player = new (window as any).Vimeo.Player(iframeRef.current);
         playerRef.current = player;
-        player.on("timeupdate", (data: any) => setCurrentTime(data.seconds));
+        player.on("timeupdate", (data: { seconds: number; duration?: number }) => {
+          setCurrentTime(data.seconds);
+          if (data.duration) setVideoDuration(data.duration);
+        });
         player.on("play", () => setIsPlaying(true));
         player.on("pause", () => setIsPlaying(false));
+        player.on("ended", () => {
+          Promise.all([player.getCurrentTime(), player.getDuration()])
+            .then(([position, duration]: [number, number]) => {
+              trackWebinarEvent(id, "video_progress", {
+                positionSeconds: duration || position,
+                metadata: { progressPercent: 100 },
+              });
+            })
+            .catch(() => {});
+        });
       }
     };
     document.head.appendChild(script);
   }, [isJoined, webinar]);
+
+  useEffect(() => {
+    if (!id || !isJoined || !videoDuration) return;
+    const percent = (currentTime / videoDuration) * 100;
+    ([25, 50, 75, 100] as const).forEach((checkpoint) => {
+      if (percent >= checkpoint) {
+        trackWebinarEvent(id, "video_progress", {
+          positionSeconds: currentTime,
+          metadata: { progressPercent: checkpoint },
+        });
+      }
+    });
+  }, [id, isJoined, currentTime, videoDuration]);
+
+  useEffect(() => {
+    if (!id || !isJoined) return;
+    const onPageHide = () => trackWebinarEvent(
+      id,
+      "dropoff",
+      { positionSeconds: currentTime, metadata: { reason: "navigate" } },
+      { beacon: true },
+    );
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [id, isJoined, currentTime]);
 
   useEffect(() => {
     if (!isPlaying || !scheduledMessages || !fakeUsers) return;
@@ -153,6 +194,12 @@ export default function EmbedWebinar() {
     });
     setVisibleCtas(visible);
   }, [currentTime, ctas, isPlaying]);
+
+  useEffect(() => {
+    if (!id) return;
+    visibleCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaId: cta.id }));
+    liveCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaKey: cta.id }));
+  }, [id, visibleCtas, liveCtas]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -192,9 +239,15 @@ export default function EmbedWebinar() {
     );
   }
 
+  const tracking = webinar as Webinar & TrackingWebinar;
+  const trackingProvider = (
+    <WebinarTrackingProvider webinarId={id} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
+  );
+
   if (!isJoined) {
     return (
       <div className="flex items-center justify-center h-screen p-4">
+        {trackingProvider}
         <div className="text-center space-y-3 w-full max-w-xs">
           <h3 className="font-bold text-base">{webinar.title}</h3>
           <Input
@@ -205,6 +258,7 @@ export default function EmbedWebinar() {
               if (e.key === "Enter" && nicknameInput.trim()) {
                 setNickname(nicknameInput.trim());
                 setIsJoined(true);
+                trackWebinarEvent(id, "webinar_enter");
               }
             }}
             data-testid="input-embed-nickname"
@@ -212,7 +266,11 @@ export default function EmbedWebinar() {
           <Button
             className="w-full"
             disabled={!nicknameInput.trim()}
-            onClick={() => { setNickname(nicknameInput.trim()); setIsJoined(true); }}
+            onClick={() => {
+              setNickname(nicknameInput.trim());
+              setIsJoined(true);
+              trackWebinarEvent(id, "webinar_enter");
+            }}
             data-testid="button-embed-join"
           >
             加入直播
@@ -224,6 +282,7 @@ export default function EmbedWebinar() {
 
   return (
     <div className="flex flex-col h-screen">
+      {trackingProvider}
       <div className="relative bg-black">
         <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
           <iframe
@@ -236,12 +295,17 @@ export default function EmbedWebinar() {
         </div>
         {[...visibleCtas, ...liveCtas].map(cta => (
           <div key={cta.id} className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-10">
-            <a href={cta.url} target="_blank" rel="noopener noreferrer">
-              <Button size="sm">
+            <Button
+              size="sm"
+              onClick={() => openTrackedExternalUrl(
+                id,
+                cta.url,
+                liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
+              )}
+            >
                 <ExternalLink className="h-3 w-3 mr-1" />
                 {cta.text}
-              </Button>
-            </a>
+            </Button>
           </div>
         ))}
       </div>

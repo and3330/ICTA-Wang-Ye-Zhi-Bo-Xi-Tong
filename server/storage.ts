@@ -1,4 +1,6 @@
 import { db } from "./db";
+import crypto from "node:crypto";
+import { authoritativeRegistrationFunnelEvent } from "./funnelAnalytics";
 import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
@@ -25,6 +27,7 @@ import {
   socialPosts, type InsertSocialPost, type SocialPost,
   aiPointTransactions, type AiPointTransaction,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
+  webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -63,7 +66,7 @@ export interface IStorage {
   deleteWebinar(id: string): Promise<void>;
   
   // Registrations
-  createRegistration(data: InsertRegistration): Promise<Registration>;
+  createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration>;
   getRegistration(id: string): Promise<Registration | undefined>;
   getRegistrationsByWebinar(webinarId: string): Promise<Registration[]>;
   getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined>;
@@ -122,6 +125,8 @@ export interface IStorage {
   // Analytics
   getWebinarAnalytics(webinarId: string): Promise<WebinarAnalytics[]>;
   upsertWebinarAnalytics(data: InsertWebinarAnalytics): Promise<WebinarAnalytics>;
+  createFunnelEvent(data: InsertWebinarFunnelEvent): Promise<{ event: WebinarFunnelEvent; deduplicated: boolean }>;
+  getFunnelEvents(webinarId: string, from?: Date, to?: Date): Promise<WebinarFunnelEvent[]>;
   
   // Email Reminders
   createEmailReminder(data: InsertEmailReminder): Promise<EmailReminder>;
@@ -462,9 +467,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Registrations
-  async createRegistration(data: InsertRegistration): Promise<Registration> {
-    const result = await db.insert(registrations).values(data).returning();
-    return result[0];
+  async createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration> {
+    return db.transaction(async (tx) => {
+      const result = await tx.insert(registrations).values(data).returning();
+      const registration = result[0];
+      await tx.insert(webinarFunnelEvents).values(
+        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
+      ).onConflictDoNothing({
+        target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
+      });
+      return registration;
+    });
   }
 
   async getRegistration(id: string): Promise<Registration | undefined> {
@@ -519,7 +532,9 @@ export class DatabaseStorage implements IStorage {
 
   // CTA Buttons
   async createCtaButton(data: InsertCtaButton): Promise<CtaButton> {
-    const result = await db.insert(ctaButtons).values(data).returning();
+    // Client input never controls the stable analytics key.
+    const ctaKey = crypto.randomBytes(18).toString("base64url");
+    const result = await db.insert(ctaButtons).values({ ...data, ctaKey }).returning();
     return result[0];
   }
 
@@ -670,6 +685,29 @@ export class DatabaseStorage implements IStorage {
   async upsertWebinarAnalytics(data: InsertWebinarAnalytics): Promise<WebinarAnalytics> {
     const result = await db.insert(webinarAnalytics).values(data as any).returning();
     return result[0];
+  }
+
+  async createFunnelEvent(data: InsertWebinarFunnelEvent): Promise<{ event: WebinarFunnelEvent; deduplicated: boolean }> {
+    const inserted = await db.insert(webinarFunnelEvents).values(data)
+      .onConflictDoNothing({
+        target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
+      }).returning();
+    if (inserted[0]) return { event: inserted[0], deduplicated: false };
+    const existing = await db.select().from(webinarFunnelEvents).where(and(
+      eq(webinarFunnelEvents.webinarId, data.webinarId),
+      eq(webinarFunnelEvents.dedupeKey, data.dedupeKey),
+    )).limit(1);
+    if (!existing[0]) throw new Error("Funnel event idempotency conflict");
+    return { event: existing[0], deduplicated: true };
+  }
+
+  async getFunnelEvents(webinarId: string, from?: Date, to?: Date): Promise<WebinarFunnelEvent[]> {
+    const conditions = [eq(webinarFunnelEvents.webinarId, webinarId)];
+    if (from) conditions.push(gte(webinarFunnelEvents.occurredAt, from));
+    if (to) conditions.push(lte(webinarFunnelEvents.occurredAt, to));
+    return db.select().from(webinarFunnelEvents)
+      .where(and(...conditions))
+      .orderBy(asc(webinarFunnelEvents.occurredAt));
   }
 
   // Email Reminders

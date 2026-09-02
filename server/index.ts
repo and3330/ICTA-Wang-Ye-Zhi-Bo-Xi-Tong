@@ -107,13 +107,13 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  try {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (databaseUrl) {
-      log('Running application migrations...', 'db');
-      await runAppMigrations();
-      log('Application schema ready', 'db');
+  const databaseUrl = process.env.DATABASE_URL;
+  if (databaseUrl) {
+    log('Running application migrations...', 'db');
+    await runAppMigrations();
+    log('Application schema ready', 'db');
 
+    try {
       log('Initializing Stripe schema...', 'stripe');
       await runMigrations({ databaseUrl });
       log('Stripe schema ready', 'stripe');
@@ -140,9 +140,9 @@ app.use((req, res, next) => {
       } else {
         log('Stripe subscription catalog ready', 'stripe');
       }
+    } catch (error) {
+      console.error('Failed to initialize Stripe:', error);
     }
-  } catch (error) {
-    console.error('Failed to initialize Stripe:', error);
   }
 
   await registerRoutes(httpServer, app, sessionMiddleware);

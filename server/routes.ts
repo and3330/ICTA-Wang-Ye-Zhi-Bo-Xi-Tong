@@ -26,6 +26,11 @@ import {
   insertEmailSequenceSchema,
   insertSocialPostSchema,
   insertSupportFeedbackSchema,
+  webinarTrackingSettingsSchema,
+  metaPixelIdSchema,
+  gtmContainerIdSchema,
+  analyticsVisitorTokenSchema,
+  safeCtaUrlSchema,
 } from "@shared/schema";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, getWebinarKnowledge } from "./aiGenerator";
 
@@ -44,6 +49,14 @@ import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
 import { postgresRateLimit } from "./rateLimit";
 import { persistProductionError } from "./errorReporter";
+import { createLiveCtaKey, verifyLiveCtaKey } from "./liveCtaKeys";
+import {
+  aggregateFunnelEvents,
+  funnelDedupeKey,
+  funnelEventInputSchema,
+  safeRequestMetadata,
+  sha256,
+} from "./funnelAnalytics";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -114,6 +127,16 @@ async function requirePublishedOrOwner(req: Request, res: Response, next: NextFu
   next();
 }
 
+function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContainerId?: string | null }>(webinar: T): T {
+  const metaPixelId = metaPixelIdSchema.safeParse(webinar.metaPixelId ?? null);
+  const gtmContainerId = gtmContainerIdSchema.safeParse(webinar.gtmContainerId ?? null);
+  return {
+    ...webinar,
+    metaPixelId: metaPixelId.success ? metaPixelId.data : null,
+    gtmContainerId: gtmContainerId.success ? gtmContainerId.data : null,
+  };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
@@ -141,7 +164,7 @@ export async function registerRoutes(
       !req.path.includes('/stats/');
     const isPublicPostRoute =
       (req.method === 'POST' || req.method === 'OPTIONS') &&
-      req.path === '/api/registrations';
+      (req.path === '/api/registrations' || /^\/api\/webinars\/[^/]+\/funnel-events$/.test(req.path));
     if (isPublicGetRoute || isPublicPostRoute) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -159,6 +182,7 @@ export async function registerRoutes(
   const stripeLimit = postgresRateLimit({ namespace: "stripe-mutation", limit: 15, windowSeconds: 60 });
   const publicRegistrationLimit = postgresRateLimit({ namespace: "public-registration", limit: 10, windowSeconds: 60 });
   const supportLimit = postgresRateLimit({ namespace: "support", limit: 5, windowSeconds: 10 * 60 });
+  const funnelEventLimit = postgresRateLimit({ namespace: "funnel-event", limit: 120, windowSeconds: 60 });
   app.use("/api/admin/login", authLimit);
   app.use("/api/admin/register", authLimit);
   app.use("/api/admin/forgot-password", resetLimit);
@@ -168,6 +192,8 @@ export async function registerRoutes(
   app.use("/api/registrations", (req, res, next) =>
     req.method === "POST" && req.path === "/" ? publicRegistrationLimit(req, res, next) : next());
   app.use("/api/support", supportLimit);
+  app.use("/api/webinars", (req, res, next) =>
+    req.method === "POST" && /^\/[^/]+\/funnel-events$/.test(req.path) ? funnelEventLimit(req, res, next) : next());
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && req.path.includes("/ai/") ? aiLimit(req, res, next) : next());
@@ -545,17 +571,29 @@ export async function registerRoutes(
           case "liveCta": {
             // Host pushes a CTA button to ALL viewers immediately (no timecode wait)
             if (!isHost || !currentWebinarId) break;
+            if (!process.env.SESSION_SECRET) break;
             const { text, url, style, durationSec } = message.data || {};
             if (!text || !url) break;
-            // Only allow safe URL schemes (block javascript:/data: injection).
-            const safeUrl = String(url).trim();
-            if (!/^(https?:\/\/|\/|mailto:|tel:)/i.test(safeUrl)) break;
+            // Use the same server-side CTA URL policy as persisted CTAs.
+            const parsedUrl = safeCtaUrlSchema.safeParse(String(url));
+            if (!parsedUrl.success) break;
+            const safeUrl = parsedUrl.data;
+            const duration = Number.isFinite(Number(durationSec))
+              ? Math.max(1, Math.min(2 * 60 * 60, Math.floor(Number(durationSec))))
+              : 2 * 60 * 60;
+            const liveCtaKey = createLiveCtaKey(
+              currentWebinarId,
+              process.env.SESSION_SECRET || "",
+              { expiresAt: new Date(Date.now() + duration * 1000) },
+            );
             const payload = {
-              id: `live-cta-${Date.now()}`,
+              // Live CTAs have no persisted UUID. This signed key is their sole tracking identity.
+              id: liveCtaKey,
+              ctaKey: liveCtaKey,
               text: String(text),
               url: safeUrl,
               style: style || "primary",
-              expiresAt: durationSec ? Date.now() + Number(durationSec) * 1000 : null,
+              expiresAt: Date.now() + duration * 1000,
             };
             broadcastToAllSessions(currentWebinarId, { type: "liveCta", data: payload });
             broadcastToHosts(currentWebinarId, { type: "liveCta", data: payload });
@@ -1014,7 +1052,9 @@ export async function registerRoutes(
       return res.json(webinars);
     }
     const webinars = await storage.getAllWebinars();
-    res.json(webinars.filter((webinar) => webinar.publishStatus === "published"));
+    res.json(webinars
+      .filter((webinar) => webinar.publishStatus === "published")
+      .map(withSafeTrackingIds));
   });
 
   app.get("/api/webinars/stats/summary", requireAdmin, async (req, res) => {
@@ -1050,7 +1090,8 @@ export async function registerRoutes(
     if (!webinar) {
       return res.status(404).json({ message: "Webinar not found" });
     }
-    res.json(webinar);
+    // Protect public/preview pages from legacy or manually inserted unsafe values.
+    res.json(withSafeTrackingIds(webinar));
   });
 
   app.post("/api/webinars", requireAdmin, async (req, res) => {
@@ -1083,6 +1124,14 @@ export async function registerRoutes(
       delete data.userId;
       if (data.startTime && typeof data.startTime === "string") {
         data.startTime = new Date(data.startTime);
+      }
+      if ("metaPixelId" in data || "gtmContainerId" in data) {
+        const tracking = webinarTrackingSettingsSchema.parse({
+          ...("metaPixelId" in data ? { metaPixelId: data.metaPixelId } : {}),
+          ...("gtmContainerId" in data ? { gtmContainerId: data.gtmContainerId } : {}),
+        });
+        if ("metaPixelId" in data) data.metaPixelId = tracking.metaPixelId;
+        if ("gtmContainerId" in data) data.gtmContainerId = tracking.gtmContainerId;
       }
       const webinar = await storage.updateWebinar(req.params.id as string, data);
       if (!webinar) {
@@ -1400,6 +1449,10 @@ export async function registerRoutes(
   app.post("/api/registrations", async (req, res) => {
     try {
       const body = { ...req.body };
+      const analyticsVisitorToken = body.analyticsVisitorToken === undefined
+        ? undefined
+        : analyticsVisitorTokenSchema.parse(body.analyticsVisitorToken);
+      delete body.analyticsVisitorToken;
       if (body.selectedSession && typeof body.selectedSession === "string") {
         body.selectedSession = new Date(body.selectedSession);
       }
@@ -1417,7 +1470,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "此 Email 已報名" });
       }
       
-      const registration = await storage.createRegistration(data);
+      const registration = await storage.createRegistration(data, analyticsVisitorToken);
       
       dispatchWebhook(data.webinarId, "registration", {
         registrationId: registration.id, name: data.name, email: data.email
@@ -1758,6 +1811,106 @@ export async function registerRoutes(
   });
 
   // ============ Analytics Routes ============
+  app.post("/api/webinars/:id/funnel-events", async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const webinar = await storage.getWebinar(webinarId);
+      if (!webinar || !canViewWebinar(webinar, req.session?.userId)) {
+        // Do not reveal the existence of draft webinars to public callers.
+        return res.status(404).json({ message: "Webinar not found" });
+      }
+      const input = funnelEventInputSchema.parse(req.body);
+      if (input.eventType === "purchase") {
+        return res.status(403).json({ message: "Purchase events must be recorded by a verified server-side payment integration" });
+      }
+
+      if (input.registrationId) {
+        const registration = await storage.getRegistration(input.registrationId);
+        if (!registration || registration.webinarId !== webinarId) {
+          return res.status(400).json({ message: "registrationId does not belong to this webinar" });
+        }
+      }
+      if (input.eventType === "registration" && !input.registrationId) {
+        return res.status(400).json({ message: "registrationId is required for registration events" });
+      }
+      let persistedCta: Awaited<ReturnType<typeof storage.getCtaButtonsByWebinar>>[number] | undefined;
+      if (input.ctaId) {
+        const ctas = await storage.getCtaButtonsByWebinar(webinarId);
+        persistedCta = ctas.find(cta => cta.id === input.ctaId);
+        if (!persistedCta) {
+          return res.status(400).json({ message: "ctaId does not belong to this webinar" });
+        }
+        if (input.ctaKey && input.ctaKey !== persistedCta.ctaKey) {
+          return res.status(400).json({ message: "ctaKey does not match the persisted CTA" });
+        }
+      } else if (input.ctaKey && !verifyLiveCtaKey(
+        input.ctaKey,
+        webinarId,
+        process.env.SESSION_SECRET || "",
+      )) {
+        return res.status(400).json({ message: "Invalid, expired, or cross-webinar live CTA key" });
+      }
+
+      const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : undefined;
+      // Registration events are authoritative and created in the registration transaction.
+      // Normalizing their key prevents a client retry from inflating registrations.
+      const dedupeKey = funnelDedupeKey(input.eventType, input.dedupeKey, input.registrationId);
+      const result = await storage.createFunnelEvent({
+        webinarId,
+        eventType: input.eventType,
+        registrationId: input.registrationId,
+        sessionId: input.sessionId,
+        ctaId: input.ctaId,
+        ctaKey: persistedCta?.ctaKey ?? input.ctaKey,
+        visitorTokenHash,
+        positionSeconds: input.positionSeconds,
+        value: input.value === undefined ? undefined : input.value.toFixed(2),
+        currency: input.currency,
+        dedupeKey,
+        metadata: safeRequestMetadata(input.metadata, {
+          referrer: req.get("referer"),
+          userAgent: req.get("user-agent"),
+          ip: req.ip || req.socket.remoteAddress,
+          hashSalt: process.env.SESSION_SECRET || "funnel-context",
+        }),
+      });
+      res.status(result.deduplicated ? 200 : 202).json({
+        accepted: true,
+        deduplicated: result.deduplicated,
+        eventId: result.event.id,
+        occurredAt: result.event.occurredAt,
+      });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/webinars/:id/funnel-analytics", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const webinar = await storage.getWebinar(webinarId);
+      if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+      const parseDate = (value: unknown, endOfDay = false): Date | undefined => {
+        if (typeof value !== "string" || !value) return undefined;
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) throw new Error("Invalid analytics date range");
+        if (endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(value)) date.setUTCHours(23, 59, 59, 999);
+        return date;
+      };
+      const from = parseDate(req.query.from);
+      const to = parseDate(req.query.to, true);
+      if (from && to && from > to) return res.status(400).json({ message: "from must be before to" });
+      const events = await storage.getFunnelEvents(webinarId, from, to);
+      res.json({
+        webinarId,
+        range: { from: from?.toISOString() ?? null, to: to?.toISOString() ?? null },
+        ...aggregateFunnelEvents(events, webinar.videoDuration || 0),
+      });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
   app.get("/api/webinars/:id/analytics", requireWebinarOwner, async (req, res) => {
     const webinarId = req.params.id as string;
     const webinar = await storage.getWebinar(webinarId);

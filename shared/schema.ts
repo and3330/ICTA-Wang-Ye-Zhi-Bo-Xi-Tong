@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, boolean, jsonb, real, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, boolean, jsonb, real, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -112,12 +112,34 @@ export const webinars = pgTable("webinars", {
     customSubject: "",
     customTemplate: ""
   }),
+
+  // Safe identifiers only; executable tracking snippets are never stored.
+  metaPixelId: varchar("meta_pixel_id", { length: 32 }),
+  gtmContainerId: varchar("gtm_container_id", { length: 24 }),
   
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+const emptyTrackingIdToNull = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? null : typeof value === "string" ? value.trim() : value;
+
+export const metaPixelIdSchema = z.preprocess(
+  emptyTrackingIdToNull,
+  z.union([z.null(), z.string().min(5).max(32).regex(/^\d+$/, "Meta Pixel ID must contain digits only")]),
+);
+export const gtmContainerIdSchema = z.preprocess(
+  emptyTrackingIdToNull,
+  z.union([z.null(), z.string().min(8).max(24).regex(/^GTM-[A-Z0-9]+$/, "GTM Container ID must be GTM- followed by uppercase letters or digits")]),
+);
+export const webinarTrackingSettingsSchema = z.object({
+  metaPixelId: metaPixelIdSchema.optional(),
+  gtmContainerId: gtmContainerIdSchema.optional(),
+}).strict();
+
 export const insertWebinarSchema = createInsertSchema(webinars).omit({ id: true, createdAt: true }).extend({
   startTime: z.coerce.date(),
+  metaPixelId: metaPixelIdSchema.optional(),
+  gtmContainerId: gtmContainerIdSchema.optional(),
 });
 export type InsertWebinar = z.infer<typeof insertWebinarSchema>;
 export type Webinar = typeof webinars.$inferSelect;
@@ -165,6 +187,8 @@ export const insertRegistrationSchema = createInsertSchema(registrations).omit({
 });
 export type InsertRegistration = z.infer<typeof insertRegistrationSchema>;
 export type Registration = typeof registrations.$inferSelect;
+// Opaque analytics correlation token. It is never persisted raw.
+export const analyticsVisitorTokenSchema = z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/);
 
 // Fake Users / Bots (假人)
 export const fakeUsers = pgTable("fake_users", {
@@ -201,9 +225,20 @@ export const ctaButtons = pgTable("cta_buttons", {
   startTime: integer("start_time").notNull(), // seconds when to show
   endTime: integer("end_time"), // seconds when to hide (null = until end)
   style: text("style").default("primary"), // primary, secondary, danger
+  ctaKey: varchar("cta_key", { length: 64 }).notNull().unique(), // server-generated stable tracking key
 });
 
-export const insertCtaButtonSchema = createInsertSchema(ctaButtons).omit({ id: true });
+export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}, "CTA URL must be an absolute HTTP or HTTPS URL");
+export const insertCtaButtonSchema = createInsertSchema(ctaButtons).omit({ id: true, ctaKey: true }).extend({
+  url: safeCtaUrlSchema,
+});
 export type InsertCtaButton = z.infer<typeof insertCtaButtonSchema>;
 export type CtaButton = typeof ctaButtons.$inferSelect;
 
@@ -364,6 +399,59 @@ export const insertWebinarAnalyticsSchema = createInsertSchema(webinarAnalytics)
 });
 export type InsertWebinarAnalytics = z.infer<typeof insertWebinarAnalyticsSchema>;
 export type WebinarAnalytics = typeof webinarAnalytics.$inferSelect;
+
+export const webinarFunnelEventTypes = [
+  "landing_view",
+  "registration",
+  "webinar_enter",
+  "video_progress",
+  "dropoff",
+  "cta_view",
+  "cta_click",
+  "checkout_start",
+  "purchase",
+] as const;
+export type WebinarFunnelEventType = typeof webinarFunnelEventTypes[number];
+
+export type WebinarFunnelMetadata = {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  term?: string;
+  content?: string;
+  reason?: "pause" | "navigate" | "close" | "ended" | "unknown";
+  progressPercent?: number;
+  referrerHost?: string;
+  userAgent?: string;
+  ipHash?: string;
+  serverRecorded?: boolean;
+};
+
+// Append-only event stream. Application code intentionally exposes insert/read only.
+export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  eventType: text("event_type").$type<WebinarFunnelEventType>().notNull(),
+  registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
+  sessionId: varchar("session_id", { length: 128 }),
+  ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "set null" }),
+  ctaKey: varchar("cta_key", { length: 64 }),
+  visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
+  positionSeconds: integer("position_seconds"),
+  value: numeric("value", { precision: 14, scale: 2 }),
+  currency: varchar("currency", { length: 3 }),
+  dedupeKey: varchar("dedupe_key", { length: 64 }).notNull(),
+  metadata: jsonb("metadata").$type<WebinarFunnelMetadata>().notNull().default({}),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+}, (table) => ({
+  dedupeUnique: uniqueIndex("webinar_funnel_events_webinar_dedupe_uniq").on(table.webinarId, table.dedupeKey),
+  webinarOccurredIndex: index("webinar_funnel_events_webinar_occurred_idx").on(table.webinarId, table.occurredAt),
+  webinarTypeIndex: index("webinar_funnel_events_webinar_type_idx").on(table.webinarId, table.eventType),
+  webinarCtaKeyIndex: index("webinar_funnel_events_webinar_cta_key_idx").on(table.webinarId, table.ctaKey),
+}));
+
+export type WebinarFunnelEvent = typeof webinarFunnelEvents.$inferSelect;
+export type InsertWebinarFunnelEvent = typeof webinarFunnelEvents.$inferInsert;
 
 // Email Reminders (Email 提醒排程)
 export const emailReminders = pgTable("email_reminders", {

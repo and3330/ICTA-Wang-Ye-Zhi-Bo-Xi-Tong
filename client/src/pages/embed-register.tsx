@@ -15,6 +15,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { apiRequest } from "@/lib/queryClient";
 import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
+import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
+import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 
@@ -96,6 +98,10 @@ export default function EmbedRegister() {
     enabled: !!id,
   });
 
+  useEffect(() => {
+    if (webinar && id) trackWebinarEvent(id, "landing_view");
+  }, [webinar, id]);
+
   const form = useForm<RegistrationForm>({
     resolver: zodResolver(registrationSchema),
     defaultValues: { name: "", phone: "", email: "" },
@@ -107,6 +113,7 @@ export default function EmbedRegister() {
       const payload: any = {
         ...data,
         webinarId: id,
+        analyticsVisitorToken: id ? getWebinarVisitorToken(id) : undefined,
         utmSource: urlParams.get("utm_source") || undefined,
         utmMedium: urlParams.get("utm_medium") || undefined,
         utmCampaign: urlParams.get("utm_campaign") || undefined,
@@ -243,8 +250,10 @@ export default function EmbedRegister() {
   const accentColor = brandSettings?.primaryColor || "#4f46e5";
 
   if (registered) {
+    const tracking = webinar as Webinar & TrackingWebinar;
     return (
       <div className="p-6 text-center">
+        <WebinarTrackingProvider webinarId={id} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
         <div className="w-14 h-14 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
           <CheckCircle className="h-7 w-7 text-green-600" />
         </div>
@@ -272,7 +281,7 @@ export default function EmbedRegister() {
           <Button
             className="w-full mb-2"
             style={{ backgroundColor: accentColor }}
-            onClick={() => window.open(thankYou.ctaUrl, "_blank")}
+            onClick={() => openTrackedExternalUrl(id, thankYou.ctaUrl)}
             data-testid="button-embed-thankyou-cta"
           >
             {thankYou.ctaText}
@@ -282,7 +291,10 @@ export default function EmbedRegister() {
           className="w-full"
           variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
           style={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? undefined : { backgroundColor: accentColor }}
-          onClick={() => window.open(`${window.location.origin}/webinar/${id}`, "_blank")}
+          onClick={() => {
+            trackWebinarEvent(id, "webinar_enter");
+            window.open(`${window.location.origin}/webinar/${id}`, "_blank", "noopener,noreferrer");
+          }}
           data-testid="button-embed-enter-webinar"
         >
           {isOnDemandSelection ? "立即觀看" : "進入直播間"}
@@ -293,6 +305,11 @@ export default function EmbedRegister() {
 
   return (
     <div className="p-4">
+      <WebinarTrackingProvider
+        webinarId={id}
+        metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
+        gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
+      />
       {brandSettings?.logo && (brandSettings.logo.startsWith("http://") || brandSettings.logo.startsWith("https://") || brandSettings.logo.startsWith("/")) && (
         <div className="flex justify-center mb-3">
           <img src={brandSettings.logo} alt="Logo" className="max-h-8 object-contain" />

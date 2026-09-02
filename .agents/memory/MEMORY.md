@@ -4,3 +4,4 @@
 - [AI point billing](ai-point-billing.md) — metered LLM calls reserve-then-refund (never check-then-charge); paid recharge credit must be one db transaction; verify session ownership before idempotency shortcut.
 - [Hybrid webinar scheduling](schedule-mode-precedence.md) — on-demand is an additive registration choice beside scheduled sessions; retain recurring data and keep JIT behavior separate.
 - [Subscription publication entitlement](subscription-publication-entitlement.md) — Stripe-approved recurring prices grant publish capacity; draft editing stays free and publish admission must be atomic.
+- [Funnel event trust boundaries](funnel-event-trust-boundaries.md) — revenue is webhook-authoritative; registration preserves anonymous identity; ephemeral CTA keys must be signed and webinar-bound.

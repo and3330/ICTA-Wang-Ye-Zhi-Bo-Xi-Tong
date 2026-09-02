@@ -16,6 +16,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
+import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
+import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 
@@ -99,6 +101,10 @@ export default function Registration() {
     enabled: !!id,
   });
 
+  useEffect(() => {
+    if (webinar && id) trackWebinarEvent(id, "landing_view");
+  }, [webinar, id]);
+
   const form = useForm<RegistrationForm>({
     resolver: zodResolver(registrationSchema),
     defaultValues: {
@@ -114,6 +120,7 @@ export default function Registration() {
       const payload: any = {
         ...data,
         webinarId: id,
+        analyticsVisitorToken: id ? getWebinarVisitorToken(id) : undefined,
         utmSource: urlParams.get("utm_source") || undefined,
         utmMedium: urlParams.get("utm_medium") || undefined,
         utmCampaign: urlParams.get("utm_campaign") || undefined,
@@ -250,8 +257,10 @@ export default function Registration() {
   };
 
   if (registered) {
+    const tracking = webinar as Webinar & TrackingWebinar;
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient}>
+        <WebinarTrackingProvider webinarId={id} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
         <Card className="max-w-lg w-full">
           <CardContent className="pt-8 pb-8 text-center">
             {brandSettings?.logo && (
@@ -293,7 +302,7 @@ export default function Registration() {
             </div>
             {thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl && (
               <Button
-                onClick={() => window.open(thankYou.ctaUrl, "_blank")}
+                onClick={() => openTrackedExternalUrl(id, thankYou.ctaUrl)}
                 className="w-full mb-3"
                 data-testid="button-thankyou-cta"
               >
@@ -301,7 +310,10 @@ export default function Registration() {
               </Button>
             )}
             <Button
-              onClick={() => setLocation(`/webinar/${id}`)}
+              onClick={() => {
+                trackWebinarEvent(id, "webinar_enter");
+                setLocation(`/webinar/${id}`);
+              }}
               className="w-full"
               variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
               data-testid="button-enter-webinar"
@@ -316,6 +328,11 @@ export default function Registration() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient}>
+      <WebinarTrackingProvider
+        webinarId={id}
+        metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
+        gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
+      />
       <Card className="max-w-lg w-full">
         <CardHeader className="text-center">
           {brandSettings?.logo && (

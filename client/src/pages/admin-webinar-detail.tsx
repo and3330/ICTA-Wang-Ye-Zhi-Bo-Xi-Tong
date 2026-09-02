@@ -17,6 +17,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { resolveFunnelCtaLabel } from "@/lib/funnel-analytics";
 import { 
   ArrowLeft, Plus, Users, MessageSquare, MousePointerClick, 
   BarChart, Trash2, Loader2, Clock, Radio, Copy, ExternalLink,
@@ -32,6 +33,11 @@ import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip
 import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost } from "@shared/schema";
 import type { FeedbackResponse } from "@shared/schema";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
+import {
+  isValidGtmContainerId,
+  isValidMetaPixelId,
+  type TrackingWebinar,
+} from "@/components/webinar-tracking-provider";
 
 interface AnalyticsResponse {
   webinar: Webinar;
@@ -51,6 +57,35 @@ interface AnalyticsResponse {
   }>;
   registrations: Registration[];
 }
+
+interface FunnelAnalyticsResponse {
+  webinarId: string;
+  range: { from: string | null; to: string | null };
+  counts: Record<string, number>;
+  uniqueViewers: number;
+  uniqueByStage: Record<string, number>;
+  stageConversionRates: Array<{ from: string; to: string; rate: number }>;
+  ctaPerformance: Array<{
+    ctaKey: string;
+    views: number;
+    clicks: number;
+    uniqueViews: number;
+    uniqueClicks: number;
+    clickThroughRate: number;
+  }>;
+  dropoffBuckets: Array<{ range: string; count: number }>;
+  revenue: Record<string, number>;
+}
+
+const funnelStageLabels: Record<string, string> = {
+  landing_view: "落地頁",
+  registration: "報名",
+  webinar_enter: "進入直播",
+  cta_view: "看到 CTA",
+  cta_click: "點擊 CTA",
+  checkout_start: "開始結帳",
+  purchase: "購買",
+};
 
 const t: Record<LangAdmin, Record<string, string>> = {
   "zh-TW": {
@@ -961,6 +996,12 @@ export default function AdminWebinarDetail() {
   const [isCtaOpen, setIsCtaOpen] = useState(false);
   const [isPollOpen, setIsPollOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
+  const [funnelFrom, setFunnelFrom] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    return date.toISOString().slice(0, 10);
+  });
+  const [funnelTo, setFunnelTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [answeringQuestionId, setAnsweringQuestionId] = useState<string | null>(null);
   const [answerInput, setAnswerInput] = useState("");
 
@@ -1042,12 +1083,14 @@ export default function AdminWebinarDetail() {
 
   const [notifyQuestionEmail, setNotifyQuestionEmail] = useState(false);
   const [notifyEmail, setNotifyEmail] = useState("");
+  const [metaPixelId, setMetaPixelId] = useState("");
+  const [gtmContainerId, setGtmContainerId] = useState("");
 
   const [editTagsRegId, setEditTagsRegId] = useState<string | null>(null);
   const [editTagsValue, setEditTagsValue] = useState("");
   const [tagFilter, setTagFilter] = useState("__all__");
 
-  const { data: webinar, isLoading: webinarLoading } = useQuery<Webinar>({
+  const { data: webinar, isLoading: webinarLoading } = useQuery<Webinar & TrackingWebinar>({
     queryKey: ["/api/webinars", id],
     enabled: !!id,
   });
@@ -1090,6 +1133,11 @@ export default function AdminWebinarDetail() {
   const { data: analytics } = useQuery<AnalyticsResponse>({
     queryKey: ["/api/webinars", id, "analytics"],
     enabled: !!id,
+  });
+
+  const funnelQuery = useQuery<FunnelAnalyticsResponse>({
+    queryKey: [`/api/webinars/${id}/funnel-analytics?from=${encodeURIComponent(funnelFrom)}&to=${encodeURIComponent(funnelTo)}`],
+    enabled: !!id && !!funnelFrom && !!funnelTo,
   });
 
   const { data: webinarSessions } = useQuery<Array<{ id: string; scheduledStart: string; status: string }>>({
@@ -1222,6 +1270,8 @@ export default function AdminWebinarDetail() {
       setEditVimeoUrl(webinar.vimeoUrl);
       setEditStartTime(new Date(webinar.startTime).toISOString().slice(0, 16));
       setEditCoverImage(webinar.coverImage || "");
+      setMetaPixelId(webinar.metaPixelId || "");
+      setGtmContainerId(webinar.gtmContainerId || "");
 
       const bs = webinar.brandSettings as any;
       if (bs) {
@@ -1591,6 +1641,30 @@ export default function AdminWebinarDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id] });
       toast({ title: s.ntSaved });
+    },
+    onError: (error: Error) => {
+      toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveTrackingSettings = useMutation({
+    mutationFn: async () => {
+      const pixel = metaPixelId.trim();
+      const gtm = gtmContainerId.trim().toUpperCase();
+      if (pixel && !isValidMetaPixelId(pixel)) {
+        throw new Error("Meta Pixel ID 只能包含數字");
+      }
+      if (gtm && !isValidGtmContainerId(gtm)) {
+        throw new Error("GTM Container ID 必須為 GTM- 開頭，且只能包含大寫英數字");
+      }
+      return apiRequest("PATCH", `/api/webinars/${id}`, {
+        metaPixelId: pixel || null,
+        gtmContainerId: gtm || null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id] });
+      toast({ title: s.toastSettingsSaved });
     },
     onError: (error: Error) => {
       toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" });
@@ -3844,6 +3918,159 @@ export default function AdminWebinarDetail() {
           <TabsContent value="analytics">
             {analytics ? (
               <div className="space-y-6">
+                <Card className="border-primary/20 bg-primary/[0.03] overflow-hidden">
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <TrendingUp className="h-4 w-4 text-primary" />
+                          漏斗成效
+                        </CardTitle>
+                        <CardDescription>用真實事件看見觀眾從進站到購買的每一個轉折。</CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {funnelQuery.isFetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                        資料範圍
+                      </div>
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-end gap-3 pt-2">
+                      <div className="space-y-1 flex-1">
+                        <Label htmlFor="funnel-from" className="text-xs">開始日期</Label>
+                        <Input id="funnel-from" type="date" value={funnelFrom} onChange={(e) => setFunnelFrom(e.target.value)} className="bg-background" />
+                      </div>
+                      <div className="space-y-1 flex-1">
+                        <Label htmlFor="funnel-to" className="text-xs">結束日期</Label>
+                        <Input id="funnel-to" type="date" value={funnelTo} onChange={(e) => setFunnelTo(e.target.value)} className="bg-background" />
+                      </div>
+                      <Button variant="outline" size="icon" className="shrink-0" onClick={() => funnelQuery.refetch()} disabled={funnelQuery.isFetching} aria-label="重新整理漏斗分析">
+                        <RefreshCw className={cn("h-4 w-4", funnelQuery.isFetching && "animate-spin")} />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    {funnelQuery.isLoading ? (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {[1, 2, 3, 4].map((item) => <div key={item} className="h-20 rounded-lg bg-muted animate-pulse" />)}
+                      </div>
+                    ) : funnelQuery.isError ? (
+                      <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-5 text-center">
+                        <p className="text-sm font-medium">漏斗分析暫時無法載入</p>
+                        <p className="text-xs text-muted-foreground mt-1">請確認日期範圍後再試一次。</p>
+                        <Button variant="outline" size="sm" className="mt-3" onClick={() => funnelQuery.refetch()}>重試</Button>
+                      </div>
+                    ) : !funnelQuery.data || funnelQuery.data.uniqueViewers === 0 ? (
+                      <div className="rounded-lg border border-dashed p-6 text-center">
+                        <BarChart className="h-8 w-8 mx-auto text-muted-foreground/50" />
+                        <p className="text-sm font-medium mt-2">這段期間還沒有漏斗事件</p>
+                        <p className="text-xs text-muted-foreground mt-1">當觀眾進入頁面、互動或購買後，成效會顯示在這裡。</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-5">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="rounded-lg bg-background border p-3">
+                            <p className="text-2xl font-semibold tracking-tight">{funnelQuery.data.uniqueViewers.toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground">不重複觀眾</p>
+                          </div>
+                          <div className="rounded-lg bg-background border p-3">
+                            <p className="text-2xl font-semibold tracking-tight">{(funnelQuery.data.counts.landing_view || 0).toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground">落地頁瀏覽</p>
+                          </div>
+                          <div className="rounded-lg bg-background border p-3">
+                            <p className="text-2xl font-semibold tracking-tight">{(funnelQuery.data.counts.purchase || 0).toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground">購買事件</p>
+                          </div>
+                          <div className="rounded-lg bg-background border p-3">
+                            <p className="text-2xl font-semibold tracking-tight">
+                              {Object.entries(funnelQuery.data.revenue).length
+                                ? Object.entries(funnelQuery.data.revenue).map(([currency, value]) => `${currency} ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`).join(" · ")
+                                : "—"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">收入（依幣別）</p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2" aria-label="事件總量">
+                          {Object.entries(funnelQuery.data.counts).map(([event, count]) => (
+                            <span key={event} className="inline-flex items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
+                              <span className="font-medium text-foreground">{count.toLocaleString()}</span>
+                              {funnelStageLabels[event] || event.replaceAll("_", " ")}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-5">
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <p className="text-sm font-medium">階段轉換</p>
+                              <span className="text-xs text-muted-foreground">不重複觀眾</span>
+                            </div>
+                            <div className="space-y-3">
+                              {Object.entries(funnelQuery.data.uniqueByStage)
+                                .filter(([stage]) => funnelStageLabels[stage])
+                                .map(([stage, count]) => {
+                                  const max = Math.max(1, funnelQuery.data.uniqueViewers);
+                                  return (
+                                    <div key={stage} className="space-y-1">
+                                      <div className="flex justify-between text-xs">
+                                        <span>{funnelStageLabels[stage]}</span>
+                                        <span className="font-medium">{count.toLocaleString()} 人 <span className="font-normal text-muted-foreground">/ {(funnelQuery.data.counts[stage] || 0).toLocaleString()} 次</span></span>
+                                      </div>
+                                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${Math.min(100, (count / max) * 100)}%` }} />
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border bg-background p-4">
+                            <p className="text-sm font-medium mb-3">階段轉換率</p>
+                            <div className="space-y-2.5">
+                              {funnelQuery.data.stageConversionRates.map((item) => (
+                                <div key={`${item.from}-${item.to}`} className="flex items-center justify-between gap-3 text-xs">
+                                  <span className="text-muted-foreground truncate">{funnelStageLabels[item.from] || item.from} → {funnelStageLabels[item.to] || item.to}</span>
+                                  <Badge variant={item.rate >= 30 ? "default" : "secondary"}>{item.rate.toFixed(2)}%</Badge>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                          <div className="rounded-lg border bg-background p-4">
+                            <p className="text-sm font-medium mb-3">CTA 表現</p>
+                            {funnelQuery.data.ctaPerformance.length ? (
+                              <div className="space-y-2">
+                                {funnelQuery.data.ctaPerformance.map((item) => {
+                                  return <div key={item.ctaKey} className="flex items-center justify-between gap-3 border-b last:border-0 pb-2 last:pb-0">
+                                      <span className="text-xs truncate">{resolveFunnelCtaLabel(item.ctaKey, ctas || [])}</span>
+                                    <div className="flex items-center gap-2 shrink-0 text-xs">
+                                      <span className="text-muted-foreground">{item.uniqueClicks}/{item.uniqueViews} 人</span>
+                                      <Badge variant="outline">{item.clickThroughRate.toFixed(2)}%</Badge>
+                                    </div>
+                                  </div>;
+                                })}
+                              </div>
+                            ) : <p className="text-xs text-muted-foreground">尚無 CTA 事件</p>}
+                          </div>
+                          <div className="rounded-lg border bg-background p-4">
+                            <p className="text-sm font-medium mb-3">影片流失位置</p>
+                            <div className="flex items-end gap-2 h-24">
+                              {funnelQuery.data.dropoffBuckets.map((bucket) => {
+                                const peak = Math.max(1, ...funnelQuery.data.dropoffBuckets.map((entry) => entry.count));
+                                return <div key={bucket.range} className="flex-1 h-full flex flex-col items-center justify-end gap-1">
+                                  <span className="text-[10px] text-muted-foreground">{bucket.count}</span>
+                                  <div className="w-full rounded-t bg-primary/70 min-h-1" style={{ height: `${Math.max(4, (bucket.count / peak) * 68)}px` }} />
+                                  <span className="text-[10px] text-muted-foreground">{bucket.range}</span>
+                                </div>;
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
                   <Card>
                     <CardContent className="p-4 text-center">
@@ -4085,6 +4312,64 @@ export default function AdminWebinarDetail() {
           {/* ===== Settings Tab ===== */}
           <TabsContent value="settings">
             <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">轉換追蹤</CardTitle>
+                  <CardDescription>
+                    僅需輸入平台提供的 ID。系統只會載入 Meta Pixel 與 Google Tag Manager 官方程式碼。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="meta-pixel-id">Meta Pixel ID</Label>
+                    <Input
+                      id="meta-pixel-id"
+                      inputMode="numeric"
+                      value={metaPixelId}
+                      onChange={(event) => setMetaPixelId(event.target.value.trim())}
+                      placeholder="例如：123456789012345"
+                      aria-invalid={Boolean(metaPixelId && !isValidMetaPixelId(metaPixelId))}
+                      data-testid="input-meta-pixel-id"
+                    />
+                    {metaPixelId && !isValidMetaPixelId(metaPixelId) && (
+                      <p className="text-sm text-destructive" data-testid="error-meta-pixel-id">
+                        Meta Pixel ID 只能包含數字
+                      </p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="gtm-container-id">Google Tag Manager Container ID</Label>
+                    <Input
+                      id="gtm-container-id"
+                      value={gtmContainerId}
+                      onChange={(event) => setGtmContainerId(event.target.value.trim().toUpperCase())}
+                      placeholder="例如：GTM-ABC123"
+                      aria-invalid={Boolean(gtmContainerId && !isValidGtmContainerId(gtmContainerId))}
+                      data-testid="input-gtm-container-id"
+                    />
+                    {gtmContainerId && !isValidGtmContainerId(gtmContainerId) && (
+                      <p className="text-sm text-destructive" data-testid="error-gtm-container-id">
+                        必須為 GTM- 開頭，且只能包含大寫英數字
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    onClick={() => saveTrackingSettings.mutate()}
+                    disabled={
+                      saveTrackingSettings.isPending ||
+                      Boolean(metaPixelId && !isValidMetaPixelId(metaPixelId)) ||
+                      Boolean(gtmContainerId && !isValidGtmContainerId(gtmContainerId))
+                    }
+                    data-testid="button-save-tracking"
+                  >
+                    {saveTrackingSettings.isPending
+                      ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      : <Save className="h-4 w-4 mr-2" />}
+                    儲存追蹤設定
+                  </Button>
+                </CardContent>
+              </Card>
+
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">{s.cfTitle}</CardTitle>

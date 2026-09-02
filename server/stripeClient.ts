@@ -2,10 +2,14 @@ import Stripe from 'stripe';
 
 let connectionSettings: any;
 
+export function shouldUseLiveStripeCredentials(env: NodeJS.ProcessEnv = process.env) {
+  return env.NODE_ENV === 'production' ||
+    env.REPLIT_DEPLOYMENT === '1' ||
+    env.STRIPE_LIVE_MODE === '1';
+}
+
 async function getCredentials() {
-  const useLiveCredentials =
-    process.env.REPLIT_DEPLOYMENT === '1' ||
-    process.env.STRIPE_LIVE_MODE === '1';
+  const useLiveCredentials = shouldUseLiveStripeCredentials();
 
   if (useLiveCredentials) {
     const publishableKey = process.env.STRIPE_LIVE_PUBLISHABLE_KEY;

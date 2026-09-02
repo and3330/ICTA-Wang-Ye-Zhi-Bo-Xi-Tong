@@ -15,6 +15,20 @@
       "when": 1788164647246,
       "tag": "0001_saas_backend_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788164647247,
+      "tag": "0002_webinar_funnel_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788164647248,
+      "tag": "0003_cta_tracking_keys",
+      "breakpoints": true
     }
   ]
 }
