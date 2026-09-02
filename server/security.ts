@@ -8,6 +8,11 @@ export function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+/** Inclusive expiry boundary: a token is unusable at its expiry timestamp. */
+export function isTokenExpired(expiresAt: Date, now = new Date()): boolean {
+  return expiresAt.getTime() <= now.getTime();
+}
+
 export function safeErrorText(value: unknown, maxLength = 1000): string {
   const text = value instanceof Error ? value.message : String(value ?? "Unknown error");
   return text

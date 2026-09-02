@@ -43,6 +43,7 @@ import { canViewWebinar } from "./webinarAccess";
 import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
 import { postgresRateLimit } from "./rateLimit";
+import { persistProductionError } from "./errorReporter";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -68,6 +69,14 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
     next();
   } else {
     res.status(401).json({ message: "Unauthorized" });
+  }
+}
+
+function reportUnexpectedAuthDeliveryFailure(error: unknown, req: Request) {
+  if (process.env.NODE_ENV === "production") {
+    void persistProductionError(error, req, 500).catch(() => {
+      // Reporting must never alter the generic auth response.
+    });
   }
 }
 
@@ -792,6 +801,7 @@ export async function registerRoutes(
       });
       res.status(201).json({ success: true, verificationRequired: true });
     } catch (error: any) {
+      reportUnexpectedAuthDeliveryFailure(error, req);
       res.status(500).json({ message: "註冊失敗" });
     }
   });
@@ -845,8 +855,9 @@ export async function registerRoutes(
         subject: "Verify your email",
         html: `<p><a href="${appBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}">Verify email</a>. This link expires in 30 minutes.</p>`,
       });
-    } catch {
+    } catch (error) {
       // Deliberately return the identical response to prevent account enumeration.
+      reportUnexpectedAuthDeliveryFailure(error, req);
     }
     res.json(generic);
   });
@@ -866,8 +877,9 @@ export async function registerRoutes(
         subject: "Reset your password",
         html: `<p><a href="${appBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}">Reset password</a>. This link expires in 15 minutes.</p>`,
       });
-    } catch {
+    } catch (error) {
       // Deliberately return the identical response to prevent account enumeration.
+      reportUnexpectedAuthDeliveryFailure(error, req);
     }
     res.json(generic);
   });

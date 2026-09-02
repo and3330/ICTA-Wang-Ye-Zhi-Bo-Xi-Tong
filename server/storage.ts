@@ -206,6 +206,23 @@ export async function claimWebinarPublicationWithinLimit(
   });
 }
 
+export async function issueAuthToken(
+  database: typeof db,
+  userId: string,
+  purpose: string,
+  tokenHash: string,
+  expiresAt: Date,
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    // The lock spans invalidation and insertion, preventing concurrent active tokens
+    // for the same user and purpose across application instances.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${userId}:${purpose}`}))`);
+    await tx.update(authTokens).set({ consumedAt: new Date() })
+      .where(and(eq(authTokens.userId, userId), eq(authTokens.purpose, purpose), isNull(authTokens.consumedAt)));
+    await tx.insert(authTokens).values({ userId, purpose, tokenHash, expiresAt });
+  });
+}
+
 export class DatabaseStorage implements IStorage {
   // Users (Admin)
   async getUser(id: string): Promise<User | undefined> {
@@ -259,11 +276,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createAuthToken(userId: string, purpose: string, tokenHash: string, expiresAt: Date): Promise<void> {
-    await db.transaction(async (tx) => {
-      await tx.update(authTokens).set({ consumedAt: new Date() })
-        .where(and(eq(authTokens.userId, userId), eq(authTokens.purpose, purpose), isNull(authTokens.consumedAt)));
-      await tx.insert(authTokens).values({ userId, purpose, tokenHash, expiresAt });
-    });
+    await issueAuthToken(db, userId, purpose, tokenHash, expiresAt);
   }
 
   async getLatestAuthTokenCreatedAt(userId: string, purpose: string): Promise<Date | null> {
