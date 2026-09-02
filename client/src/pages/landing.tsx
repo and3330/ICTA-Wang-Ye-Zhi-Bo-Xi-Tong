@@ -115,6 +115,6 @@ export default function Landing() {
     <section id="pricing" className="ih-pricing"><div className="ih-center-title"><p className="ih-kicker">{s.priceKicker}</p><h2>{s.priceTitle}</h2><p>{s.priceDesc}</p></div><div className="ih-plans">{[["$49", "2", s.plan1, s.plan1Desc], ["$99", "5", s.plan2, s.plan2Desc]].map(([price, rooms, title, desc], i) => <article className={i === 1 ? "featured" : ""} key={price}><small>{i === 1 ? s.included : "ICTA Webinar"}</small><h3>{title}</h3><p>{desc}</p><div className="ih-price"><b>{price}</b><span>USD {s.perMonth}</span></div><div className="ih-room"><strong>{rooms}</strong><span>{s.rooms}</span></div><button className="ih-plan-button" onClick={goAdmin}>{s.select}<ArrowRight size={16} /></button></article>)}</div><p className="ih-addon"><Sparkles size={17} />{s.addon}</p></section>
 
     <section className="ih-final"><div><p className="ih-kicker"><Radio size={14} />ICTA WEBINAR</p><h2>{s.finalTitle}</h2><p>{s.finalDesc}</p><button className="ih-button" onClick={goAdmin}>{s.finalCta}<ArrowRight size={18} /></button></div><div className="ih-final-orbit"><i /><i /><i /></div></section>
-    <footer><span>ICTA <b>WEBINAR</b></span><span>© {new Date().getFullYear()} ICTA Webinar</span><a href="#top">{s.backTop} <ArrowRight size={14} /></a></footer>
+    <footer><span>ICTA <b>WEBINAR</b></span><span className="flex items-center gap-4"><a href="/legal/terms">服務條款</a><a href="/legal/privacy">隱私權</a><a href="/legal/refunds">退款政策</a></span><a href="#top">{s.backTop} <ArrowRight size={14} /></a></footer>
   </main>;
 }

@@ -7,8 +7,6 @@ import { createServer } from "http";
 import { runMigrations } from "stripe-replit-sync";
 import { getStripeSync } from "./stripeClient";
 import { WebhookHandlers } from "./webhookHandlers";
-import bcrypt from "bcryptjs";
-import { storage } from "./storage";
 import { runAppMigrations } from "./db";
 import { getApprovedPriceIds, SUBSCRIPTION_PLANS, ADDON_LOOKUP_KEY } from "./subscriptionEntitlements";
 
@@ -24,13 +22,18 @@ declare module "http" {
 }
 
 const PgStore = connectPgSimple(session);
+const sessionSecret = process.env.SESSION_SECRET;
+
+if (!sessionSecret) {
+  throw new Error("SESSION_SECRET is required");
+}
 
 const sessionMiddleware = session({
   store: new PgStore({
     conString: process.env.DATABASE_URL,
     createTableIfMissing: true,
   }),
-  secret: process.env.SESSION_SECRET || "webinar-secret-key-2024",
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -90,23 +93,11 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
     }
   });
 
@@ -150,36 +141,6 @@ app.use((req, res, next) => {
     }
   } catch (error) {
     console.error('Failed to initialize Stripe:', error);
-  }
-
-  try {
-    let adminUser = await storage.getUserByUsername("admin");
-    if (!adminUser) {
-      const hashedPassword = await bcrypt.hash("aa3210", 10);
-      try {
-        await storage.createUser({
-          username: "admin",
-          password: hashedPassword,
-          email: "admin@icta-webinar.com",
-          companyName: "ICTA",
-        });
-        log("Default admin account created (admin / aa3210)", "seed");
-      } catch (insertErr: any) {
-        if (!String(insertErr?.message || "").toLowerCase().includes("unique")) {
-          throw insertErr;
-        }
-      }
-      adminUser = await storage.getUserByUsername("admin");
-    }
-    if (adminUser && (!adminUser.isSuperAdmin || adminUser.subscriptionPlan !== "enterprise")) {
-      await storage.updateUser(adminUser.id, {
-        isSuperAdmin: true,
-        subscriptionPlan: "enterprise",
-        maxWebinars: 999,
-      });
-    }
-  } catch (err) {
-    console.error("Failed to seed admin account:", err);
   }
 
   await registerRoutes(httpServer, app, sessionMiddleware);

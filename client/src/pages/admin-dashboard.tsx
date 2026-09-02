@@ -383,6 +383,7 @@ export default function AdminDashboard() {
 
   const { data: stripeConfig } = useQuery<{
     publishableKey: string;
+    billingAvailable: boolean;
     catalogReady: boolean;
     plans: { key: "starter" | "growth"; amountUsd: number; includedWebinars: number }[];
     addonAmountUsd: number;
@@ -745,12 +746,21 @@ export default function AdminDashboard() {
                 <Button variant="outline" size="icon" onClick={() => setAddonWebinars(Math.min(50, addonWebinars + 1))}>+</Button>
               </div>
             </div>
-            <Button onClick={() => checkoutMutation.mutate()} disabled={checkoutMutation.isPending || !stripeConfig?.catalogReady}>
+            <Button
+              onClick={() => checkoutMutation.mutate()}
+              disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !stripeConfig.catalogReady}
+              aria-busy={checkoutMutation.isPending}
+            >
               {checkoutMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-              前往 Stripe 安全結帳
+              {checkoutMutation.isPending ? "正在建立安全結帳…" : "前往 Stripe 安全結帳"}
             </Button>
-            {stripeConfig && !stripeConfig.catalogReady && (
-              <p className="text-sm text-destructive">Stripe 方案正在設定中，請稍後再試。</p>
+            {stripeConfig && !stripeConfig.billingAvailable && (
+              <p className="text-sm text-destructive" role="alert">
+                正式付款服務尚未啟用，管理員需完成 Stripe Live 連線後重新發布。
+              </p>
+            )}
+            {stripeConfig?.billingAvailable && !stripeConfig.catalogReady && (
+              <p className="text-sm text-destructive" role="alert">Stripe 方案正在設定中，請稍後再試。</p>
             )}
           </DialogContent>
         </Dialog>

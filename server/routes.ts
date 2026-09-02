@@ -990,6 +990,10 @@ export async function registerRoutes(
   });
 
   app.get("/api/stripe/config", async (_req, res) => {
+    const plans = [
+      { key: "starter", amountUsd: 49, includedWebinars: 2 },
+      { key: "growth", amountUsd: 99, includedWebinars: 5 },
+    ];
     try {
       const key = await getStripePublishableKey();
       const { byLookupKey } = await getApprovedPriceIds();
@@ -999,15 +1003,20 @@ export async function registerRoutes(
       ].every((lookupKey) => byLookupKey.has(lookupKey));
       res.json({
         publishableKey: key,
+        billingAvailable: true,
         catalogReady,
-        plans: [
-          { key: "starter", amountUsd: 49, includedWebinars: 2 },
-          { key: "growth", amountUsd: 99, includedWebinars: 5 },
-        ],
+        plans,
         addonAmountUsd: 20,
       });
     } catch (error: any) {
-      res.status(500).json({ message: error.message });
+      console.error("Stripe configuration unavailable:", error?.message || error);
+      res.json({
+        publishableKey: "",
+        billingAvailable: false,
+        catalogReady: false,
+        plans,
+        addonAmountUsd: 20,
+      });
     }
   });
 

@@ -14,6 +14,7 @@ import AdminControl from "@/pages/admin-control";
 import EmbedRegister from "@/pages/embed-register";
 import EmbedWebinar from "@/pages/embed-webinar";
 import SuperAdmin from "@/pages/super-admin";
+import Legal from "@/pages/legal";
 
 function Router() {
   return (
@@ -25,6 +26,7 @@ function Router() {
       {/* Public Routes */}
       <Route path="/register/:id" component={Registration} />
       <Route path="/webinar/:id" component={WebinarRoom} />
+      <Route path="/legal/:kind" component={Legal} />
       
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />
