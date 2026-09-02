@@ -15,6 +15,9 @@ import EmbedRegister from "@/pages/embed-register";
 import EmbedWebinar from "@/pages/embed-webinar";
 import SuperAdmin from "@/pages/super-admin";
 import Legal from "@/pages/legal";
+import VerifyEmail from "@/pages/verify-email";
+import ForgotPassword from "@/pages/forgot-password";
+import ResetPassword from "@/pages/reset-password";
 
 function Router() {
   return (
@@ -27,6 +30,9 @@ function Router() {
       <Route path="/register/:id" component={Registration} />
       <Route path="/webinar/:id" component={WebinarRoom} />
       <Route path="/legal/:kind" component={Legal} />
+       <Route path="/verify-email" component={VerifyEmail} />
+       <Route path="/forgot-password" component={ForgotPassword} />
+       <Route path="/reset-password" component={ResetPassword} />
       
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />

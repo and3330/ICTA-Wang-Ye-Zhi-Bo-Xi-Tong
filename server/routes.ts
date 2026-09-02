@@ -25,6 +25,7 @@ import {
   insertWebinarDocumentSchema,
   insertEmailSequenceSchema,
   insertSocialPostSchema,
+  insertSupportFeedbackSchema,
 } from "@shared/schema";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, getWebinarKnowledge } from "./aiGenerator";
 
@@ -39,6 +40,9 @@ import {
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
 import { canViewWebinar } from "./webinarAccess";
+import { appBaseUrl, sendTransactionalMail } from "./mail";
+import { createRawToken, hashToken } from "./security";
+import { postgresRateLimit } from "./rateLimit";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -139,6 +143,25 @@ export async function registerRoutes(
     }
     next();
   });
+
+  const authLimit = postgresRateLimit({ namespace: "auth", limit: 10, windowSeconds: 15 * 60 });
+  const resetLimit = postgresRateLimit({ namespace: "reset", limit: 5, windowSeconds: 15 * 60 });
+  const aiLimit = postgresRateLimit({ namespace: "ai", limit: 30, windowSeconds: 60 });
+  const stripeLimit = postgresRateLimit({ namespace: "stripe-mutation", limit: 15, windowSeconds: 60 });
+  const publicRegistrationLimit = postgresRateLimit({ namespace: "public-registration", limit: 10, windowSeconds: 60 });
+  const supportLimit = postgresRateLimit({ namespace: "support", limit: 5, windowSeconds: 10 * 60 });
+  app.use("/api/admin/login", authLimit);
+  app.use("/api/admin/register", authLimit);
+  app.use("/api/admin/forgot-password", resetLimit);
+  app.use("/api/admin/reset-password", resetLimit);
+  app.use("/api/admin/verify-email", resetLimit);
+  app.use("/api/admin/resend-verification", resetLimit);
+  app.use("/api/registrations", (req, res, next) =>
+    req.method === "POST" && req.path === "/" ? publicRegistrationLimit(req, res, next) : next());
+  app.use("/api/support", supportLimit);
+  app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
+  app.use("/api/webinars", (req, res, next) =>
+    req.method === "POST" && req.path.includes("/ai/") ? aiLimit(req, res, next) : next());
 
   // ============ Image Upload ============
   const uploadsDir = path.join(process.cwd(), "client", "public", "uploads");
@@ -726,7 +749,16 @@ export async function registerRoutes(
   app.post("/api/admin/register", async (req, res) => {
     try {
       const { username, password, email, companyName } = req.body;
-      if (!username || !password || !email) {
+      if (
+        typeof username !== "string" ||
+        typeof password !== "string" ||
+        typeof email !== "string" ||
+        !username.trim() ||
+        !email.trim() ||
+        username.length > 100 ||
+        email.length > 320 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
         return res.status(400).json({ message: "請填寫所有必填欄位" });
       }
       if (password.length < 6) {
@@ -736,17 +768,31 @@ export async function registerRoutes(
       if (existing) {
         return res.status(409).json({ message: "此帳號已被使用" });
       }
+      // Do not disclose whether an email is already associated with an account.
+      const normalizedEmail = email.trim().toLowerCase();
+      const existingEmail = await storage.getUserByEmail(normalizedEmail);
+      if (existingEmail) {
+        return res.status(201).json({ success: true, verificationRequired: true });
+      }
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = await storage.createUser({
         username,
         password: hashedPassword,
-        email,
-        companyName: companyName || "",
+        email: normalizedEmail,
+        companyName: typeof companyName === "string" ? companyName.slice(0, 200) : "",
+        emailVerificationRequired: true,
       });
-      req.session.userId = user.id;
-      res.json({ success: true, user: { id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin } });
+      const rawToken = createRawToken();
+      await storage.createAuthToken(user.id, "email_verification", hashToken(rawToken), new Date(Date.now() + 30 * 60 * 1000));
+      const verificationUrl = `${appBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}`;
+      await sendTransactionalMail({
+        to: user.email,
+        subject: "Verify your email",
+        html: `<p>Please verify your account. This link expires in 30 minutes.</p><p><a href="${verificationUrl}">Verify email</a></p>`,
+      });
+      res.status(201).json({ success: true, verificationRequired: true });
     } catch (error: any) {
-      res.status(500).json({ message: error.message || "註冊失敗" });
+      res.status(500).json({ message: "註冊失敗" });
     }
   });
 
@@ -763,8 +809,78 @@ export async function registerRoutes(
     if (!isValid) {
       return res.status(401).json({ message: "帳號或密碼錯誤" });
     }
-    req.session.userId = user.id;
-    res.json({ success: true, user: { id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin } });
+    if (user.emailVerificationRequired && !user.emailVerifiedAt) {
+      return res.status(403).json({ message: "請先驗證電子郵件", code: "EMAIL_VERIFICATION_REQUIRED" });
+    }
+    req.session.regenerate((error) => {
+      if (error) return res.status(500).json({ message: "登入失敗" });
+      req.session.userId = user.id;
+      req.session.save((saveError) => {
+        if (saveError) return res.status(500).json({ message: "登入失敗" });
+        res.json({ success: true, user: { id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin } });
+      });
+    });
+  });
+
+  app.post("/api/admin/verify-email", async (req, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token : "";
+    if (!token || token.length > 256) return res.status(400).json({ message: "Invalid or expired token" });
+    const consumed = await storage.consumeEmailVerificationToken(hashToken(token));
+    if (!consumed) return res.status(400).json({ message: "Invalid or expired token" });
+    res.json({ success: true });
+  });
+
+  app.post("/api/admin/resend-verification", async (req, res) => {
+    const generic = { message: "If the account is eligible, a verification email will be sent." };
+    try {
+      const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+      const user = email ? await storage.getUserByEmail(email) : undefined;
+      if (!user || !user.emailVerificationRequired || user.emailVerifiedAt) return res.json(generic);
+      const latest = await storage.getLatestAuthTokenCreatedAt(user.id, "email_verification");
+      if (latest && Date.now() - latest.getTime() < 60_000) return res.json(generic);
+      const rawToken = createRawToken();
+      await storage.createAuthToken(user.id, "email_verification", hashToken(rawToken), new Date(Date.now() + 30 * 60 * 1000));
+      await sendTransactionalMail({
+        to: user.email,
+        subject: "Verify your email",
+        html: `<p><a href="${appBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}">Verify email</a>. This link expires in 30 minutes.</p>`,
+      });
+    } catch {
+      // Deliberately return the identical response to prevent account enumeration.
+    }
+    res.json(generic);
+  });
+
+  app.post("/api/admin/forgot-password", async (req, res) => {
+    const generic = { message: "If an account exists, password reset instructions will be sent." };
+    try {
+      const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+      const user = email ? await storage.getUserByEmail(email) : undefined;
+      if (!user) return res.json(generic);
+      const latest = await storage.getLatestAuthTokenCreatedAt(user.id, "password_reset");
+      if (latest && Date.now() - latest.getTime() < 60_000) return res.json(generic);
+      const rawToken = createRawToken();
+      await storage.createAuthToken(user.id, "password_reset", hashToken(rawToken), new Date(Date.now() + 15 * 60 * 1000));
+      await sendTransactionalMail({
+        to: user.email,
+        subject: "Reset your password",
+        html: `<p><a href="${appBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}">Reset password</a>. This link expires in 15 minutes.</p>`,
+      });
+    } catch {
+      // Deliberately return the identical response to prevent account enumeration.
+    }
+    res.json(generic);
+  });
+
+  app.post("/api/admin/reset-password", async (req, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!token || token.length > 256 || password.length < 8 || password.length > 200) {
+      return res.status(400).json({ message: "Invalid token or password" });
+    }
+    const changed = await storage.resetPasswordWithToken(hashToken(token), await bcrypt.hash(password, 12));
+    if (!changed) return res.status(400).json({ message: "Invalid or expired token" });
+    res.json({ success: true });
   });
 
   app.post("/api/admin/logout", (req, res) => {
@@ -852,6 +968,31 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
+  });
+
+  app.post("/api/support", requireAdmin, async (req, res) => {
+    const parsed = insertSupportFeedbackSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid support submission" });
+    const feedback = await storage.createSupportFeedback(req.session.userId!, parsed.data);
+    res.status(201).json(feedback);
+  });
+
+  app.get("/api/super-admin/support", requireSuperAdmin, async (_req, res) => {
+    res.json(await storage.listSupportFeedback());
+  });
+
+  app.patch("/api/super-admin/support/:id", requireSuperAdmin, async (req, res) => {
+    const status = req.body?.status;
+    const adminNote = req.body?.adminNote;
+    if (status !== undefined && !["open", "in_progress", "resolved", "closed"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+    if (adminNote !== undefined && adminNote !== null && (typeof adminNote !== "string" || adminNote.length > 5000)) {
+      return res.status(400).json({ message: "Invalid admin note" });
+    }
+    const updated = await storage.updateSupportFeedback(req.params.id as string, { status, adminNote });
+    if (!updated) return res.status(404).json({ message: "Support feedback not found" });
+    res.json(updated);
   });
 
   // ============ Webinar Routes ============

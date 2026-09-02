@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, lt, lte, gte, desc, asc, count, isNull, or, sql } from "drizzle-orm";
+import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
   registrations, type InsertRegistration, type Registration,
@@ -24,6 +24,7 @@ import {
   emailSequences, type InsertEmailSequence, type EmailSequence,
   socialPosts, type InsertSocialPost, type SocialPost,
   aiPointTransactions, type AiPointTransaction,
+  authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -37,6 +38,14 @@ export interface IStorage {
   getPublishedWebinarCountByUser(userId: string): Promise<number>;
   publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }>;
   getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
+  createAuthToken(userId: string, purpose: string, tokenHash: string, expiresAt: Date): Promise<void>;
+  getLatestAuthTokenCreatedAt(userId: string, purpose: string): Promise<Date | null>;
+  consumeEmailVerificationToken(tokenHash: string): Promise<boolean>;
+  resetPasswordWithToken(tokenHash: string, passwordHash: string): Promise<boolean>;
+  createSupportFeedback(userId: string, data: InsertSupportFeedback): Promise<SupportFeedback>;
+  listSupportFeedback(): Promise<SupportFeedback[]>;
+  updateSupportFeedback(id: string, data: { status?: string; adminNote?: string | null }): Promise<SupportFeedback | undefined>;
   // AI 點數
   deductAiPoints(userId: string, points: number): Promise<number | null>; // 原子扣點；不足回 null
   addAiPoints(userId: string, points: number): Promise<number>; // 原子加點，回新餘額
@@ -241,6 +250,73 @@ export class DatabaseStorage implements IStorage {
 
   async getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined> {
     const result = await db.select().from(users).where(eq(users.stripeCustomerId, stripeCustomerId));
+    return result[0];
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const result = await db.select().from(users).where(sql`lower(${users.email}) = lower(${email})`).limit(1);
+    return result[0];
+  }
+
+  async createAuthToken(userId: string, purpose: string, tokenHash: string, expiresAt: Date): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx.update(authTokens).set({ consumedAt: new Date() })
+        .where(and(eq(authTokens.userId, userId), eq(authTokens.purpose, purpose), isNull(authTokens.consumedAt)));
+      await tx.insert(authTokens).values({ userId, purpose, tokenHash, expiresAt });
+    });
+  }
+
+  async getLatestAuthTokenCreatedAt(userId: string, purpose: string): Promise<Date | null> {
+    const result = await db.select({ createdAt: authTokens.createdAt }).from(authTokens)
+      .where(and(eq(authTokens.userId, userId), eq(authTokens.purpose, purpose)))
+      .orderBy(desc(authTokens.createdAt)).limit(1);
+    return result[0]?.createdAt ?? null;
+  }
+
+  async consumeEmailVerificationToken(tokenHash: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const token = await tx.update(authTokens).set({ consumedAt: new Date() })
+        .where(and(
+          eq(authTokens.tokenHash, tokenHash),
+          eq(authTokens.purpose, "email_verification"),
+          isNull(authTokens.consumedAt),
+          gt(authTokens.expiresAt, new Date()),
+        )).returning({ userId: authTokens.userId });
+      if (!token[0]) return false;
+      await tx.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, token[0].userId));
+      return true;
+    });
+  }
+
+  async resetPasswordWithToken(tokenHash: string, passwordHash: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const token = await tx.update(authTokens).set({ consumedAt: new Date() })
+        .where(and(
+          eq(authTokens.tokenHash, tokenHash),
+          eq(authTokens.purpose, "password_reset"),
+          isNull(authTokens.consumedAt),
+          gt(authTokens.expiresAt, new Date()),
+        )).returning({ userId: authTokens.userId });
+      if (!token[0]) return false;
+      await tx.update(users).set({ password: passwordHash }).where(eq(users.id, token[0].userId));
+      // connect-pg-simple stores session data as json in sess.
+      await tx.execute(sql`DELETE FROM "session" WHERE sess->>'userId' = ${token[0].userId}`);
+      return true;
+    });
+  }
+
+  async createSupportFeedback(userId: string, data: InsertSupportFeedback): Promise<SupportFeedback> {
+    const result = await db.insert(supportFeedback).values({ userId, ...data }).returning();
+    return result[0];
+  }
+
+  async listSupportFeedback(): Promise<SupportFeedback[]> {
+    return db.select().from(supportFeedback).orderBy(desc(supportFeedback.createdAt));
+  }
+
+  async updateSupportFeedback(id: string, data: { status?: string; adminNote?: string | null }): Promise<SupportFeedback | undefined> {
+    const result = await db.update(supportFeedback).set({ ...data, updatedAt: new Date() })
+      .where(eq(supportFeedback.id, id)).returning();
     return result[0];
   }
 

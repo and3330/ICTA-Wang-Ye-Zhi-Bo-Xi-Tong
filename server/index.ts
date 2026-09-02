@@ -9,6 +9,8 @@ import { getStripeSync } from "./stripeClient";
 import { WebhookHandlers } from "./webhookHandlers";
 import { runAppMigrations } from "./db";
 import { getApprovedPriceIds, SUBSCRIPTION_PLANS, ADDON_LOOKUP_KEY } from "./subscriptionEntitlements";
+import { persistProductionError } from "./errorReporter";
+import { safeErrorText } from "./security";
 
 const app = express();
 const httpServer = createServer(app);
@@ -147,9 +149,13 @@ app.use((req, res, next) => {
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    console.error("Internal Server Error:", err);
+    const message = status >= 500 ? "Internal Server Error" : safeErrorText(err);
+    console.error("Request failed:", safeErrorText(err));
+    if (process.env.NODE_ENV === "production" && status >= 500) {
+      void persistProductionError(err, _req, status).catch((reportError) => {
+        console.error("Error persistence failed:", safeErrorText(reportError));
+      });
+    }
 
     if (res.headersSent) {
       return next(err);

@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Loader2, Languages } from "lucide-react";
+import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
 
 const langLabels: Record<LangFull, string> = {
@@ -146,6 +146,10 @@ export default function AdminLogin() {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<"login" | "register">("login");
+  const [verificationRequired, setVerificationRequired] = useState(false);
+  const [verificationUsername, setVerificationUsername] = useState("");
+  const [verificationEmail, setVerificationEmail] = useState("");
+  const [isResending, setIsResending] = useState(false);
   const { lang, setLang } = useLang();
   const [langOpen, setLangOpen] = useState(false);
 
@@ -187,6 +191,11 @@ export default function AdminLogin() {
       toast({ title: s.welcomeBack });
       setLocation("/admin/dashboard");
     } catch (error: any) {
+      if (error.message?.includes("EMAIL_VERIFICATION_REQUIRED")) {
+        setVerificationRequired(true);
+        setVerificationUsername(data.username);
+        return;
+      }
       toast({
         title: s.loginFailed,
         description: error.message || s.invalidCreds,
@@ -206,8 +215,11 @@ export default function AdminLogin() {
         password: data.password,
         companyName: data.companyName || "",
       });
-      toast({ title: s.regSuccess });
-      setLocation("/admin/dashboard");
+      setVerificationRequired(true);
+      setVerificationUsername(data.username);
+      setVerificationEmail(data.email);
+      setMode("login");
+      toast({ title: s.regSuccess, description: lang === "en" ? "Check your email to verify your account before signing in." : "請查看電子郵件並完成驗證後再登入。" });
     } catch (error: any) {
       toast({
         title: s.regFailed,
@@ -217,6 +229,17 @@ export default function AdminLogin() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const resendVerification = async () => {
+    if (!verificationEmail) return;
+    setIsResending(true);
+    try {
+      await apiRequest("POST", "/api/admin/resend-verification", { email: verificationEmail });
+      toast({ title: lang === "en" ? "Verification email sent" : "驗證信已寄出", description: lang === "en" ? "Please check your inbox." : "請查看收件匣。" });
+    } catch (error: any) {
+      toast({ title: lang === "en" ? "Unable to resend email" : "無法重新寄送驗證信", description: error.message, variant: "destructive" });
+    } finally { setIsResending(false); }
   };
 
   useEffect(() => {
@@ -277,6 +300,21 @@ export default function AdminLogin() {
         <CardContent>
           {mode === "login" ? (
             <form onSubmit={loginForm.handleSubmit(onLogin)} className="space-y-4">
+              {verificationRequired && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 space-y-3 dark:bg-amber-950/30 dark:text-amber-100">
+                  <div className="flex gap-2">
+                    <MailCheck className="h-5 w-5 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold">{lang === "en" ? "Verify your email to continue" : "請先驗證電子郵件"}</p>
+                      <p>{lang === "en" ? `The account “${verificationUsername}” needs email verification.` : `帳號「${verificationUsername}」需要完成電子郵件驗證。`}</p>
+                    </div>
+                  </div>
+                  <Input type="email" value={verificationEmail} onChange={(e) => setVerificationEmail(e.target.value)} placeholder={lang === "en" ? "Account email address" : "帳號電子郵件"} autoComplete="email" />
+                  <Button type="button" size="sm" variant="outline" className="w-full" disabled={!verificationEmail || isResending} onClick={resendVerification} data-testid="button-resend-verification">
+                    {isResending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "en" ? "Resend verification email" : "重新寄送驗證信"}
+                  </Button>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="login-username">{s.username}</Label>
                 <Input id="login-username" placeholder={s.usernamePh} autoComplete="username" {...loginForm.register("username")} data-testid="input-username" />
@@ -290,6 +328,11 @@ export default function AdminLogin() {
                 {loginForm.formState.errors.password && (
                   <p className="text-sm font-medium text-destructive">{loginForm.formState.errors.password.message}</p>
                 )}
+              </div>
+              <div className="text-right">
+                <button type="button" onClick={() => setLocation("/forgot-password")} className="text-sm font-medium text-primary hover:underline" data-testid="link-forgot-password">
+                  {lang === "en" ? "Forgot password?" : "忘記密碼？"}
+                </button>
               </div>
               <Button type="submit" className="w-full" disabled={isLoading} data-testid="button-login">
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

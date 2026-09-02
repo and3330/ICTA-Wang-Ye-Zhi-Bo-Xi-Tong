@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
-  Users, Crown, ArrowLeft, Calendar, Shield, ShieldOff, Loader2, Search
+  Users, Crown, ArrowLeft, Calendar, Shield, ShieldOff, Loader2, Search, MessageSquare
 } from "lucide-react";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 
@@ -26,6 +27,18 @@ type AdminUser = {
   createdAt: string;
   webinarCount: number;
   isExpired: boolean;
+};
+
+type SupportItem = {
+  id: string;
+  userId: string;
+  category: "feedback" | "question" | "bug";
+  subject: string;
+  message: string;
+  status: "open" | "in_progress" | "resolved" | "closed";
+  adminNote: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 const t: Record<LangAdmin, Record<string, string>> = {
@@ -230,6 +243,7 @@ export default function SuperAdmin() {
   const s = t[lang];
   const [searchQuery, setSearchQuery] = useState("");
   const [editingUser, setEditingUser] = useState<string | null>(null);
+  const [supportNotes, setSupportNotes] = useState<Record<string, string>>({});
 
   const { data: me } = useQuery<{ id: string; isSuperAdmin: boolean }>({
     queryKey: ["/api/admin/me"],
@@ -237,6 +251,10 @@ export default function SuperAdmin() {
 
   const { data: users = [], isLoading } = useQuery<AdminUser[]>({
     queryKey: ["/api/super-admin/users"],
+    enabled: !!me?.isSuperAdmin,
+  });
+  const { data: supportItems = [], isLoading: supportLoading } = useQuery<SupportItem[]>({
+    queryKey: ["/api/super-admin/support"],
     enabled: !!me?.isSuperAdmin,
   });
 
@@ -248,6 +266,17 @@ export default function SuperAdmin() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/super-admin/users"] });
     },
+  });
+  const updateSupportMutation = useMutation({
+    mutationFn: async ({ id, status, adminNote }: { id: string; status: SupportItem["status"]; adminNote: string }) => {
+      const res = await apiRequest("PATCH", `/api/super-admin/support/${id}`, { status, adminNote });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/super-admin/support"] });
+      toast({ title: lang === "zh-CN" ? "支持请求已更新" : "客服案件已更新" });
+    },
+    onError: (error: any) => toast({ title: lang === "zh-CN" ? "更新失败" : "更新失敗", description: error.message, variant: "destructive" }),
   });
 
   if (!me?.isSuperAdmin) {
@@ -354,6 +383,40 @@ export default function SuperAdmin() {
             />
           </div>
         </div>
+
+        <section className="space-y-3" aria-labelledby="support-inbox-heading">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-5 w-5 text-primary" />
+            <div><h2 id="support-inbox-heading" className="text-xl font-bold">{lang === "zh-CN" ? "客服收件箱" : "客服收件匣"}</h2><p className="text-sm text-muted-foreground">{lang === "zh-CN" ? "处理用户的问题、错误报告和反馈。" : "處理使用者的問題、錯誤回報與建議。"}</p></div>
+          </div>
+          {supportLoading ? <Card><CardContent className="p-6 flex justify-center"><Loader2 className="h-5 w-5 animate-spin" /></CardContent></Card> : supportItems.length === 0 ? (
+            <Card><CardContent className="p-6 text-center text-sm text-muted-foreground">{lang === "zh-CN" ? "暂无客服请求" : "目前沒有客服案件"}</CardContent></Card>
+          ) : (
+            <div className="space-y-3">
+              {supportItems.map((item) => (
+                <Card key={item.id} data-testid={`card-support-${item.id}`}>
+                  <CardContent className="p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap"><Badge variant="outline">{item.category}</Badge><h3 className="font-semibold">{item.subject}</h3><Badge variant={item.status === "resolved" || item.status === "closed" ? "secondary" : "default"}>{item.status.replace("_", " ")}</Badge></div>
+                        <p className="mt-2 whitespace-pre-wrap text-sm">{item.message}</p>
+                        <p className="mt-2 text-xs text-muted-foreground">User: {item.userId} · {new Date(item.createdAt).toLocaleString(lang)}</p>
+                      </div>
+                      <Select value={item.status} onValueChange={(status: SupportItem["status"]) => updateSupportMutation.mutate({ id: item.id, status, adminNote: supportNotes[item.id] ?? item.adminNote ?? "" })}>
+                        <SelectTrigger className="w-full sm:w-40"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="open">Open</SelectItem><SelectItem value="in_progress">In progress</SelectItem><SelectItem value="resolved">Resolved</SelectItem><SelectItem value="closed">Closed</SelectItem></SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Textarea className="min-h-20" value={supportNotes[item.id] ?? item.adminNote ?? ""} onChange={(e) => setSupportNotes((notes) => ({ ...notes, [item.id]: e.target.value }))} placeholder={lang === "zh-CN" ? "管理员备注（用户不可见）" : "管理員備註（使用者不會看見）"} maxLength={5000} />
+                      <Button variant="outline" className="sm:self-end" disabled={updateSupportMutation.isPending} onClick={() => updateSupportMutation.mutate({ id: item.id, status: item.status, adminNote: supportNotes[item.id] ?? item.adminNote ?? "" })}>{updateSupportMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "zh-CN" ? "保存备注" : "儲存備註"}</Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
 
         {isLoading ? (
           <div className="flex items-center justify-center py-12">

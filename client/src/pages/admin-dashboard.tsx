@@ -6,11 +6,13 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -348,6 +350,10 @@ export default function AdminDashboard() {
   const [addonWebinars, setAddonWebinars] = useState(0);
   const [isRechargeOpen, setIsRechargeOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [supportCategory, setSupportCategory] = useState<"feedback" | "question" | "bug">("feedback");
+  const [supportSubject, setSupportSubject] = useState("");
+  const [supportMessage, setSupportMessage] = useState("");
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
 
@@ -541,6 +547,21 @@ export default function AdminDashboard() {
     },
   });
 
+  const supportMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/support", { category: supportCategory, subject: supportSubject, message: supportMessage });
+      return res.json();
+    },
+    onSuccess: () => {
+      setIsSupportOpen(false);
+      setSupportCategory("feedback");
+      setSupportSubject("");
+      setSupportMessage("");
+      toast({ title: lang === "zh-CN" ? "已发送给客服" : "已送出客服訊息", description: lang === "zh-CN" ? "我们会尽快回复您。" : "我們會盡快回覆您。" });
+    },
+    onError: (error: any) => toast({ title: lang === "zh-CN" ? "发送失败" : "送出失敗", description: error.message, variant: "destructive" }),
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("checkout") === "success") {
@@ -646,6 +667,10 @@ export default function AdminDashboard() {
                 {s.superAdminPanel}
               </Button>
             )}
+            <Button variant="ghost" size="sm" onClick={() => setIsSupportOpen(true)} data-testid="button-open-support">
+              <MessageCircle className="h-4 w-4 mr-1" />
+              {lang === "zh-CN" ? "客服" : "客服支援"}
+            </Button>
             <Button variant="ghost" onClick={handleLogout} data-testid="button-logout">
               <LogOut className="h-4 w-4 mr-2" />
               {s.logout}
@@ -655,6 +680,30 @@ export default function AdminDashboard() {
       </header>
 
       <main className="container mx-auto px-4 py-8 space-y-6">
+        <Dialog open={isSupportOpen} onOpenChange={setIsSupportOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{lang === "zh-CN" ? "联系支持团队" : "聯繫客服團隊"}</DialogTitle>
+              <DialogDescription>{lang === "zh-CN" ? "提交问题、错误报告或产品反馈，我们会尽快处理。" : "提交問題、錯誤回報或產品建議，我們會盡快處理。"}</DialogDescription>
+            </DialogHeader>
+            <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); supportMutation.mutate(); }}>
+              <div className="space-y-2">
+                <Label>{lang === "zh-CN" ? "类型" : "類型"}</Label>
+                <Select value={supportCategory} onValueChange={(value: "feedback" | "question" | "bug") => setSupportCategory(value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="feedback">{lang === "zh-CN" ? "产品反馈" : "產品建議"}</SelectItem>
+                    <SelectItem value="question">{lang === "zh-CN" ? "使用问题" : "使用問題"}</SelectItem>
+                    <SelectItem value="bug">{lang === "zh-CN" ? "错误报告" : "錯誤回報"}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2"><Label htmlFor="support-subject">{lang === "zh-CN" ? "主题" : "主旨"}</Label><Input id="support-subject" maxLength={200} value={supportSubject} onChange={(e) => setSupportSubject(e.target.value)} required /></div>
+              <div className="space-y-2"><Label htmlFor="support-message">{lang === "zh-CN" ? "说明" : "說明"}</Label><Textarea id="support-message" maxLength={5000} rows={5} value={supportMessage} onChange={(e) => setSupportMessage(e.target.value)} required /></div>
+              <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setIsSupportOpen(false)}>{s.cancel}</Button><Button type="submit" disabled={supportMutation.isPending || !supportSubject.trim() || !supportMessage.trim()}>{supportMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "zh-CN" ? "发送" : "送出"}</Button></div>
+            </form>
+          </DialogContent>
+        </Dialog>
         {subscription && !subscription.isSuperAdmin && (
           <Card>
             <CardContent className="p-5 space-y-4">

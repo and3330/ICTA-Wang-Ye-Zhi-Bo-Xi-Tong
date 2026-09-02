@@ -8,6 +8,13 @@
       "when": 1788164647245,
       "tag": "0000_add_subscription_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788164647246,
+      "tag": "0001_saas_backend_foundation",
+      "breakpoints": true
     }
   ]
 }

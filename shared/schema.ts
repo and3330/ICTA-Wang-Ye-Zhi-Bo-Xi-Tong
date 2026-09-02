@@ -434,12 +434,67 @@ export const users = pgTable("users", {
   subscriptionStartedAt: timestamp("subscription_started_at"),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
   addonWebinars: integer("addon_webinars").notNull().default(0),
+  emailVerificationRequired: boolean("email_verification_required").notNull().default(false),
+  emailVerifiedAt: timestamp("email_verified_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+
+// Authentication tokens contain hashes only. Raw tokens are never persisted.
+export const authTokens = pgTable("auth_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  purpose: text("purpose").notNull(), // email_verification, password_reset
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  consumedAt: timestamp("consumed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type AuthToken = typeof authTokens.$inferSelect;
+
+export const rateLimitBuckets = pgTable("rate_limit_buckets", {
+  key: text("key").primaryKey(),
+  windowStartedAt: timestamp("window_started_at").notNull(),
+  requestCount: integer("request_count").notNull().default(1),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+export const errorEvents = pgTable("error_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fingerprint: text("fingerprint").notNull(),
+  method: text("method"),
+  path: text("path"),
+  statusCode: integer("status_code").notNull().default(500),
+  message: text("message").notNull(),
+  stack: text("stack"),
+  userId: varchar("user_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type ErrorEvent = typeof errorEvents.$inferSelect;
+
+export const supportFeedback = pgTable("support_feedback", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  category: text("category").notNull().default("feedback"),
+  subject: text("subject").notNull(),
+  message: text("message").notNull(),
+  status: text("status").notNull().default("open"),
+  adminNote: text("admin_note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export const insertSupportFeedbackSchema = createInsertSchema(supportFeedback)
+  .pick({ category: true, subject: true, message: true })
+  .extend({
+    category: z.enum(["feedback", "question", "bug"]).default("feedback"),
+    subject: z.string().trim().min(1).max(200),
+    message: z.string().trim().min(1).max(5000),
+  });
+export type InsertSupportFeedback = z.infer<typeof insertSupportFeedbackSchema>;
+export type SupportFeedback = typeof supportFeedback.$inferSelect;
 
 // AI 點數交易記錄（充值 / 後台贈送），用於 Stripe 充值的冪等保護
 export const aiPointTransactions = pgTable("ai_point_transactions", {
