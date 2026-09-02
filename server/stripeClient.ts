@@ -3,6 +3,24 @@ import Stripe from 'stripe';
 let connectionSettings: any;
 
 async function getCredentials() {
+  const useLiveCredentials =
+    process.env.REPLIT_DEPLOYMENT === '1' ||
+    process.env.STRIPE_LIVE_MODE === '1';
+
+  if (useLiveCredentials) {
+    const publishableKey = process.env.STRIPE_LIVE_PUBLISHABLE_KEY;
+    const secretKey = process.env.STRIPE_LIVE_SECRET_KEY;
+
+    if (!publishableKey || !secretKey) {
+      throw new Error('Stripe Live API credentials are not configured');
+    }
+    if (!publishableKey.startsWith('pk_live_') || !secretKey.startsWith('sk_live_')) {
+      throw new Error('Stripe Live API credentials have an invalid format');
+    }
+
+    return { publishableKey, secretKey };
+  }
+
   const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
   const xReplitToken = process.env.REPL_IDENTITY
     ? 'repl ' + process.env.REPL_IDENTITY
@@ -15,8 +33,7 @@ async function getCredentials() {
   }
 
   const connectorName = 'stripe';
-  const isProduction = process.env.REPLIT_DEPLOYMENT === '1';
-  const targetEnvironment = isProduction ? 'production' : 'development';
+  const targetEnvironment = 'development';
 
   const url = new URL(`https://${hostname}/api/v2/connection`);
   url.searchParams.set('include_secrets', 'true');
