@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams } from "wouter";
+import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +10,7 @@ import { Heart, Send, ExternalLink, Loader2 } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { getWatchToken } from "@/lib/watch-access";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -50,6 +51,18 @@ export default function EmbedWebinar() {
     queryKey: ["/api/webinars", id],
     enabled: !!id,
   });
+  const watchToken = getWatchToken(id);
+  const { data: watchState, isLoading: watchStateLoading } = useQuery<{ selectedSession?: string | null; waitUntil?: string | null; vimeoUrl?: string | null; canWatch: boolean }>({
+    queryKey: ["/api/webinars", id, "watch-state", watchToken],
+    queryFn: async () => {
+      const response = await apiRequest("GET", `/api/webinars/${id}/watch-state?watchToken=${encodeURIComponent(watchToken!)}`);
+      return response.json();
+    },
+    enabled: !!id && !!watchToken,
+    refetchInterval: (query) => query.state.data?.canWatch ? false : 5_000,
+  });
+  const effectiveVimeoUrl = watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl;
+  const canWatch = watchToken ? !!watchState?.canWatch : !!webinar?.vimeoUrl;
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -71,7 +84,7 @@ export default function EmbedWebinar() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "join", data: { webinarId: id, nickname, sessionId } }));
+      ws.send(JSON.stringify({ type: "join", data: { webinarId: id, nickname, sessionId, watchToken: watchToken || undefined } }));
     };
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
@@ -104,7 +117,7 @@ export default function EmbedWebinar() {
       setTimeout(() => connectWebSocket(), 3000);
     };
     wsRef.current = ws;
-  }, [id, nickname, sessionId]);
+  }, [id, nickname, sessionId, watchToken]);
 
   useEffect(() => {
     if (isJoined) connectWebSocket();
@@ -112,7 +125,7 @@ export default function EmbedWebinar() {
   }, [isJoined, connectWebSocket]);
 
   useEffect(() => {
-    if (!isJoined || !webinar?.vimeoUrl) return;
+    if (!isJoined || !effectiveVimeoUrl || !canWatch || watchStateLoading) return;
     const script = document.createElement("script");
     script.src = "https://player.vimeo.com/api/player.js";
     script.onload = () => {
@@ -138,7 +151,7 @@ export default function EmbedWebinar() {
       }
     };
     document.head.appendChild(script);
-  }, [isJoined, webinar]);
+  }, [isJoined, effectiveVimeoUrl, canWatch, watchStateLoading]);
 
   useEffect(() => {
     if (!id || !isJoined || !videoDuration) return;
@@ -245,6 +258,18 @@ export default function EmbedWebinar() {
   );
 
   if (!isJoined) {
+    if (!canWatch || !effectiveVimeoUrl) {
+      return (
+        <div className="flex items-center justify-center h-screen p-4">
+          {trackingProvider}
+          <div className="text-center space-y-3 w-full max-w-xs">
+            <h3 className="font-bold text-base">{webinar.title}</h3>
+            <p className="text-sm text-muted-foreground">請先完成報名並選擇場次，再進入觀看。</p>
+            <Link href={`/register/${id}`} className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">前往報名</Link>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center justify-center h-screen p-4">
         {trackingProvider}
@@ -285,13 +310,24 @@ export default function EmbedWebinar() {
       {trackingProvider}
       <div className="relative bg-black">
         <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
-          <iframe
-            ref={iframeRef}
-            src={getVimeoEmbedUrl(webinar.vimeoUrl)}
-            className="absolute inset-0 w-full h-full"
-            allow="autoplay; fullscreen; picture-in-picture"
-            allowFullScreen
-          />
+          {watchToken && (watchStateLoading || !canWatch) ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted p-4 text-center">
+              <p className="text-sm font-medium">場次尚未開始</p>
+              <p className="text-xs text-muted-foreground">
+                {watchState?.waitUntil
+                  ? `開始時間：${new Date(watchState.waitUntil).toLocaleString("zh-TW", { timeZone: webinar.timezone || "Asia/Taipei", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}（${webinar.timezone || "Asia/Taipei"}）`
+                  : "請稍候，影片即將開放觀看"}
+              </p>
+            </div>
+          ) : (
+            <iframe
+              ref={iframeRef}
+              src={getVimeoEmbedUrl(effectiveVimeoUrl!)}
+              className="absolute inset-0 w-full h-full"
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowFullScreen
+            />
+          )}
         </div>
         {[...visibleCtas, ...liveCtas].map(cta => (
           <div key={cta.id} className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-10">

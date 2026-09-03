@@ -67,6 +67,12 @@ export interface IStorage {
   
   // Registrations
   createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration>;
+  createRegistrationWithinMonthlyLimit(
+    userId: string,
+    data: InsertRegistration,
+    monthlyLimit: number,
+    analyticsVisitorToken?: string,
+  ): Promise<Registration | null>;
   getRegistration(id: string): Promise<Registration | undefined>;
   getRegistrationsByWebinar(webinarId: string): Promise<Registration[]>;
   getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined>;
@@ -469,6 +475,39 @@ export class DatabaseStorage implements IStorage {
   // Registrations
   async createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration> {
     return db.transaction(async (tx) => {
+      const result = await tx.insert(registrations).values(data).returning();
+      const registration = result[0];
+      await tx.insert(webinarFunnelEvents).values(
+        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
+      ).onConflictDoNothing({
+        target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
+      });
+      return registration;
+    });
+  }
+
+  async createRegistrationWithinMonthlyLimit(
+    userId: string,
+    data: InsertRegistration,
+    monthlyLimit: number,
+    analyticsVisitorToken?: string,
+  ): Promise<Registration | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`monthly-registrants:${userId}`}))`);
+      const now = new Date();
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+      const totals = await tx
+        .select({ value: count() })
+        .from(registrations)
+        .innerJoin(webinars, eq(registrations.webinarId, webinars.id))
+        .where(and(
+          eq(webinars.userId, userId),
+          gte(registrations.registeredAt, monthStart),
+          lt(registrations.registeredAt, nextMonth),
+        ));
+      if (Number(totals[0]?.value || 0) >= monthlyLimit) return null;
+
       const result = await tx.insert(registrations).values(data).returning();
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(

@@ -17,6 +17,25 @@ on-demand availability alongside them, and let registration UIs add a non-date
 "隨到隨看" choice. Only real session timestamps should be stored as a selected
 session. Keep just-in-time behavior separate unless product requirements change.
 
+# Registration-bound watch access
+
+Published webinar metadata is public for registration, but playable media is not.
+Anonymous viewers need a signed, registration-scoped credential to obtain the media
+URL or join the viewer WebSocket; the only tokenless exception is an authenticated
+owner preview. Scheduled credentials must remain valid through the selected session
+and replay window, and every confirmation, reminder, and sequence email must carry a
+fresh tokenized watch link.
+
+**Why:** Client-side countdowns and hidden controls are bypassable when a viewer can
+remove a query parameter, join the socket without a credential, or read the raw
+Vimeo URL from a public API. Bare reminder links also lock out legitimate registrants
+once tokenless access is closed.
+
+**How to apply:** Enforce selected-session timing at the server watch-state and
+WebSocket boundaries, redact playable URLs from anonymous webinar responses, scope
+tokens to both registration and webinar, and derive expiry from session/replay timing.
+Treat "no future sessions and no on-demand" as closed registration, never as on-demand.
+
 # Admin UX
 Schedule sub-section saves only flash a toast. Owners need persistent state, so the
 schedule card shows a current-mode banner + per-mode "使用中" active indicators, and

@@ -184,6 +184,15 @@ export const registrations = pgTable("registrations", {
 
 export const insertRegistrationSchema = createInsertSchema(registrations).omit({ 
   id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true 
+}).extend({
+  viewerTimezone: z.string().trim().min(1).max(100).refine((value) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+      return true;
+    } catch {
+      return false;
+    }
+  }, "viewerTimezone must be a valid IANA timezone").optional().nullable(),
 });
 export type InsertRegistration = z.infer<typeof insertRegistrationSchema>;
 export type Registration = typeof registrations.$inferSelect;

@@ -1,8 +1,9 @@
 import { storage } from "./storage";
 import { sendEmail } from "./gmail";
-import type { Webinar, Registration, EmailSequence } from "@shared/schema";
+import type { Webinar, Registration, EmailSequence, EmailReminder } from "@shared/schema";
+import { createWatchToken, watchTokenExpiry } from "./watchTokens";
 
-function getEmailHtml(type: string, name: string, webinarTitle: string, startTime: Date, webinarUrl: string, timezone: string = "Asia/Taipei", customSubject?: string, customTemplate?: string): { subject: string; html: string } {
+function getEmailHtml(type: string, name: string, webinarTitle: string, startTime: Date, webinarUrl: string, timezone: string = "Asia/Taipei", customSubject?: string, customTemplate?: string, onDemand = false): { subject: string; html: string } {
   const formattedDate = startTime.toLocaleString('zh-TW', {
     year: 'numeric', month: 'long', day: 'numeric',
     hour: '2-digit', minute: '2-digit', timeZone: timezone
@@ -51,7 +52,7 @@ function getEmailHtml(type: string, name: string, webinarTitle: string, startTim
               <p>您已成功報名線上研討會！</p>
               <div class="info">
                 <h3>${webinarTitle}</h3>
-                <p><strong>直播時間：</strong>${formattedDate}</p>
+                 ${onDemand ? "<p><strong>觀看方式：</strong>立即隨選觀看</p>" : `<p><strong>直播時間：</strong>${formattedDate}</p>`}
               </div>
               <p>請記得準時參加：</p>
               <center><a href="${webinarUrl}" class="button">進入直播間</a></center>
@@ -122,13 +123,15 @@ function getEmailHtml(type: string, name: string, webinarTitle: string, startTim
 export async function createEmailRemindersForRegistration(
   registration: Registration,
   webinar: Webinar,
-  baseUrl: string
+  baseUrl: string,
+  watchToken?: string,
 ) {
-  const emailSettings = webinar.emailSettings as any;
-  if (!emailSettings) return;
+  const emailSettings = (webinar.emailSettings as any) ?? { confirmationEnabled: true };
 
-  const webinarUrl = `${baseUrl}/webinar/${webinar.id}`;
-  const startTime = new Date(webinar.startTime);
+  const webinarUrl = `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(
+    watchToken ?? createWatchToken(registration.id, webinar.id, watchTokenExpiry(registration.selectedSession, webinar.replayAvailableHours ?? 48)),
+  )}`;
+  const startTime = registration.selectedSession ? new Date(registration.selectedSession) : null;
   const now = new Date();
 
   const remindersToCreate: Array<{
@@ -137,21 +140,21 @@ export async function createEmailRemindersForRegistration(
     enabled: boolean;
   }> = [];
 
-  if (emailSettings.reminder24hEnabled) {
+  if (startTime && emailSettings.reminder24hEnabled) {
     const t = new Date(startTime.getTime() - 24 * 60 * 60 * 1000);
     if (t > now) {
       remindersToCreate.push({ type: "reminder_24h", scheduledFor: t, enabled: true });
     }
   }
 
-  if (emailSettings.reminder1hEnabled) {
+  if (startTime && emailSettings.reminder1hEnabled) {
     const t = new Date(startTime.getTime() - 60 * 60 * 1000);
     if (t > now) {
       remindersToCreate.push({ type: "reminder_1h", scheduledFor: t, enabled: true });
     }
   }
 
-  if (emailSettings.followUpEnabled) {
+  if (startTime && emailSettings.followUpEnabled) {
     const duration = webinar.videoDuration || 3600;
     const t = new Date(startTime.getTime() + duration * 1000 + 30 * 60 * 1000);
     remindersToCreate.push({ type: "followup", scheduledFor: t, enabled: true });
@@ -171,18 +174,21 @@ export async function createEmailRemindersForRegistration(
     }
   }
 
-  if (emailSettings.confirmationEnabled) {
+  if (emailSettings.confirmationEnabled !== false) {
     try {
-      const webinarUrl = `${baseUrl}/webinar/${webinar.id}`;
+      const webinarUrl = `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(
+        createWatchToken(registration.id, webinar.id, watchTokenExpiry(registration.selectedSession, webinar.replayAvailableHours ?? 48)),
+      )}`;
       const { subject, html } = getEmailHtml(
         "confirmation",
         registration.name,
         webinar.title,
-        new Date(webinar.startTime),
+        startTime ?? now,
         webinarUrl,
         webinar.timezone || "Asia/Taipei",
         emailSettings.customSubject,
-        emailSettings.customTemplate
+        emailSettings.customTemplate,
+        !startTime
       );
       if (subject && html) {
         await sendEmail({ to: registration.email, subject, htmlBody: html });
@@ -218,6 +224,44 @@ function fillSequenceTemplate(seq: EmailSequence, name: string, webinarTitle: st
   };
 }
 
+export function registrationWebinarUrl(
+  baseUrl: string,
+  registration: Registration,
+  webinar: Webinar,
+): string {
+  const token = createWatchToken(
+    registration.id,
+    webinar.id,
+    watchTokenExpiry(registration.selectedSession, webinar.replayAvailableHours ?? 48),
+  );
+  return `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(token)}`;
+}
+
+export function buildDeferredEmail(
+  reminder: EmailReminder,
+  registration: Registration,
+  webinar: Webinar,
+  baseUrl: string,
+  sequence?: EmailSequence,
+): { subject: string; html: string } {
+  const webinarUrl = registrationWebinarUrl(baseUrl, registration, webinar);
+  if (reminder.reminderType === "sequence") {
+    if (!sequence) return { subject: "", html: "" };
+    return fillSequenceTemplate(sequence, registration.name, webinar.title, webinarUrl);
+  }
+  const emailSettings = webinar.emailSettings as any;
+  return getEmailHtml(
+    reminder.reminderType,
+    registration.name,
+    webinar.title,
+    registration.selectedSession ? new Date(registration.selectedSession) : new Date(),
+    webinarUrl,
+    webinar.timezone || "Asia/Taipei",
+    emailSettings?.customSubject,
+    emailSettings?.customTemplate,
+  );
+}
+
 // 依觀看行為判斷觀眾屬於哪個分眾
 function matchesSegment(segment: string, reg: Registration, durationSec: number): boolean {
   if (segment === "all") return true;
@@ -240,10 +284,6 @@ async function enqueueSequenceEmails() {
     const webinars = await storage.getAllWebinars();
     for (const webinar of webinars) {
       if (webinar.publishStatus !== "published") continue;
-      const duration = webinar.videoDuration || 3600;
-      const endTime = new Date(new Date(webinar.startTime).getTime() + duration * 1000);
-      if (endTime > now) continue; // 還沒結束
-
       const sequences = await storage.getEnabledEmailSequences(webinar.id);
       if (sequences.length === 0) continue;
 
@@ -251,8 +291,15 @@ async function enqueueSequenceEmails() {
       if (registrations.length === 0) continue;
 
       for (const seq of sequences) {
-        const scheduledFor = new Date(endTime.getTime() + (seq.delayMinutes || 0) * 60 * 1000);
         for (const reg of registrations) {
+          // On-demand registrations have no event end and must never be
+          // swept into a time-based post-event sequence for the webinar's
+          // unrelated default start time.
+          if (!reg.selectedSession) continue;
+          const duration = webinar.videoDuration || 3600;
+          const endTime = new Date(new Date(reg.selectedSession).getTime() + duration * 1000);
+          if (endTime > now) continue;
+          const scheduledFor = new Date(endTime.getTime() + (seq.delayMinutes || 0) * 60 * 1000);
           if (!matchesSegment(seq.segment, reg, duration)) continue;
           const already = await storage.hasSequenceReminder(reg.id, seq.id);
           if (already) continue;
@@ -309,8 +356,6 @@ export function startEmailScheduler() {
           const baseUrl = process.env.REPLIT_DEV_DOMAIN
             ? `https://${process.env.REPLIT_DEV_DOMAIN}`
             : "http://localhost:5000";
-          const webinarUrl = `${baseUrl}/webinar/${webinar.id}`;
-
           let subject = "";
           let html = "";
           if (reminder.reminderType === "sequence" && reminder.sequenceId) {
@@ -319,21 +364,11 @@ export function startEmailScheduler() {
               await storage.updateEmailReminder(reminder.id, { status: "failed", errorMessage: "Sequence not found" });
               continue;
             }
-            const filled = fillSequenceTemplate(seq, registration.name, webinar.title, webinarUrl);
+            const filled = buildDeferredEmail(reminder, registration, webinar, baseUrl, seq);
             subject = filled.subject;
             html = filled.html;
           } else {
-            const emailSettings = webinar.emailSettings as any;
-            const built = getEmailHtml(
-              reminder.reminderType,
-              registration.name,
-              webinar.title,
-              new Date(webinar.startTime),
-              webinarUrl,
-              webinar.timezone || "Asia/Taipei",
-              emailSettings?.customSubject,
-              emailSettings?.customTemplate
-            );
+            const built = buildDeferredEmail(reminder, registration, webinar, baseUrl);
             subject = built.subject;
             html = built.html;
           }

@@ -202,7 +202,7 @@ const t: Record<LangAdmin, {
     publishBtn: "發佈",
     unpublishBtn: "取消發佈",
     upgradeTitle: "升級方案",
-    upgradeDesc: "訂閱月租方案 ($49/月) 即可建立並發佈最多 3 個直播間",
+    upgradeDesc: "訂閱月租方案即可依方案額度發布 1、5 或 15 個 Webinar",
     upgradeBtn: "立即訂閱",
     manageSubscription: "管理訂閱",
     toastPublishSuccess: "已發佈",
@@ -212,7 +212,7 @@ const t: Record<LangAdmin, {
     toastUpgradeNeeded: "需要升級方案",
     toastUpgradeNeededDesc: "免費方案無法建立直播間，請先升級",
     publishLimitReached: "已達發佈上限",
-    publishLimitReachedDesc: "最多可發佈 3 個直播間，請取消發佈其他直播間",
+    publishLimitReachedDesc: "已達目前方案的發布額度，請取消發布其他 Webinar 或升級方案",
     aiPointsTitle: "AI 回覆點數",
     aiPointsBalance: "目前餘額",
     aiPointsUnit: "點",
@@ -300,7 +300,7 @@ const t: Record<LangAdmin, {
     publishBtn: "发布",
     unpublishBtn: "取消发布",
     upgradeTitle: "升级方案",
-    upgradeDesc: "订阅月租方案 ($49/月) 即可创建并发布最多 3 个直播间",
+    upgradeDesc: "订阅月租方案即可按方案额度发布 1、5 或 15 个 Webinar",
     upgradeBtn: "立即订阅",
     manageSubscription: "管理订阅",
     toastPublishSuccess: "已发布",
@@ -310,7 +310,7 @@ const t: Record<LangAdmin, {
     toastUpgradeNeeded: "需要升级方案",
     toastUpgradeNeededDesc: "免费方案无法创建直播间，请先升级",
     publishLimitReached: "已达发布上限",
-    publishLimitReachedDesc: "最多可发布 3 个直播间，请取消发布其他直播间",
+    publishLimitReachedDesc: "已达当前方案的发布额度，请取消发布其他 Webinar 或升级方案",
     aiPointsTitle: "AI 回复点数",
     aiPointsBalance: "当前余额",
     aiPointsUnit: "点",
@@ -346,7 +346,7 @@ export default function AdminDashboard() {
   const { toast } = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState<"starter" | "growth">("starter");
+  const [selectedPlan, setSelectedPlan] = useState<"starter" | "growth" | "scale">("starter");
   const [addonWebinars, setAddonWebinars] = useState(0);
   const [isRechargeOpen, setIsRechargeOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
@@ -391,7 +391,7 @@ export default function AdminDashboard() {
     publishableKey: string;
     billingAvailable: boolean;
     catalogReady: boolean;
-    plans: { key: "starter" | "growth"; amountUsd: number; includedWebinars: number }[];
+    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; available: boolean }[];
     addonAmountUsd: number;
   }>({
     queryKey: ["/api/stripe/config"],
@@ -712,7 +712,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold">{s.subPlanLabel}</span>
                     <Badge variant={subscription.active ? "default" : "outline"} data-testid="badge-current-plan">
-                      {subscription.plan === "starter" ? "$49 Starter" : subscription.plan === "growth" ? "$99 Growth" : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
+                      {subscription.plan === "starter" ? "$49 Starter" : subscription.plan === "growth" ? "$99 Growth" : subscription.plan === "scale" ? "$199 Scale" : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
                     </Badge>
                     {subscription.cancelAtPeriodEnd && <Badge variant="secondary">期末取消</Badge>}
                     {!subscription.active && subscription.plan !== "free" && <Badge variant="destructive">{s.subExpired}</Badge>}
@@ -768,19 +768,22 @@ export default function AdminDashboard() {
               <DialogTitle>選擇發布方案</DialogTitle>
               <DialogDescription>草稿功能永久免費。訂閱後可發布直播間並取得公開網址。</DialogDescription>
             </DialogHeader>
-            <div className="grid sm:grid-cols-2 gap-3">
+            <div className="grid sm:grid-cols-3 gap-3">
               {stripeConfig?.plans.map((plan) => (
                 <button
                   type="button"
                   key={plan.key}
-                  onClick={() => setSelectedPlan(plan.key)}
-                  className={`rounded-xl border p-4 text-left transition ${selectedPlan === plan.key ? "border-primary ring-2 ring-primary/20" : "hover:border-primary/50"}`}
+                  onClick={() => plan.available && setSelectedPlan(plan.key)}
+                  disabled={!plan.available}
+                  className={`rounded-xl border p-4 text-left transition ${selectedPlan === plan.key ? "border-primary ring-2 ring-primary/20" : "hover:border-primary/50"} ${!plan.available ? "cursor-not-allowed opacity-60" : ""}`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold">{plan.key === "starter" ? "Starter" : "Growth"}</span>
+                    <span className="font-semibold">{plan.key === "starter" ? "Starter" : plan.key === "growth" ? "Growth" : "Scale"}</span>
                     <span className="text-2xl font-bold">${plan.amountUsd}<span className="text-sm font-normal text-muted-foreground">／月</span></span>
                   </div>
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
+                  <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
+                  {!plan.available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
               ))}
             </div>
@@ -797,7 +800,7 @@ export default function AdminDashboard() {
             </div>
             <Button
               onClick={() => checkoutMutation.mutate()}
-              disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !stripeConfig.catalogReady}
+              disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.available}
               aria-busy={checkoutMutation.isPending}
             >
               {checkoutMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
@@ -809,7 +812,7 @@ export default function AdminDashboard() {
               </p>
             )}
             {stripeConfig?.billingAvailable && !stripeConfig.catalogReady && (
-              <p className="text-sm text-destructive" role="alert">Stripe 方案正在設定中，請稍後再試。</p>
+              <p className="text-sm text-amber-700" role="status">部分方案正在設定中；標示為可用的方案仍可正常訂閱。</p>
             )}
           </DialogContent>
         </Dialog>

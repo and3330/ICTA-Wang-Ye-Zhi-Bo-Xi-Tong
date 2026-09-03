@@ -3,12 +3,19 @@ import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
 
 export const SUBSCRIPTION_PLANS = {
-  starter: { label: "Starter", baseWebinars: 2, lookupKey: "icta_webinar_starter_monthly" },
-  growth: { label: "Growth", baseWebinars: 5, lookupKey: "icta_webinar_growth_monthly" },
+  starter: { label: "Starter", baseWebinars: 1, monthlyRegistrants: 1_000, lookupKey: "icta_webinar_starter_monthly" },
+  growth: { label: "Growth", baseWebinars: 5, monthlyRegistrants: 3_000, lookupKey: "icta_webinar_growth_monthly" },
+  scale: { label: "Scale", baseWebinars: 15, monthlyRegistrants: 5_000, lookupKey: "icta_webinar_scale_monthly" },
 } as const;
 
 export const ADDON_LOOKUP_KEY = "icta_webinar_room_addon_monthly";
 export type SubscriptionPlanKey = keyof typeof SUBSCRIPTION_PLANS;
+
+export function getMonthlyRegistrantLimit(plan: string): number | null {
+  return plan in SUBSCRIPTION_PLANS
+    ? SUBSCRIPTION_PLANS[plan as SubscriptionPlanKey].monthlyRegistrants
+    : null;
+}
 
 export type SubscriptionEntitlement = {
   plan: "free" | SubscriptionPlanKey | "legacy" | "enterprise";

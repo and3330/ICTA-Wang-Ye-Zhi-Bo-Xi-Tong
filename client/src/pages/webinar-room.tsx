@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useParams } from "wouter";
+import { useParams, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,7 @@ import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Clock, Play }
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { getWatchToken } from "@/lib/watch-access";
 
 interface WebSocketMessage {
   type: string;
@@ -87,6 +88,18 @@ export default function WebinarRoom() {
     queryKey: ["/api/webinars", id],
     enabled: !!id,
   });
+  const watchToken = getWatchToken(id);
+  const { data: watchState, isLoading: watchStateLoading } = useQuery<{ selectedSession?: string | null; waitUntil?: string | null; vimeoUrl?: string | null; canWatch: boolean }>({
+    queryKey: ["/api/webinars", id, "watch-state", watchToken],
+    queryFn: async () => {
+      const response = await apiRequest("GET", `/api/webinars/${id}/watch-state?watchToken=${encodeURIComponent(watchToken!)}`);
+      return response.json();
+    },
+    enabled: !!id && !!watchToken,
+    refetchInterval: (query) => query.state.data?.canWatch ? false : 5_000,
+  });
+  const effectiveVimeoUrl = watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl;
+  const canWatch = watchToken ? !!watchState?.canWatch : !!webinar?.vimeoUrl;
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -138,15 +151,15 @@ export default function WebinarRoom() {
   const isJustInTime = webinar?.scheduleMode && typeof webinar.scheduleMode === 'object' && (webinar.scheduleMode as any).justInTime;
 
   useEffect(() => {
-    if (!webinar || !isJoined || isOnDemand) return;
+    if (!webinar || !isJoined || !watchToken) return;
 
     const checkTime = () => {
       const now = new Date();
-      const start = new Date(webinar.startTime);
+      const start = new Date(watchState?.waitUntil || watchState?.selectedSession || webinar.startTime);
       const diff = start.getTime() - now.getTime();
       
       if (diff <= 0) {
-        setWaitingForStart(false);
+        setWaitingForStart(!canWatch);
         setCountdown("");
         return;
       }
@@ -170,10 +183,10 @@ export default function WebinarRoom() {
     checkTime();
     const interval = setInterval(checkTime, 1000);
     return () => clearInterval(interval);
-  }, [webinar, isJoined, isOnDemand]);
+  }, [webinar, isJoined, watchToken, watchState, canWatch]);
 
   useEffect(() => {
-    if (!webinar?.vimeoUrl || !isJoined || waitingForStart) return;
+    if (!effectiveVimeoUrl || !isJoined || waitingForStart || !canWatch || watchStateLoading) return;
 
     const script = document.createElement("script");
     script.src = "https://player.vimeo.com/api/player.js";
@@ -236,7 +249,7 @@ export default function WebinarRoom() {
         script.parentNode.removeChild(script);
       }
     };
-  }, [webinar?.vimeoUrl, isJoined, waitingForStart, savedProgress]);
+  }, [effectiveVimeoUrl, isJoined, waitingForStart, savedProgress, canWatch, watchStateLoading]);
 
   useEffect(() => {
     if (!id || !isJoined || !videoDuration) return;
@@ -346,7 +359,7 @@ export default function WebinarRoom() {
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: "join",
-        data: { webinarId: id, sessionId, nickname }
+        data: { webinarId: id, sessionId, nickname, watchToken: watchToken || undefined }
       }));
     };
 
@@ -419,7 +432,7 @@ export default function WebinarRoom() {
       }
       ws.close();
     };
-  }, [isJoined, id, nickname, sessionId]);
+  }, [isJoined, id, nickname, sessionId, watchToken]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -536,6 +549,7 @@ export default function WebinarRoom() {
   const formatStartTime = (date: Date | string) => {
     return new Date(date).toLocaleString("zh-TW", {
       month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
+      timeZone: webinar?.timezone || "Asia/Taipei",
     });
   };
 
@@ -573,6 +587,18 @@ export default function WebinarRoom() {
   );
 
   if (!isJoined) {
+    if (!canWatch || !effectiveVimeoUrl) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || {}}>
+          {trackingProvider}
+          <Card className="max-w-md w-full"><CardContent className="pt-6 text-center space-y-4">
+            <h2 className="text-xl font-bold">{webinar.title}</h2>
+            <p className="text-muted-foreground">請先完成報名並選擇場次，再進入觀看。</p>
+            <Link href={`/register/${id}`} className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">前往報名</Link>
+          </CardContent></Card>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
         {trackingProvider}
@@ -618,7 +644,7 @@ export default function WebinarRoom() {
     );
   }
 
-  if (waitingForStart) {
+  if (waitingForStart || (watchToken && (watchStateLoading || !canWatch))) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
         {trackingProvider}
@@ -639,7 +665,7 @@ export default function WebinarRoom() {
               <p className="text-3xl font-bold font-mono" data-testid="text-countdown">{countdown}</p>
             </div>
             <p className="text-sm text-muted-foreground">
-              開始時間：{formatStartTime(webinar.startTime)}
+              開始時間：{formatStartTime(watchState?.waitUntil || watchState?.selectedSession || webinar.startTime)}（{webinar.timezone || "Asia/Taipei"}）
             </p>
           </CardContent>
         </Card>
@@ -666,7 +692,7 @@ export default function WebinarRoom() {
           <div className="relative w-full h-full">
             <iframe
               ref={iframeRef}
-              src={`https://player.vimeo.com/video/${extractVimeoId(webinar.vimeoUrl)}?${extractVimeoHash(webinar.vimeoUrl) ? `h=${extractVimeoHash(webinar.vimeoUrl)}&` : ""}autoplay=${autoplayParam}&title=0&byline=0&portrait=0&controls=0`}
+              src={`https://player.vimeo.com/video/${extractVimeoId(effectiveVimeoUrl!)}?${extractVimeoHash(effectiveVimeoUrl!) ? `h=${extractVimeoHash(effectiveVimeoUrl!)}&` : ""}autoplay=${autoplayParam}&title=0&byline=0&portrait=0&controls=0`}
               className="absolute inset-0 w-full h-full"
               allow="autoplay; fullscreen; picture-in-picture"
               allowFullScreen

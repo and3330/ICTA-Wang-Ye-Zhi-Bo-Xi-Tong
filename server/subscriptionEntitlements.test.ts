@@ -39,14 +39,15 @@ function entitlement(
 
 test("active and trialing subscriptions receive their publishing quota", () => {
   assert.equal(entitlement("active").active, true);
-  assert.equal(entitlement("active").maxWebinars, 2);
+  assert.equal(entitlement("active").maxWebinars, 1);
   assert.equal(entitlement("trialing", "growth").active, true);
   assert.equal(entitlement("trialing", "growth").maxWebinars, 5);
 });
 
-test("Starter, Growth, and add-on quantities map to the correct quota", () => {
-  assert.equal(entitlement("active", "starter", 3).maxWebinars, 5);
+test("Starter, Growth, Scale, and add-on quantities map to the correct quota", () => {
+  assert.equal(entitlement("active", "starter", 3).maxWebinars, 4);
   assert.equal(entitlement("active", "growth", 2).maxWebinars, 7);
+  assert.equal(entitlement("active", "scale", 0).maxWebinars, 15);
 });
 
 test("past_due, canceled, and expired subscriptions cannot add publications", () => {
@@ -64,7 +65,7 @@ test("period-end cancellation remains usable before expiry", () => {
     periodEnd: "2026-09-01T00:00:00.000Z",
   });
   assert.equal(result.active, true);
-  assert.equal(result.maxWebinars, 3);
+  assert.equal(result.maxWebinars, 2);
   assert.equal(result.cancelAtPeriodEnd, true);
 });
 

@@ -24,13 +24,14 @@ import {
   Lightbulb, HelpCircle, Star, TrendingUp, Settings, Code,
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
-  Sparkles, Megaphone, CheckCircle2
+  Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, LineChart, Line } from "recharts";
-import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost } from "@shared/schema";
+import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost, ChatMessage } from "@shared/schema";
 import type { FeedbackResponse } from "@shared/schema";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import {
@@ -990,6 +991,23 @@ export default function AdminWebinarDetail() {
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
   const schemas = useMemo(() => createSchemas(s), [s]);
+  const contextualRail = (
+    items: Array<{ id: string; label: string; icon: any }>,
+    selected: string,
+    setSelected: (value: string) => void,
+  ) => (
+    <aside className="admin-workspace-rail" aria-label="Section navigation">
+      <div className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Sections</div>
+      {items.map((item) => (
+        <button key={item.id} type="button" onClick={() => {
+          setSelected(item.id);
+          document.getElementById(`webinar-section-${item.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }} className={cn("admin-workspace-rail-item", selected === item.id && "admin-workspace-rail-item-active")}>
+          <item.icon className="h-4 w-4" />{item.label}
+        </button>
+      ))}
+    </aside>
+  );
   
   const [isFakeUserOpen, setIsFakeUserOpen] = useState(false);
   const [isMessageOpen, setIsMessageOpen] = useState(false);
@@ -1040,7 +1058,8 @@ export default function AdminWebinarDetail() {
   const [newSessionDate, setNewSessionDate] = useState("");
 
   const [scheduleSubSection, setScheduleSubSection] = useState("eventSettings");
-  const [eventType, setEventType] = useState<"recurring" | "oneTime" | "specificDates" | "onDemandOnly">("recurring");
+  const [eventType, setEventType] = useState<"recurring" | "oneTime" | "specificDates">("recurring");
+  const [onDemandEnabled, setOnDemandEnabled] = useState(false);
   const [eventStartDate, setEventStartDate] = useState("");
   const [eventEndType, setEventEndType] = useState<"never" | "endDate">("never");
   const [eventEndDate, setEventEndDate] = useState("");
@@ -1089,6 +1108,15 @@ export default function AdminWebinarDetail() {
   const [editTagsRegId, setEditTagsRegId] = useState<string | null>(null);
   const [editTagsValue, setEditTagsValue] = useState("");
   const [tagFilter, setTagFilter] = useState("__all__");
+  const [activeTab, setActiveTab] = useState("analytics");
+  const [selectedChatRegistrantId, setSelectedChatRegistrantId] = useState<string | null>(null);
+  const [selectedChatSessionId, setSelectedChatSessionId] = useState<string>("__all__");
+  const [analyticsSection, setAnalyticsSection] = useState("overview");
+  const [notificationsSection, setNotificationsSection] = useState("notifications");
+  const [interactionsSection, setInteractionsSection] = useState("cta");
+  const [registrationsSection, setRegistrationsSection] = useState("registrants");
+  const [settingsSection, setSettingsSection] = useState("tracking");
+  const [aiSection, setAiSection] = useState("assistant");
 
   const { data: webinar, isLoading: webinarLoading } = useQuery<Webinar & TrackingWebinar>({
     queryKey: ["/api/webinars", id],
@@ -1104,6 +1132,27 @@ export default function AdminWebinarDetail() {
     queryKey: ["/api/webinars", id, "scheduled-messages"],
     enabled: !!id,
   });
+
+  const { data: chatMessages } = useQuery<ChatMessage[]>({
+    queryKey: ["/api/webinars", id, "chat-messages"],
+    enabled: !!id,
+  });
+
+  const chatConversations = useMemo(() => {
+    const grouped = new Map<string, { sessionId: string; senderName: string; count: number; lastAt: Date | null }>();
+    for (const message of chatMessages || []) {
+      const sessionId = message.sessionId || "__public__";
+      const existing = grouped.get(sessionId);
+      const sentAt = message.sentAt ? new Date(message.sentAt) : null;
+      grouped.set(sessionId, {
+        sessionId,
+        senderName: message.senderType === "viewer" ? message.senderName : existing?.senderName || "公開頻道",
+        count: (existing?.count || 0) + 1,
+        lastAt: sentAt && (!existing?.lastAt || sentAt > existing.lastAt) ? sentAt : existing?.lastAt || null,
+      });
+    }
+    return Array.from(grouped.values()).sort((a, b) => (b.lastAt?.getTime() || 0) - (a.lastAt?.getTime() || 0));
+  }, [chatMessages]);
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -1343,15 +1392,14 @@ export default function AdminWebinarDetail() {
       }
 
       const sm2 = webinar.scheduleMode as any;
-      if (sm2?.onDemand) {
-        setEventType("onDemandOnly");
-      } else if (sm2?.justInTime) {
+      setOnDemandEnabled(sm2?.onDemand ?? false);
+      if (sm2?.justInTime) {
         setEventType("oneTime");
         setScheduleSubSection("justInTime");
       } else if (rs?.enabled) {
         setEventType("recurring");
       } else {
-        setEventType(sm2?.eventType || "oneTime");
+        setEventType(sm2?.eventType === "specificDates" ? "specificDates" : "oneTime");
       }
 
       if (sm2?.eventEndType) {
@@ -1972,9 +2020,27 @@ export default function AdminWebinarDetail() {
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-6">
-        <Tabs defaultValue="schedule">
-          <TabsList className="admin-detail-tabs mb-4 flex-wrap h-auto gap-1">
+      <main className="container mx-auto max-w-[1536px] px-4 py-6 lg:px-7">
+        <style>{`
+          .admin-webinar-detail{background:radial-gradient(circle at 84% 0%,hsl(187 50% 88%/.44),transparent 29%),linear-gradient(150deg,hsl(199 36% 96%),hsl(188 28% 94%));min-height:100dvh}
+          .admin-webinar-detail .admin-detail-tabs{scrollbar-width:thin}
+          .admin-webinar-detail [role=tab]{border-radius:.55rem;padding:.58rem .8rem}
+          .admin-webinar-detail [role=tab][data-state=active]{background:hsl(var(--primary));color:hsl(var(--primary-foreground));box-shadow:0 2px 8px hsl(201 52% 23%/.15)}
+          .admin-workspace-grid{display:grid;grid-template-columns:190px minmax(0,1fr);gap:20px;align-items:start}
+          .admin-workspace-rail{position:sticky;top:92px;border:1px solid hsl(var(--border)/.75);border-radius:14px;background:hsl(var(--card)/.82);padding:12px 8px;box-shadow:0 8px 30px hsl(202 36% 30%/.05)}
+          .admin-workspace-rail-item{width:100%;display:flex;align-items:center;gap:10px;border-radius:8px;padding:9px 10px;color:hsl(var(--muted-foreground));font-size:13px;text-align:left;transition:background-color .16s ease,color .16s ease}
+          .admin-workspace-rail-item:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+          .admin-workspace-rail-item-active{background:hsl(var(--primary)/.11);color:hsl(var(--primary));font-weight:650}
+          .admin-webinar-detail [role=tabpanel]{margin-top:0}
+          .admin-webinar-detail .shadcn-card{box-shadow:0 8px 24px hsl(202 35% 25%/.045)}
+          @media(max-width:767px){.admin-workspace-grid{display:block}.admin-workspace-rail{position:relative;top:auto;display:flex;gap:4px;overflow-x:auto;margin:0 -1rem 16px;padding:8px 1rem;border-width:1px 0;border-radius:0;box-shadow:none}.admin-workspace-rail>div{display:none}.admin-workspace-rail-item{width:auto;flex:none;white-space:nowrap}.admin-webinar-detail .admin-detail-tabs{border-radius:0;border-width:0 0 1px;margin-left:-1rem;width:calc(100% + 2rem)}}
+        `}</style>
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="admin-detail-tabs mb-5 flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/70 bg-card/80 p-1.5 shadow-sm">
+            <TabsTrigger value="analytics" data-testid="tab-analytics">
+              <TrendingUp className="h-4 w-4 mr-1" />
+              {s.tabAnalytics}
+            </TabsTrigger>
             <TabsTrigger value="schedule" data-testid="tab-schedule">
               <Calendar className="h-4 w-4 mr-1" />
               {s.tabSchedule}
@@ -1995,10 +2061,6 @@ export default function AdminWebinarDetail() {
               <Users className="h-4 w-4 mr-1" />
               {s.tabRegistrations} ({registrations?.length || 0})
             </TabsTrigger>
-            <TabsTrigger value="analytics" data-testid="tab-analytics">
-              <TrendingUp className="h-4 w-4 mr-1" />
-              {s.tabAnalytics}
-            </TabsTrigger>
             <TabsTrigger value="settings" data-testid="tab-settings">
               <Settings className="h-4 w-4 mr-1" />
               {s.tabSettings}
@@ -2011,7 +2073,7 @@ export default function AdminWebinarDetail() {
 
           {/* ===== Schedule Tab ===== */}
           <TabsContent value="schedule">
-            <div className="flex flex-col md:flex-row gap-6">
+            <div className="flex flex-col gap-5 lg:flex-row">
               <div className="md:w-52 shrink-0">
                 <h3 className="font-semibold mb-3">{s.schedNavTitle}</h3>
                 <nav className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible">
@@ -2048,9 +2110,11 @@ export default function AdminWebinarDetail() {
                       const sm = webinar?.scheduleMode as any;
                       const rs = webinar?.recurringSchedule as any;
                       let modeLabel = s.schedModeFixed;
-                      if (sm?.onDemand) modeLabel = s.schedModeOnDemand;
-                      else if (sm?.justInTime) modeLabel = s.schedModeJustInTime;
+                      if (sm?.justInTime) modeLabel = s.schedModeJustInTime;
                       else if (rs?.enabled || sm?.recurring) modeLabel = s.schedModeRecurring;
+                      if (sm?.onDemand && (rs?.enabled || sm?.recurring || sm?.eventType === "oneTime" || sm?.eventType === "specificDates")) {
+                        modeLabel = `${modeLabel} + ${s.schedModeOnDemand}`;
+                      } else if (sm?.onDemand) modeLabel = s.schedModeOnDemand;
                       return (
                         <div className="flex items-center gap-2 mb-6 p-3 bg-primary/5 border border-primary/20 rounded-md" data-testid="banner-current-mode">
                           <span className="text-sm text-muted-foreground">{s.schedCurrentMode}：</span>
@@ -2069,7 +2133,6 @@ export default function AdminWebinarDetail() {
                               { value: "recurring" as const, label: s.schedRecurring },
                               { value: "oneTime" as const, label: s.schedOneTime },
                               { value: "specificDates" as const, label: s.schedSpecificDates },
-                              { value: "onDemandOnly" as const, label: s.schedOnDemandOnly },
                             ].map(opt => (
                               <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
                                 <input
@@ -2085,10 +2148,8 @@ export default function AdminWebinarDetail() {
                               </label>
                             ))}
                           </div>
-                        </div>
 
-                        {eventType !== "onDemandOnly" && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div className="space-y-2">
                               <Label>{s.schedStartDate}</Label>
                               <Input
@@ -2136,7 +2197,14 @@ export default function AdminWebinarDetail() {
                               )}
                             </div>
                           </div>
-                        )}
+                        </div>
+                        <div className="flex items-center justify-between gap-4 rounded-md border border-primary/20 bg-primary/5 p-4">
+                          <div>
+                            <Label className="font-medium">{s.schedEnableOnDemand}</Label>
+                            <p className="mt-1 text-sm text-muted-foreground">保留既有場次與排程，讓觀眾多一個報名後立即觀看的選項。</p>
+                          </div>
+                          <Switch checked={onDemandEnabled} onCheckedChange={setOnDemandEnabled} data-testid="switch-event-on-demand" />
+                        </div>
 
                         <div className="space-y-4 border-t pt-6 mt-6">
                           <h3 className="text-base font-semibold">{s.schedTimezone}</h3>
@@ -2196,11 +2264,10 @@ export default function AdminWebinarDetail() {
 
                         <Button
                           onClick={() => {
-                            const isOnDemand = eventType === "onDemandOnly";
                             const existingSm = webinar?.scheduleMode as any;
                             const scheduleMode = {
                               recurring: eventType === "recurring",
-                              onDemand: isOnDemand,
+                              onDemand: onDemandEnabled,
                               justInTime: existingSm?.justInTime || false,
                               justInTimeMinutes: existingSm?.justInTimeMinutes || 15,
                               eventType,
@@ -2384,18 +2451,24 @@ export default function AdminWebinarDetail() {
                         )}
                         <Button
                           onClick={() => {
-                            setSettingsScheduleMode("onDemand");
-                            setEventType("onDemandOnly");
+                            const existingSm = webinar?.scheduleMode as any;
+                            setOnDemandEnabled(!existingSm?.onDemand);
                             updateWebinar.mutate({
-                              scheduleMode: { recurring: false, onDemand: true, justInTime: false, justInTimeMinutes: 15 },
+                              scheduleMode: {
+                                ...existingSm,
+                                onDemand: !existingSm?.onDemand,
+                                recurring: existingSm?.recurring ?? Boolean((webinar?.recurringSchedule as any)?.enabled),
+                                justInTime: existingSm?.justInTime ?? false,
+                                justInTimeMinutes: existingSm?.justInTimeMinutes ?? 15,
+                              },
                             });
                           }}
                           disabled={updateWebinar.isPending}
-                          variant={(webinar?.scheduleMode as any)?.onDemand ? "outline" : "default"}
+                          variant="outline"
                           data-testid="button-enable-on-demand"
                         >
                           {updateWebinar.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                          {s.schedEnableOnDemand}
+                          {(webinar?.scheduleMode as any)?.onDemand ? "停用隨選觀看" : s.schedEnableOnDemand}
                         </Button>
                       </div>
                     )}
@@ -2423,9 +2496,14 @@ export default function AdminWebinarDetail() {
                         )}
                         <Button
                           onClick={() => {
+                            const existingSm = webinar?.scheduleMode as any;
                             setSettingsScheduleMode("justInTime");
                             updateWebinar.mutate({
-                              scheduleMode: { recurring: false, onDemand: false, justInTime: true, justInTimeMinutes: parseInt(settingsJitMinutes) || 15 },
+                              scheduleMode: {
+                                ...existingSm,
+                                justInTime: true,
+                                justInTimeMinutes: parseInt(settingsJitMinutes) || 15,
+                              },
                             });
                           }}
                           disabled={updateWebinar.isPending}
@@ -2484,7 +2562,7 @@ export default function AdminWebinarDetail() {
                         <h2 className="text-lg font-semibold" data-testid="text-session-mgmt-title">{s.schedSessionMgmtTitle}</h2>
                         <p className="text-sm text-muted-foreground">{s.schedSessionMgmtDesc}</p>
 
-                        {((webinar?.scheduleMode as any)?.onDemand || (webinar?.scheduleMode as any)?.justInTime) && (
+                        {(webinar?.scheduleMode as any)?.justInTime && (
                           <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md text-sm text-amber-700 dark:text-amber-400" data-testid="note-session-not-needed">
                             <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
                             <span>{s.schedSessionNotNeeded}</span>
@@ -2570,7 +2648,13 @@ export default function AdminWebinarDetail() {
 
           {/* ===== Notifications Tab ===== */}
           <TabsContent value="notifications">
-            <div className="space-y-6">
+            <div className="admin-workspace-grid">
+              {contextualRail([
+                { id: "notifications", label: "通知設定", icon: Bell },
+                { id: "webhooks", label: "Webhook", icon: Link2 },
+                { id: "email-sequences", label: s.seqTitle, icon: Mail },
+              ], notificationsSection, setNotificationsSection)}
+              <div className="space-y-6">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -2945,12 +3029,21 @@ export default function AdminWebinarDetail() {
                   )}
                 </CardContent>
               </Card>
+              </div>
             </div>
           </TabsContent>
 
           {/* ===== Interactions Tab ===== */}
           <TabsContent value="interactions">
-            <div className="space-y-6">
+            <div className="admin-workspace-grid">
+              {contextualRail([
+                { id: "cta", label: s.interCtaTitle, icon: MousePointerClick },
+                { id: "polls", label: s.interPollTitle, icon: BarChart },
+                { id: "tips", label: s.interTipTitle, icon: Lightbulb },
+                { id: "survey", label: s.interFeedbackTitle, icon: Star },
+                { id: "questions", label: s.interQaTitle, icon: HelpCircle },
+              ], interactionsSection, setInteractionsSection)}
+              <div className="space-y-6">
               <Card className="border-primary/40 bg-primary/5">
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -3606,12 +3699,113 @@ export default function AdminWebinarDetail() {
                   )}
                 </CardContent>
               </Card>
+              </div>
             </div>
           </TabsContent>
 
           {/* ===== Chat Tab ===== */}
           <TabsContent value="chat">
-            <div className="space-y-6">
+            <div className="grid min-h-[620px] gap-px overflow-hidden rounded-xl border border-border bg-border xl:grid-cols-[180px_minmax(340px,1fr)_300px]">
+              <aside className="bg-card p-3">
+                <p className="px-2 pb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Chat desk</p>
+                <div className="space-y-1">
+                  {[
+                    { label: "Inbox", icon: Inbox, count: chatConversations.length },
+                    { label: "Live now", icon: Activity, count: 0 },
+                    { label: "Archived", icon: Archive, count: 0 },
+                  ].map((item) => (
+                    <div key={item.label} className="flex items-center justify-between rounded-md px-2.5 py-2 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-2"><item.icon className="h-4 w-4" />{item.label}</span>
+                      <span className="text-xs tabular-nums">{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-6 rounded-lg border border-dashed bg-muted/30 p-3">
+                  <div className="flex items-center gap-2 text-sm font-medium"><Radio className="h-3.5 w-3.5 text-primary" />Live status</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">歷史訊息會保留；線上狀態僅在直播控制台即時顯示。</p>
+                </div>
+                <div className="mt-5">
+                  <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">對話</p>
+                  <ScrollArea className="h-[330px]">
+                    <div className="space-y-1 pr-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedChatSessionId("__all__")}
+                        className={cn("w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted", selectedChatSessionId === "__all__" && "bg-primary/10 text-primary")}
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span>所有訊息</span>
+                          <span className="text-xs tabular-nums">{chatMessages?.length || 0}</span>
+                        </span>
+                      </button>
+                      {chatConversations.map((conversation) => (
+                        <button
+                          key={conversation.sessionId}
+                          type="button"
+                          onClick={() => {
+                            setSelectedChatSessionId(conversation.sessionId);
+                            const matched = registrations?.find((reg) =>
+                              reg.name === conversation.senderName || reg.nickname === conversation.senderName
+                            );
+                            if (matched) setSelectedChatRegistrantId(matched.id);
+                          }}
+                          className={cn("w-full rounded-lg px-3 py-2 text-left hover:bg-muted", selectedChatSessionId === conversation.sessionId && "bg-primary/10 text-primary")}
+                        >
+                          <span className="block truncate text-sm font-medium">{conversation.senderName}</span>
+                          <span className="mt-0.5 flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{conversation.lastAt ? conversation.lastAt.toLocaleString(lang, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                            <span>{conversation.count}</span>
+                          </span>
+                        </button>
+                      ))}
+                      {!chatConversations.length && <p className="px-2 py-6 text-center text-xs text-muted-foreground">目前沒有聊天紀錄</p>}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </aside>
+              <div className="space-y-5 bg-background p-4 sm:p-5">
+                <div className="flex items-center justify-between border-b pb-3">
+                  <div><p className="text-sm font-semibold">聊天與訊息管理</p><p className="text-xs text-muted-foreground">查看實際訊息並管理預排內容</p></div>
+                  <Badge variant="outline" className="gap-1"><Send className="h-3 w-3" />{chatMessages?.length || 0} 則訊息</Badge>
+                </div>
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">聊天紀錄</CardTitle>
+                    <CardDescription>{selectedChatSessionId === "__all__" ? "所有成員與主持人的訊息" : "目前所選對話"}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <ScrollArea className="h-[340px] pr-3">
+                      <div className="space-y-3">
+                        {(chatMessages || [])
+                          .filter((message) => selectedChatSessionId === "__all__" || (message.sessionId || "__public__") === selectedChatSessionId)
+                          .map((message) => (
+                            <div
+                              key={message.id}
+                              className={cn(
+                                "max-w-[88%] rounded-xl border px-3 py-2",
+                                message.senderType === "host" || message.senderType === "bot"
+                                  ? "ml-auto border-primary/20 bg-primary/10"
+                                  : "bg-muted/55"
+                              )}
+                            >
+                              <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                                <span className="font-medium">{message.senderName}</span>
+                                <span className="text-muted-foreground">{message.sentAt ? new Date(message.sentAt).toLocaleString(lang) : "—"}</span>
+                              </div>
+                              <p className="whitespace-pre-wrap break-words text-sm">{message.message}</p>
+                              <div className="mt-1 flex gap-1">
+                                <Badge variant="outline" className="text-[10px]">{message.senderType}</Badge>
+                                {message.isPrivate && <Badge variant="secondary" className="text-[10px]">私密</Badge>}
+                              </div>
+                            </div>
+                          ))}
+                        {(chatMessages || []).filter((message) => selectedChatSessionId === "__all__" || (message.sessionId || "__public__") === selectedChatSessionId).length === 0 && (
+                          <div className="py-16 text-center text-sm text-muted-foreground">目前沒有聊天紀錄</div>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
@@ -3788,12 +3982,42 @@ export default function AdminWebinarDetail() {
                   )}
                 </CardContent>
               </Card>
+              </div>
+              <aside className="bg-card p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <UserRound className="h-4 w-4 text-primary" />
+                  <div><p className="text-sm font-semibold">Registrant context</p><p className="text-xs text-muted-foreground">Select a registrant</p></div>
+                </div>
+                <ScrollArea className="h-[210px] border-b pb-3">
+                  <div className="space-y-1 pr-2">
+                    {(registrations || []).map((reg) => (
+                      <button key={reg.id} type="button" onClick={() => setSelectedChatRegistrantId(reg.id)}
+                        className={cn("w-full rounded-lg px-3 py-2 text-left transition-colors hover:bg-muted", selectedChatRegistrantId === reg.id && "bg-primary/10 text-primary")}>
+                        <span className="block truncate text-sm font-medium">{reg.name}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{reg.email}</span>
+                      </button>
+                    ))}
+                    {!registrations?.length && <p className="px-2 py-5 text-center text-xs text-muted-foreground">No registrants yet</p>}
+                  </div>
+                </ScrollArea>
+                {(() => {
+                  const selected = registrations?.find((reg) => reg.id === selectedChatRegistrantId) || registrations?.[0];
+                  if (!selected) return <div className="py-8 text-center text-sm text-muted-foreground">Profile data will appear here.</div>;
+                  return <div className="space-y-4 pt-4 text-sm">
+                    <div><p className="font-semibold">{selected.name}</p><p className="break-all text-xs text-muted-foreground">{selected.email}</p><p className="mt-1 text-xs text-muted-foreground">{selected.phone || "No phone provided"}</p></div>
+                    <div className="grid grid-cols-2 gap-3 border-y py-3 text-xs"><div><p className="text-muted-foreground">Session</p><p className="mt-1 font-medium">{selected.selectedSession ? new Date(selected.selectedSession).toLocaleString(lang) : "On demand"}</p></div><div><p className="text-muted-foreground">Watch time</p><p className="mt-1 font-medium">{Math.floor((selected.watchDuration || 0) / 60)} min</p></div><div><p className="text-muted-foreground">Status</p><p className="mt-1 font-medium">{selected.attended ? s.regAttended : "Not attended"}</p></div><div><p className="text-muted-foreground">Source</p><p className="mt-1 font-medium">{selected.utmSource || selected.source || "Direct"}</p></div></div>
+                    <div><p className="mb-2 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Database className="h-3 w-3" />Tags</p><div className="flex flex-wrap gap-1">{(selected.tags || []).length ? selected.tags?.map((tag) => <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>) : <span className="text-xs text-muted-foreground">No tags</span>}</div></div>
+                  </div>;
+                })()}
+              </aside>
             </div>
           </TabsContent>
 
           {/* ===== Registration Tab ===== */}
           <TabsContent value="registrations">
-            <Card>
+            <div className="admin-workspace-grid">
+              {contextualRail([{ id: "registrants", label: s.regTitle, icon: Users }], registrationsSection, setRegistrationsSection)}
+              <Card id="webinar-section-registrants">
               <CardHeader className="flex flex-row items-center justify-between gap-2">
                 <div>
                   <CardTitle className="text-base">{s.regTitle}</CardTitle>
@@ -3817,108 +4041,151 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="px-0 pb-0">
                 {registrations && registrations.length > 0 ? (
-                  <ScrollArea className="h-[400px]">
-                    <div className="space-y-2">
-                      {registrations
-                        .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
-                        .map((reg) => (
-                        <div key={reg.id} className="p-3 bg-muted rounded-md" data-testid={`row-registration-${reg.id}`}>
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="font-medium">{reg.name}</p>
-                              {reg.phone && <p className="text-sm text-muted-foreground">{reg.phone}</p>}
-                              <p className="text-sm text-muted-foreground">{reg.email}</p>
-                              {(reg.utmSource || reg.utmMedium || reg.utmCampaign) && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {reg.utmSource && (
-                                    <Badge variant="outline" className="text-xs">
-                                      {s.regSource} {reg.utmSource}
-                                    </Badge>
-                                  )}
-                                  {reg.utmMedium && (
-                                    <Badge variant="outline" className="text-xs">
-                                      {s.regMedium} {reg.utmMedium}
-                                    </Badge>
-                                  )}
-                                  {reg.utmCampaign && (
-                                    <Badge variant="outline" className="text-xs">
-                                      {s.regCampaign} {reg.utmCampaign}
-                                    </Badge>
-                                  )}
-                                </div>
-                              )}
-                              {(reg.tags || []).length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {(reg.tags || []).map((tag, i) => (
-                                    <Badge key={i} className="text-xs" data-testid={`badge-tag-${reg.id}-${i}`}>{tag}</Badge>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-right flex-shrink-0">
-                              <p className="text-xs text-muted-foreground">
-                                {new Date(reg.registeredAt!).toLocaleString(lang)}
-                              </p>
-                              {reg.attended && (
-                                <Badge variant="secondary" className="text-xs mt-1">
-                                  <Star className="h-3 w-3 mr-1" />
-                                  {s.regAttended}
-                                </Badge>
-                              )}
-                              <div className="mt-1">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => { setEditTagsRegId(reg.id); setEditTagsValue((reg.tags || []).join(", ")); }}
-                                  data-testid={`button-edit-tags-${reg.id}`}
-                                >
-                                  {s.tagEdit}
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                          {editTagsRegId === reg.id && (
-                            <div className="flex items-center gap-2 mt-2">
-                              <Input
-                                value={editTagsValue}
-                                onChange={(e) => setEditTagsValue(e.target.value)}
-                                placeholder={s.tagPlaceholder}
-                                className="h-8 text-sm"
-                                data-testid={`input-tags-${reg.id}`}
-                              />
-                              <Button
-                                size="sm"
-                                className="h-8"
-                                disabled={saveRegTags.isPending}
-                                onClick={() => saveRegTags.mutate({ regId: reg.id, tags: editTagsValue.split(",").map((t) => t.trim()).filter(Boolean) })}
-                                data-testid={`button-save-tags-${reg.id}`}
+                  <div className="max-h-[560px] overflow-auto border-t">
+                    <Table className="min-w-[1120px]">
+                      <TableHeader className="sticky top-0 z-10 bg-slate-800">
+                        <TableRow className="hover:bg-slate-800">
+                          <TableHead className="w-[150px] text-white">姓名</TableHead>
+                          <TableHead className="w-[220px] text-white">聯絡資料</TableHead>
+                          <TableHead className="w-[130px] text-white">觀看方式</TableHead>
+                          <TableHead className="w-[190px] text-white">選擇場次</TableHead>
+                          <TableHead className="w-[180px] text-white">報名時間</TableHead>
+                          <TableHead className="w-[145px] text-white">觀看狀態</TableHead>
+                          <TableHead className="min-w-[210px] text-white">來源與標籤</TableHead>
+                          <TableHead className="w-[100px] text-right text-white">操作</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {registrations
+                          .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
+                          .map((reg, index) => {
+                            const watchMinutes = Math.floor((reg.watchDuration || 0) / 60);
+                            const watchSeconds = (reg.watchDuration || 0) % 60;
+                            return (
+                              <TableRow
+                                key={reg.id}
+                                className={cn(index % 2 === 1 && "bg-muted/35")}
+                                data-testid={`row-registration-${reg.id}`}
                               >
-                                {s.tagSave}
-                              </Button>
-                              <Button variant="ghost" size="sm" className="h-8" onClick={() => setEditTagsRegId(null)}>
-                                {s.tagCancel}
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </ScrollArea>
+                                <TableCell className="align-top font-medium">
+                                  <div className="max-w-[140px] truncate" title={reg.name}>{reg.name}</div>
+                                  {reg.nickname && reg.nickname !== reg.name && (
+                                    <div className="mt-1 text-xs text-muted-foreground">暱稱：{reg.nickname}</div>
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <a href={`mailto:${reg.email}`} className="block max-w-[210px] truncate text-sm text-primary hover:underline" title={reg.email}>
+                                    {reg.email}
+                                  </a>
+                                  <div className="mt-1 text-xs text-muted-foreground">{reg.phone || "—"}</div>
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <Badge variant={reg.selectedSession ? "secondary" : "outline"}>
+                                    {reg.selectedSession ? "預約場次" : "隨到隨看"}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="align-top text-sm">
+                                  {reg.selectedSession
+                                    ? new Date(reg.selectedSession).toLocaleString(lang, {
+                                        timeZone: webinar.timezone || "Asia/Taipei",
+                                        year: "numeric",
+                                        month: "2-digit",
+                                        day: "2-digit",
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })
+                                    : "報名後立即觀看"}
+                                </TableCell>
+                                <TableCell className="align-top text-sm text-muted-foreground">
+                                  {reg.registeredAt ? new Date(reg.registeredAt).toLocaleString(lang) : "—"}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <Badge variant={reg.attended ? "default" : "outline"} className="mb-1">
+                                    {reg.attended ? s.regAttended : "尚未觀看"}
+                                  </Badge>
+                                  <div className="text-xs text-muted-foreground">
+                                    觀看 {watchMinutes > 0 ? `${watchMinutes} 分` : ""}{watchSeconds} 秒
+                                  </div>
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <div className="flex flex-wrap gap-1">
+                                    {(reg.utmSource || reg.source) && (
+                                      <Badge variant="outline" className="text-xs">
+                                        {s.regSource} {reg.utmSource || reg.source}
+                                      </Badge>
+                                    )}
+                                    {reg.utmMedium && <Badge variant="outline" className="text-xs">{s.regMedium} {reg.utmMedium}</Badge>}
+                                    {reg.utmCampaign && <Badge variant="outline" className="text-xs">{s.regCampaign} {reg.utmCampaign}</Badge>}
+                                    {(reg.tags || []).map((tag, i) => (
+                                      <Badge key={i} className="text-xs" data-testid={`badge-tag-${reg.id}-${i}`}>{tag}</Badge>
+                                    ))}
+                                    {!reg.utmSource && !reg.source && !reg.utmMedium && !reg.utmCampaign && (reg.tags || []).length === 0 && (
+                                      <span className="text-sm text-muted-foreground">—</span>
+                                    )}
+                                  </div>
+                                  {editTagsRegId === reg.id && (
+                                    <div className="mt-2 flex min-w-[300px] items-center gap-1">
+                                      <Input
+                                        value={editTagsValue}
+                                        onChange={(e) => setEditTagsValue(e.target.value)}
+                                        placeholder={s.tagPlaceholder}
+                                        className="h-8 text-sm"
+                                        data-testid={`input-tags-${reg.id}`}
+                                      />
+                                      <Button
+                                        size="sm"
+                                        className="h-8"
+                                        disabled={saveRegTags.isPending}
+                                        onClick={() => saveRegTags.mutate({ regId: reg.id, tags: editTagsValue.split(",").map((t) => t.trim()).filter(Boolean) })}
+                                        data-testid={`button-save-tags-${reg.id}`}
+                                      >
+                                        {s.tagSave}
+                                      </Button>
+                                      <Button variant="ghost" size="sm" className="h-8" onClick={() => setEditTagsRegId(null)}>
+                                        {s.tagCancel}
+                                      </Button>
+                                    </div>
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top text-right">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 text-xs"
+                                    onClick={() => { setEditTagsRegId(reg.id); setEditTagsValue((reg.tags || []).join(", ")); }}
+                                    data-testid={`button-edit-tags-${reg.id}`}
+                                  >
+                                    {s.tagEdit}
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                      </TableBody>
+                    </Table>
+                  </div>
                 ) : (
                   <p className="text-center text-muted-foreground py-8">{s.regNoRegistrations}</p>
                 )}
               </CardContent>
-            </Card>
+              </Card>
+            </div>
           </TabsContent>
 
           {/* ===== Analytics Tab ===== */}
           <TabsContent value="analytics">
+            <div className="admin-workspace-grid">
+              {contextualRail([
+                { id: "overview", label: "Overview", icon: Activity },
+                { id: "funnel", label: "Funnel", icon: TrendingUp },
+                { id: "viewer-behavior", label: "Viewer behavior", icon: Eye },
+              ], analyticsSection, setAnalyticsSection)}
+              <div>
             {analytics ? (
               <div className="space-y-6">
-                <Card className="border-primary/20 bg-primary/[0.03] overflow-hidden">
+                <Card id="webinar-section-funnel" className="border-primary/20 bg-primary/[0.03] overflow-hidden">
                   <CardHeader className="pb-3">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                       <div>
@@ -4204,7 +4471,7 @@ export default function AdminWebinarDetail() {
                   </Card>
                 </div>
 
-                <Card>
+                <Card id="webinar-section-viewer-behavior">
                   <CardHeader>
                     <CardTitle className="text-base">{s.analyticsRetention}</CardTitle>
                     <CardDescription>{s.analyticsRetentionDesc}</CardDescription>
@@ -4307,11 +4574,24 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
             )}
+              </div>
+            </div>
           </TabsContent>
 
           {/* ===== Settings Tab ===== */}
           <TabsContent value="settings">
-            <div className="space-y-6">
+            <div className="admin-workspace-grid">
+              {contextualRail([
+                { id: "tracking", label: "轉換追蹤", icon: Activity },
+                { id: "registration-form", label: s.cfTitle, icon: FileText },
+                { id: "scarcity", label: s.scTitle, icon: Clock },
+                { id: "pages", label: s.pgTitle, icon: Eye },
+                { id: "webinar-info", label: s.settingsWebinarInfo, icon: Settings },
+                { id: "brand", label: "品牌設定", icon: Palette },
+                { id: "embed", label: "嵌入與分享", icon: Code },
+              ], settingsSection, setSettingsSection)}
+              <div className="space-y-6">
+              {settingsSection === "tracking" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">轉換追蹤</CardTitle>
@@ -4369,7 +4649,9 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "registration-form" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">{s.cfTitle}</CardTitle>
@@ -4445,7 +4727,9 @@ export default function AdminWebinarDetail() {
                   </div>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "scarcity" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">{s.scTitle}</CardTitle>
@@ -4492,7 +4776,9 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "pages" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">{s.pgTitle}</CardTitle>
@@ -4526,7 +4812,9 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "webinar-info" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">{s.settingsWebinarInfo}</CardTitle>
@@ -4644,7 +4932,9 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "brand" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -4742,7 +5032,10 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsSection === "embed" && (
+              <>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -4964,12 +5257,21 @@ export default function AdminWebinarDetail() {
                   <p className="text-xs text-muted-foreground">{s.settingsInlineNote}</p>
                 </CardContent>
               </Card>
+              </>
+              )}
             </div>
+              </div>
           </TabsContent>
 
           {/* ===== AI 助教 Tab ===== */}
           <TabsContent value="ai">
-            <div className="space-y-6">
+            <div className="admin-workspace-grid">
+              {contextualRail([
+                { id: "assistant", label: s.aiTitle, icon: Bot },
+                { id: "knowledge", label: s.aiDocsTitle, icon: FileText },
+                { id: "generated-content", label: "AI 生成內容", icon: Sparkles },
+              ], aiSection, setAiSection)}
+              <div className="space-y-6">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -5021,7 +5323,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
 
-              <Card>
+                <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base flex items-center gap-2">
@@ -5109,6 +5411,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
             </div>
+              </div>
           </TabsContent>
         </Tabs>
       </main>

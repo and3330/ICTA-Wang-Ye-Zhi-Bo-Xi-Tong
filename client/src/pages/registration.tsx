@@ -18,6 +18,7 @@ import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, Users } from "lucide-
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 
@@ -28,6 +29,8 @@ interface AvailableSessionsResponse {
   message?: string;
   hasSessions?: boolean;
   onDemandAvailable?: boolean;
+  registrationOpen?: boolean;
+  jitSelectionToken?: string;
 }
 
 const ON_DEMAND_VALUE = "__on_demand__";
@@ -120,6 +123,7 @@ export default function Registration() {
       const payload: any = {
         ...data,
         webinarId: id,
+        viewerTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         analyticsVisitorToken: id ? getWebinarVisitorToken(id) : undefined,
         utmSource: urlParams.get("utm_source") || undefined,
         utmMedium: urlParams.get("utm_medium") || undefined,
@@ -130,13 +134,18 @@ export default function Registration() {
       };
       if (selectedSession && selectedSession !== ON_DEMAND_VALUE) {
         payload.selectedSession = selectedSession;
+        if (availableSessions?.mode === "justInTime" && availableSessions.jitSelectionToken) {
+          payload.jitSelectionToken = availableSessions.jitSelectionToken;
+        }
       }
       if (Object.keys(customFieldValues).length > 0) {
         payload.customFieldData = customFieldValues;
       }
-      return apiRequest("POST", "/api/registrations", payload);
+      const response = await apiRequest("POST", "/api/registrations", payload);
+      return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (response: any) => {
+      saveWatchAccess(id!, response);
       setRegistered(true);
       toast({
         title: "報名成功！",
@@ -152,6 +161,7 @@ export default function Registration() {
     },
   });
 
+  const webinarTimezone = webinar?.timezone || "Asia/Taipei";
   const formatDate = (date: string | Date) => {
     return new Date(date).toLocaleString("zh-TW", {
       year: "numeric",
@@ -159,26 +169,28 @@ export default function Registration() {
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: webinarTimezone,
     });
   };
 
   const formatSessionOption = (date: string | Date) => {
-    const d = new Date(date);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
-    const weekday = weekdays[d.getDay()];
-    const hh = String(d.getHours()).padStart(2, "0");
-    const min = String(d.getMinutes()).padStart(2, "0");
-    return `${yyyy}/${mm}/${dd} 星期${weekday} ${hh}:${min}`;
+    return new Intl.DateTimeFormat("zh-TW", {
+      timeZone: webinarTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(date));
   };
 
   useEffect(() => {
     if (
       availableSessions &&
       availableSessions.sessions.length === 1 &&
-      !availableSessions.onDemandAvailable &&
+       !availableSessions.onDemandAvailable &&
       !selectedSession
     ) {
       setSelectedSession(availableSessions.sessions[0].scheduledStart);
@@ -224,8 +236,9 @@ export default function Registration() {
 
   const mode = availableSessions?.mode || "fixed";
   const hasSessions = availableSessions?.hasSessions || false;
-  const onDemandAvailable = availableSessions?.onDemandAvailable || mode === "onDemand";
-  const isOnDemandSelection = selectedSession === ON_DEMAND_VALUE || (mode === "onDemand" && !selectedSession);
+  const onDemandAvailable = Boolean(availableSessions?.onDemandAvailable);
+  const registrationOpen = availableSessions?.registrationOpen !== false;
+  const isOnDemandSelection = selectedSession === ON_DEMAND_VALUE;
   const showSessionPicker = Boolean(availableSessions && (onDemandAvailable || (hasSessions && availableSessions.sessions.length >= 1)));
 
   const customFields = (webinar.customFields as CustomField[]) || [];
@@ -312,7 +325,8 @@ export default function Registration() {
             <Button
               onClick={() => {
                 trackWebinarEvent(id, "webinar_enter");
-                setLocation(`/webinar/${id}`);
+               const nextUrl = new URL(watchUrl(`/webinar/${id}`, id!, getWatchToken(id)));
+               setLocation(`${nextUrl.pathname}${nextUrl.search}`);
               }}
               className="w-full"
               variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
@@ -397,6 +411,11 @@ export default function Registration() {
               </div>
             </div>
           )}
+          {!isOnDemandSelection && (
+            <p className="mb-6 -mt-4 text-center text-xs text-muted-foreground" data-testid="text-webinar-timezone">
+              所有場次時間均為 {webinarTimezone}
+            </p>
+          )}
 
           {showSessionPicker && (
             <div className="mb-6">
@@ -428,6 +447,12 @@ export default function Registration() {
               {!selectedSession && (
                 <p className="text-xs text-destructive mt-2">請先選擇觀看方式或場次</p>
               )}
+              <p className="mt-2 text-xs text-muted-foreground">場次時間：{webinarTimezone}</p>
+            </div>
+          )}
+          {!registrationOpen && (
+            <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 p-3 text-center text-sm text-amber-800" data-testid="text-registration-closed">
+              目前沒有可報名的場次
             </div>
           )}
 
@@ -554,7 +579,7 @@ export default function Registration() {
               <Button
                 type="submit"
                 className="w-full"
-                disabled={registerMutation.isPending || (showSessionPicker && !selectedSession)}
+                disabled={registerMutation.isPending || !registrationOpen || (showSessionPicker && !selectedSession)}
                 data-testid="button-register"
               >
                 {registerMutation.isPending ? (

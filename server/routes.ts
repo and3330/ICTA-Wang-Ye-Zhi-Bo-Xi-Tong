@@ -5,8 +5,10 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { storage } from "./storage";
-import { sendWebinarRegistrationEmail, sendQuestionNotificationEmail } from "./gmail";
+import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
+import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
+import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry } from "./watchTokens";
 import crypto from "crypto";
 import {
   insertWebinarSchema,
@@ -40,6 +42,7 @@ import { looksLikeQuestion, answerViewerQuestion } from "./aiAssistant";
 import {
   ADDON_LOOKUP_KEY,
   SUBSCRIPTION_PLANS,
+  getMonthlyRegistrantLimit,
   getApprovedPriceIds,
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
@@ -135,6 +138,11 @@ function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContain
     metaPixelId: metaPixelId.success ? metaPixelId.data : null,
     gtmContainerId: gtmContainerId.success ? gtmContainerId.data : null,
   };
+}
+
+function publicWebinar<T extends { vimeoUrl?: string | null }>(webinar: T): Omit<T, "vimeoUrl"> {
+  const { vimeoUrl: _vimeoUrl, ...safe } = withSafeTrackingIds(webinar as any);
+  return safe;
 }
 
 export async function registerRoutes(
@@ -267,6 +275,7 @@ export async function registerRoutes(
   wss.on("connection", (ws, req) => {
     let currentWebinarId: string | null = null;
     let currentSessionId: string | null = null;
+    let currentRegistrationId: string | null = null;
     let isHost = false;
     let sessionUserId: string | null = null;
 
@@ -294,16 +303,32 @@ export async function registerRoutes(
             // to a viewer context (prevents cross-tenant context switching).
             if (isHost) break;
             // Each viewer gets a unique session - complete isolation
-            const { webinarId, sessionId, nickname } = message.data;
+            const { webinarId, sessionId, nickname, watchToken } = message.data;
             if (typeof webinarId !== "string" || typeof sessionId !== "string") break;
             await sessionReady;
             const requestedWebinar = await storage.getWebinar(webinarId);
-            if (!canViewWebinar(requestedWebinar, sessionUserId)) {
+            if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId)) {
               ws.send(JSON.stringify({
                 type: "error",
                 data: { message: "Webinar not found or unavailable" },
               }));
               break;
+            }
+            const isOwner = requestedWebinar.userId === sessionUserId;
+            if (!isOwner) {
+              const token = verifyWatchToken(watchToken);
+              const registration = token && token.webinarId === webinarId
+                ? await storage.getRegistration(token.registrationId)
+                : undefined;
+              if (!registration || registration.webinarId !== webinarId) {
+                ws.send(JSON.stringify({ type: "error", data: { message: "Invalid watch token" } }));
+                break;
+              }
+              if (registration.selectedSession && new Date(registration.selectedSession).getTime() > Date.now()) {
+                ws.send(JSON.stringify({ type: "error", data: { message: "This session has not started" } }));
+                break;
+              }
+              currentRegistrationId = registration.id;
             }
             currentWebinarId = webinarId;
             currentSessionId = sessionId;
@@ -1054,7 +1079,7 @@ export async function registerRoutes(
     const webinars = await storage.getAllWebinars();
     res.json(webinars
       .filter((webinar) => webinar.publishStatus === "published")
-      .map(withSafeTrackingIds));
+      .map(publicWebinar));
   });
 
   app.get("/api/webinars/stats/summary", requireAdmin, async (req, res) => {
@@ -1091,7 +1116,8 @@ export async function registerRoutes(
       return res.status(404).json({ message: "Webinar not found" });
     }
     // Protect public/preview pages from legacy or manually inserted unsafe values.
-    res.json(withSafeTrackingIds(webinar));
+    const isOwner = webinar.userId === req.session?.userId;
+    res.json(isOwner ? withSafeTrackingIds(webinar) : publicWebinar(webinar));
   });
 
   app.post("/api/webinars", requireAdmin, async (req, res) => {
@@ -1192,13 +1218,18 @@ export async function registerRoutes(
   });
 
   app.get("/api/stripe/config", async (_req, res) => {
-    const plans = [
-      { key: "starter", amountUsd: 49, includedWebinars: 2 },
-      { key: "growth", amountUsd: 99, includedWebinars: 5 },
+    const planDefinitions = [
+      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000 },
+      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000 },
+      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000 },
     ];
     try {
       const key = await getStripePublishableKey();
       const { byLookupKey } = await getApprovedPriceIds();
+      const plans = planDefinitions.map((plan) => ({
+        ...plan,
+        available: byLookupKey.has(SUBSCRIPTION_PLANS[plan.key as SubscriptionPlanKey].lookupKey),
+      }));
       const catalogReady = [
         ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
         ADDON_LOOKUP_KEY,
@@ -1216,7 +1247,7 @@ export async function registerRoutes(
         publishableKey: "",
         billingAvailable: false,
         catalogReady: false,
-        plans,
+        plans: planDefinitions.map((plan) => ({ ...plan, available: false })),
         addonAmountUsd: 20,
       });
     }
@@ -1453,24 +1484,66 @@ export async function registerRoutes(
         ? undefined
         : analyticsVisitorTokenSchema.parse(body.analyticsVisitorToken);
       delete body.analyticsVisitorToken;
-      if (body.selectedSession && typeof body.selectedSession === "string") {
-        body.selectedSession = new Date(body.selectedSession);
-      }
+      const requestedSession = body.selectedSession;
+      const jitSelectionToken = body.jitSelectionToken;
+      delete body.selectedSession;
+      delete body.jitSelectionToken;
       // tags 為後台專用，禁止公開報名端設定
       delete body.tags;
-      const data = insertRegistrationSchema.parse(body);
+      let data = insertRegistrationSchema.parse(body);
 
       const webinarCheck = await storage.getWebinar(data.webinarId);
       if (!webinarCheck || webinarCheck.publishStatus !== "published") {
         return res.status(403).json({ message: "此直播間尚未發佈，無法報名" });
       }
+      if (!process.env.SESSION_SECRET) {
+        return res.status(503).json({ message: "Registration is temporarily unavailable" });
+      }
+      const persistedSessions = await storage.getWebinarSessions(webinarCheck.id);
+      const eligibilityNow = new Date();
+      const availability = getAvailableSessions(webinarCheck, persistedSessions, eligibilityNow);
+      const selectedSession = availability.mode === "justInTime"
+        ? (() => {
+          if (requestedSession == null || requestedSession === "") {
+            if (availability.onDemandAvailable) return null;
+            throw new Error("請選擇有效的場次");
+          }
+          const signedSlot = verifyJitSelectionToken(jitSelectionToken, webinarCheck.id);
+          const requested = new Date(requestedSession);
+          if (!signedSlot || !Number.isFinite(requested.getTime()) || requested.getTime() !== signedSlot.getTime()) {
+            throw new Error("所選即時場次無效或已過期");
+          }
+          return signedSlot;
+        })()
+        : normalizeSelectedSession(requestedSession, availability, eligibilityNow);
+      data = { ...data, selectedSession };
       
       const existing = await storage.getRegistrationByEmail(data.webinarId, data.email);
       if (existing) {
         return res.status(400).json({ message: "此 Email 已報名" });
       }
       
-      const registration = await storage.createRegistration(data, analyticsVisitorToken);
+      if (!webinarCheck.userId) {
+        return res.status(503).json({ message: "此 Webinar 的帳號設定不完整，暫時無法報名" });
+      }
+      const webinarOwner = await storage.getUser(webinarCheck.userId);
+      const monthlyRegistrantLimit = getMonthlyRegistrantLimit(webinarOwner?.subscriptionPlan || "");
+      const registration = monthlyRegistrantLimit
+        ? await storage.createRegistrationWithinMonthlyLimit(
+            webinarCheck.userId,
+            data,
+            monthlyRegistrantLimit,
+            analyticsVisitorToken,
+          )
+        : await storage.createRegistration(data, analyticsVisitorToken);
+      if (!registration) {
+        return res.status(429).json({ message: "此 Webinar 帳號已達本月報名人數上限" });
+      }
+      const watchToken = createWatchToken(
+        registration.id,
+        registration.webinarId,
+        watchTokenExpiry(registration.selectedSession, webinarCheck.replayAvailableHours ?? 48),
+      );
       
       dispatchWebhook(data.webinarId, "registration", {
         registrationId: registration.id, name: data.name, email: data.email
@@ -1479,31 +1552,14 @@ export async function registerRoutes(
       const webinar = await storage.getWebinar(data.webinarId);
       if (webinar) {
         const baseUrl = `${req.protocol}://${req.get("host")}`;
-        const webinarUrl = `${baseUrl}/webinar/${data.webinarId}`;
-        const emailSettings = webinar.emailSettings as any;
-        
-        if (!emailSettings || emailSettings.confirmationEnabled !== false) {
-          try {
-            await sendWebinarRegistrationEmail(
-              data.email,
-              data.name,
-              webinar.title,
-              new Date(webinar.startTime),
-              webinarUrl
-            );
-          } catch (emailError) {
-            console.error("Failed to send email:", emailError);
-          }
-        }
-        
         try {
-          await createEmailRemindersForRegistration(registration, webinar, baseUrl);
+          await createEmailRemindersForRegistration(registration, webinar, baseUrl, watchToken);
         } catch (reminderError) {
           console.error("Failed to create reminders:", reminderError);
         }
       }
       
-      res.json(registration);
+      res.json({ ...registration, watchToken });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -1583,6 +1639,11 @@ export async function registerRoutes(
   app.delete("/api/webinars/:id/fake-users/:userId", requireWebinarOwner, async (req, res) => {
     await storage.deleteFakeUser(req.params.userId as string);
     res.json({ success: true });
+  });
+
+  app.get("/api/webinars/:id/chat-messages", requireWebinarOwner, async (req, res) => {
+    const messages = await storage.getChatMessagesByWebinar(req.params.id as string);
+    res.json(messages);
   });
 
   // ============ Scheduled Messages Routes ============
@@ -2078,99 +2139,46 @@ export async function registerRoutes(
     try {
       const webinar = await storage.getWebinar(req.params.id as string);
       if (!webinar) return res.status(404).json({ message: "Webinar not found" });
-
-      const scheduleMode = webinar.scheduleMode as any;
-      const recurring = webinar.recurringSchedule as any;
-      const now = new Date();
-      const onDemandAvailable = Boolean(scheduleMode?.onDemand);
-
-      if (scheduleMode?.justInTime) {
-        const minutes = scheduleMode.justInTimeMinutes || 15;
-        const nextStart = new Date(now.getTime() + minutes * 60 * 1000);
-        return res.json({
-          mode: "justInTime",
-          sessions: [{ id: "jit", scheduledStart: nextStart, status: "scheduled" }],
-          onDemandAvailable,
-          nextStartMinutes: minutes,
-          message: `下一場將在 ${minutes} 分鐘內開始`,
-        });
+      try {
+        scheduleDateBounds(webinar.scheduleMode);
+      } catch (error: any) {
+        return res.status(400).json({ message: error.message });
       }
-
-      // If a recurring schedule (days+times) is configured, offer those
-      // upcoming time slots as pickable sessions.
-      if (recurring?.enabled && recurring.times?.length && recurring.days?.length) {
-        const excludeSet = new Set<string>(
-          (recurring.excludeDates as string[] | undefined)?.map(d => String(d).slice(0, 10)) || []
-        );
-        const generated: { id: string; scheduledStart: Date; status: string }[] = [];
-        for (let d = 0; d < 14 && generated.length < 20; d++) {
-          const date = new Date(now);
-          date.setDate(date.getDate() + d);
-          if (!recurring.days.includes(date.getDay())) continue;
-          const ymd = date.toISOString().slice(0, 10);
-          if (excludeSet.has(ymd)) continue;
-          for (const time of recurring.times as string[]) {
-            const match = /^(\d{1,2}):(\d{2})$/.exec(String(time).trim());
-            if (!match) continue;
-            const h = Number(match[1]);
-            const m = Number(match[2]);
-            if (h < 0 || h > 23 || m < 0 || m > 59) continue;
-            const slot = new Date(date);
-            slot.setHours(h, m, 0, 0);
-            if (slot.getTime() <= now.getTime()) continue;
-            generated.push({
-              id: `recurring-${slot.getTime()}`,
-              scheduledStart: slot,
-              status: "scheduled",
-            });
-            if (generated.length >= 20) break;
-          }
-        }
-        generated.sort((a, b) => a.scheduledStart.getTime() - b.scheduledStart.getTime());
-        if (generated.length > 0) {
-          return res.json({
-            mode: "recurring",
-            sessions: generated,
-            hasSessions: true,
-            onDemandAvailable,
-          });
-        }
-      }
-
-      const isRecurring = scheduleMode?.recurring && !scheduleMode?.justInTime;
-      const mode = isRecurring ? "recurring" : "fixed";
 
       const allSessions = await storage.getWebinarSessions(webinar.id);
-      const seenTimes = new Set<number>();
-      const futureSessions = allSessions
-        .filter(s => new Date(s.scheduledStart) > now && s.status === "scheduled")
-        .sort((a, b) => new Date(a.scheduledStart).getTime() - new Date(b.scheduledStart).getTime())
-        .filter(s => {
-          const t = new Date(s.scheduledStart).getTime();
-          if (seenTimes.has(t)) return false;
-          seenTimes.add(t);
-          return true;
-        })
-        .slice(0, 20);
-
-      if (futureSessions.length > 0) {
+      const availability = getAvailableSessions(webinar, allSessions);
+      if (availability.mode === "justInTime" && process.env.SESSION_SECRET) {
         return res.json({
-          mode,
-          sessions: futureSessions,
-          hasSessions: true,
-          onDemandAvailable,
+          ...availability,
+          jitSelectionToken: createJitSelectionToken(webinar.id, availability.sessions[0].scheduledStart),
         });
       }
-
-      return res.json({
-        mode,
-        sessions: [{ id: "main", scheduledStart: webinar.startTime, status: "scheduled" }],
-        hasSessions: false,
-        onDemandAvailable,
-      });
+      return res.json(availability);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
+  });
+
+  app.get("/api/webinars/:id/watch-state", requirePublishedOrOwner, async (req, res) => {
+    const token = verifyWatchToken(req.query.watchToken);
+    if (!token || token.webinarId !== req.params.id) {
+      return res.status(401).json({ message: "Invalid or expired watch token" });
+    }
+    const registration = await storage.getRegistration(token.registrationId);
+    if (!registration || registration.webinarId !== req.params.id) {
+      return res.status(401).json({ message: "Invalid or expired watch token" });
+    }
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+    const selectedSession = registration.selectedSession ? new Date(registration.selectedSession) : null;
+    const canWatch = !selectedSession || selectedSession.getTime() <= Date.now();
+    res.json({
+      selectedSession,
+      canWatch,
+      waitUntil: canWatch ? null : selectedSession,
+      mode: selectedSession ? "scheduled" : "onDemand",
+      ...(canWatch ? { vimeoUrl: webinar.vimeoUrl } : {}),
+    });
   });
 
   // ============ Recurring Schedule Generation ============
@@ -2185,8 +2193,13 @@ export async function registerRoutes(
       if (!schedule?.enabled || !schedule.days?.length || !schedule.times?.length) {
         return res.status(400).json({ message: "No recurring schedule configured" });
       }
+      try {
+        scheduleDateBounds(webinar.scheduleMode);
+      } catch (error: any) {
+        return res.status(400).json({ message: error.message });
+      }
 
-      const daysToGenerate = req.body.days || 30;
+      const daysToGenerate = Math.min(366, Math.max(1, Math.floor(Number(req.body.days) || 30)));
       const now = new Date();
       const sessions: any[] = [];
 
@@ -2195,34 +2208,17 @@ export async function registerRoutes(
         existingSessions.map(s => `${new Date(s.scheduledStart).getTime()}`)
       );
 
-      for (let d = 0; d < daysToGenerate; d++) {
-        const date = new Date(now);
-        date.setDate(date.getDate() + d);
-        const dayOfWeek = date.getDay();
-
-        if (!schedule.days.includes(dayOfWeek)) continue;
-
-        const dateStr = date.toISOString().split("T")[0];
-        if (schedule.excludeDates?.includes(dateStr)) continue;
-
-        for (const time of schedule.times) {
-          const [hours, minutes] = time.split(":").map(Number);
-          const sessionDate = new Date(date);
-          sessionDate.setHours(hours, minutes, 0, 0);
-
-          if (sessionDate <= now) continue;
-
-          const key = `${sessionDate.getTime()}`;
-          if (existingKeys.has(key)) continue;
-
-          const session = await storage.createWebinarSession({
-            webinarId: webinar.id,
-            scheduledStart: sessionDate,
-            status: "scheduled",
-          });
-          sessions.push(session);
-          existingKeys.add(key);
-        }
+      const generated = generateRecurringSessions(webinar, now, daysToGenerate, 2000);
+      for (const slot of generated) {
+        const key = `${slot.scheduledStart.getTime()}`;
+        if (existingKeys.has(key)) continue;
+        const session = await storage.createWebinarSession({
+          webinarId: webinar.id,
+          scheduledStart: slot.scheduledStart,
+          status: "scheduled",
+        });
+        sessions.push(session);
+        existingKeys.add(key);
       }
 
       res.json({ generated: sessions.length, sessions });

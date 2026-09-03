@@ -131,12 +131,12 @@ app.use((req, res, next) => {
       log('Stripe data synced', 'stripe');
 
       const { byLookupKey } = await getApprovedPriceIds();
-      const catalogReady = [
+      const missingLookupKeys = [
         ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
         ADDON_LOOKUP_KEY,
-      ].every((lookupKey) => byLookupKey.has(lookupKey));
-      if (!catalogReady) {
-        console.warn('Stripe subscription catalog is incomplete; Checkout will remain unavailable.');
+      ].filter((lookupKey) => !byLookupKey.has(lookupKey));
+      if (missingLookupKeys.length) {
+        console.warn(`Stripe subscription catalog is incomplete (${missingLookupKeys.join(", ")}); available plans can still use Checkout.`);
       } else {
         log('Stripe subscription catalog ready', 'stripe');
       }
