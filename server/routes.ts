@@ -36,7 +36,7 @@ import {
   safeCtaUrlSchema,
   createWebinarOfferSchema,
 } from "@shared/schema";
-import { generateInteractions, generateEmailSequence, generateSocialPosts, getWebinarKnowledge } from "./aiGenerator";
+import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
 import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClient";
@@ -66,6 +66,7 @@ import {
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
 const AI_POINTS_PER_GENERATION = 5; // 每次 AI 一鍵生成（互動 / 電子報 / 貼文）扣的點數
+const AI_WEBINAR_WIZARD_POINTS = 30;
 const POINTS_PER_TWD = 1; // 1 元 = 1 點
 const RECHARGE_MIN_TWD = 100; // 自訂金額最低消費
 const RECHARGE_PACKAGES: Record<string, number> = { p300: 300, p1000: 1000, p3000: 3000 }; // 固定儲值包（元）
@@ -206,7 +207,7 @@ export async function registerRoutes(
     req.method === "POST" && /^\/[^/]+\/funnel-events$/.test(req.path) ? funnelEventLimit(req, res, next) : next());
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
-    req.method === "POST" && req.path.includes("/ai/") ? aiLimit(req, res, next) : next());
+    req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
 
   // ============ Image Upload ============
   const uploadsDir = path.join(process.cwd(), "client", "public", "uploads");
@@ -1137,6 +1138,102 @@ export async function registerRoutes(
       res.json(webinar);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
+    }
+  });
+
+  const aiWebinarWizardSchema = z.object({
+    title: z.string().trim().min(2).max(160),
+    audience: z.string().trim().min(2).max(1000),
+    goal: z.string().trim().min(2).max(2000),
+    ctaText: z.string().trim().max(120).default(""),
+    ctaUrl: z.union([z.literal(""), z.string().url().refine((url) => /^https?:\/\//i.test(url), "CTA 網址只允許 HTTP(S)")]).default(""),
+    sourceContent: z.string().max(40000).default(""),
+    vimeoUrl: z.union([z.literal(""), z.string().url().refine((url) => /^https:\/\/(?:www\.)?vimeo\.com\//i.test(url), "請輸入有效的 Vimeo 網址")]).default(""),
+    startTime: z.coerce.date(),
+    videoDuration: z.coerce.number().int().min(0).max(86400).default(0),
+  }).strict();
+
+  app.post("/api/webinars/ai-wizard", requireAdmin, async (req, res) => {
+    const ownerId = req.session.userId!;
+    const owner = await storage.getUser(ownerId);
+    if (!owner) return res.status(401).json({ message: "Unauthorized" });
+    if (!owner.isActive) return res.status(403).json({ message: "Account is suspended" });
+    let input: z.infer<typeof aiWebinarWizardSchema>;
+    try {
+      input = aiWebinarWizardSchema.parse(req.body);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    const unlimited = owner.isSuperAdmin || owner.subscriptionPlan === "enterprise";
+    const remaining = unlimited ? owner.aiPoints : await storage.deductAiPoints(ownerId, AI_WEBINAR_WIZARD_POINTS);
+    if (!unlimited && remaining === null) {
+      return res.status(402).json({ message: `AI 點數不足，建立精靈需要 ${AI_WEBINAR_WIZARD_POINTS} 點` });
+    }
+
+    try {
+      const knowledge = [
+        `目標受眾：${input.audience}`,
+        `商業目標：${input.goal}`,
+        input.ctaText ? `主要行動：${input.ctaText}` : "",
+        input.sourceContent,
+      ].filter(Boolean).join("\n\n");
+      const [plan, interactions, emails] = await Promise.all([
+        generateWebinarPlan(input),
+        generateInteractions(input.title, knowledge, input.videoDuration, `${input.goal}\n主要行動：${input.ctaText}`),
+        generateEmailSequence(input.title, input.goal, knowledge),
+      ]);
+      if (!plan || !interactions || !emails?.length) {
+        throw new Error("AI 無法完成所有內容，請補充更多資料後再試");
+      }
+
+      const webinarInput = insertWebinarSchema.parse({
+        userId: ownerId,
+        title: plan.title,
+        description: plan.description,
+        vimeoUrl: input.vimeoUrl,
+        startTime: input.startTime,
+        status: "scheduled",
+        publishStatus: "draft",
+        videoDuration: input.videoDuration,
+        aiSettings: {
+          enabled: false,
+          teacherName: plan.teacherName,
+          fallbackMessage: plan.fallbackMessage,
+        },
+        scarcitySettings: plan.scarcity,
+        thankYouSettings: plan.thankYou,
+        replaySettings: plan.replay,
+      });
+
+      const safeCtas = interactions.ctas.flatMap((cta) => {
+        const candidate = cta.url === "#" ? input.ctaUrl : cta.url;
+        const parsedUrl = safeCtaUrlSchema.safeParse(candidate);
+        return parsedUrl.success ? [{ ...cta, url: parsedUrl.data }] : [];
+      });
+      const webinar = await storage.createAiWizardWebinar({
+        webinar: webinarInput,
+        knowledge,
+        interactions: { ...interactions, ctas: safeCtas },
+        emails,
+      });
+
+      res.json({
+        success: true,
+        webinar,
+        pointsUsed: unlimited ? 0 : AI_WEBINAR_WIZARD_POINTS,
+        remainingPoints: unlimited ? null : remaining,
+        counts: {
+          messages: interactions.messages.length,
+          polls: interactions.polls.length,
+          tips: interactions.tips.length,
+          ctas: safeCtas.length,
+          emails: emails.length,
+        },
+      });
+    } catch (error: any) {
+      if (!unlimited) await storage.addAiPoints(ownerId, AI_WEBINAR_WIZARD_POINTS);
+      res.status(502).json({ message: `${error.message || "AI 建立失敗"}（未扣點）` });
     }
   });
 

@@ -45,6 +45,94 @@ function clampTime(sec: number, duration: number): number {
   return Math.round(sec);
 }
 
+export interface GeneratedWebinarPlan {
+  title: string;
+  description: string;
+  teacherName: string;
+  fallbackMessage: string;
+  scarcity: {
+    countdownEnabled: boolean;
+    seatsEnabled: boolean;
+    totalSeats: number;
+    urgencyText: string;
+  };
+  thankYou: {
+    enabled: boolean;
+    headline: string;
+    message: string;
+    ctaText: string;
+    ctaUrl: string;
+  };
+  replay: {
+    headline: string;
+    message: string;
+    ctaText: string;
+    ctaUrl: string;
+  };
+}
+
+export async function generateWebinarPlan(input: {
+  title: string;
+  audience: string;
+  goal: string;
+  ctaText: string;
+  ctaUrl: string;
+  sourceContent: string;
+}): Promise<GeneratedWebinarPlan | null> {
+  try {
+    const source = input.sourceContent.trim().slice(0, MAX_CONTEXT_CHARS);
+    const system = [
+      "你是台灣市場的 Webinar 策略與轉換文案專家。",
+      "請建立可直接保存為草稿的結構化 Webinar 設定，不可捏造保證、數據或客戶見證。",
+      `原始主題：${input.title}`,
+      `目標受眾：${input.audience}`,
+      `商業目標：${input.goal}`,
+      `主要行動：${input.ctaText || "了解更多"}`,
+      `行動網址：${input.ctaUrl || "#"}`,
+      "description 請用 2-4 段繁體中文，清楚說明受眾、痛點、可學到的內容與行動價值。",
+      "teacherName 請產生自然的 AI 助教名稱；fallbackMessage 要誠實表示會交由團隊回覆。",
+      "只輸出 JSON，不要 markdown 或解說。",
+      '{"title":"...","description":"...","teacherName":"...","fallbackMessage":"...","scarcity":{"countdownEnabled":true,"seatsEnabled":false,"totalSeats":100,"urgencyText":"..."},"thankYou":{"enabled":true,"headline":"...","message":"...","ctaText":"...","ctaUrl":"..."},"replay":{"headline":"...","message":"...","ctaText":"...","ctaUrl":"..."}}',
+    ].join("\n");
+    const raw = await callJson(
+      system,
+      source ? `以下是主辦方提供的參考資料：\n\n${source}` : "沒有額外參考資料，請僅依已提供資訊撰寫。",
+      4096,
+    );
+    const parsed = parseJson<GeneratedWebinarPlan>(raw);
+    if (!parsed || typeof parsed.title !== "string" || typeof parsed.description !== "string") return null;
+    const ctaUrl = input.ctaUrl.trim() || "#";
+    return {
+      title: parsed.title.trim() || input.title.trim(),
+      description: parsed.description.trim(),
+      teacherName: typeof parsed.teacherName === "string" && parsed.teacherName.trim() ? parsed.teacherName.trim() : "AI 助教",
+      fallbackMessage: typeof parsed.fallbackMessage === "string" ? parsed.fallbackMessage.trim() : "",
+      scarcity: {
+        countdownEnabled: parsed.scarcity?.countdownEnabled !== false,
+        seatsEnabled: parsed.scarcity?.seatsEnabled === true,
+        totalSeats: Number.isFinite(parsed.scarcity?.totalSeats) ? Math.max(1, Math.round(parsed.scarcity.totalSeats)) : 100,
+        urgencyText: typeof parsed.scarcity?.urgencyText === "string" ? parsed.scarcity.urgencyText.trim() : "",
+      },
+      thankYou: {
+        enabled: parsed.thankYou?.enabled !== false,
+        headline: typeof parsed.thankYou?.headline === "string" ? parsed.thankYou.headline.trim() : "報名成功",
+        message: typeof parsed.thankYou?.message === "string" ? parsed.thankYou.message.trim() : "",
+        ctaText: input.ctaText.trim() || (typeof parsed.thankYou?.ctaText === "string" ? parsed.thankYou.ctaText.trim() : ""),
+        ctaUrl,
+      },
+      replay: {
+        headline: typeof parsed.replay?.headline === "string" ? parsed.replay.headline.trim() : "感謝觀看",
+        message: typeof parsed.replay?.message === "string" ? parsed.replay.message.trim() : "",
+        ctaText: input.ctaText.trim() || (typeof parsed.replay?.ctaText === "string" ? parsed.replay.ctaText.trim() : ""),
+        ctaUrl,
+      },
+    };
+  } catch (error) {
+    console.error("generateWebinarPlan error:", error);
+    return null;
+  }
+}
+
 // ============ 1. 一鍵生成互動 ============
 
 export interface GeneratedInteractions {

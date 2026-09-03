@@ -60,6 +60,18 @@ export interface IStorage {
   
   // Webinars
   createWebinar(data: InsertWebinar): Promise<Webinar>;
+  createAiWizardWebinar(data: {
+    webinar: InsertWebinar;
+    knowledge: string;
+    interactions: {
+      fakeUsers: string[];
+      messages: { name: string; message: string; triggerTime: number }[];
+      polls: { question: string; options: string[]; triggerTime: number }[];
+      tips: { title: string; content: string; triggerTime: number; icon: string }[];
+      ctas: { text: string; url: string; startTime: number }[];
+    };
+    emails: { name: string; segment: string; delayMinutes: number; subject: string; htmlBody: string }[];
+  }): Promise<Webinar>;
   getWebinar(id: string): Promise<Webinar | undefined>;
   getAllWebinars(): Promise<Webinar[]>;
   getWebinarsByUser(userId: string): Promise<Webinar[]>;
@@ -424,6 +436,67 @@ export class DatabaseStorage implements IStorage {
   async createWebinar(data: InsertWebinar): Promise<Webinar> {
     const result = await db.insert(webinars).values(data as any).returning();
     return result[0];
+  }
+
+  async createAiWizardWebinar(data: {
+    webinar: InsertWebinar;
+    knowledge: string;
+    interactions: {
+      fakeUsers: string[];
+      messages: { name: string; message: string; triggerTime: number }[];
+      polls: { question: string; options: string[]; triggerTime: number }[];
+      tips: { title: string; content: string; triggerTime: number; icon: string }[];
+      ctas: { text: string; url: string; startTime: number }[];
+    };
+    emails: { name: string; segment: string; delayMinutes: number; subject: string; htmlBody: string }[];
+  }): Promise<Webinar> {
+    return db.transaction(async (tx) => {
+      const [webinar] = await tx.insert(webinars).values(data.webinar as any).returning();
+      await tx.insert(webinarDocuments).values({
+        webinarId: webinar.id,
+        title: "AI 建立精靈參考資料",
+        content: data.knowledge,
+      });
+
+      const fakeUserRows = data.interactions.fakeUsers.length
+        ? await tx.insert(fakeUsers)
+            .values(data.interactions.fakeUsers.map((name) => ({ webinarId: webinar.id, name })))
+            .returning({ id: fakeUsers.id, name: fakeUsers.name })
+        : [];
+      const nameToId = new Map(fakeUserRows.map((row) => [row.name, row.id]));
+
+      if (data.interactions.messages.length) {
+        await tx.insert(scheduledMessages).values(data.interactions.messages.map((message) => ({
+          webinarId: webinar.id,
+          fakeUserId: nameToId.get(message.name) || null,
+          message: message.message,
+          triggerTime: message.triggerTime,
+          messageType: "chat",
+        })));
+      }
+      if (data.interactions.polls.length) {
+        await tx.insert(polls).values(data.interactions.polls.map((poll) => ({ webinarId: webinar.id, ...poll })));
+      }
+      if (data.interactions.tips.length) {
+        await tx.insert(tips).values(data.interactions.tips.map((tip) => ({ webinarId: webinar.id, ...tip })));
+      }
+      if (data.interactions.ctas.length) {
+        await tx.insert(ctaButtons).values(data.interactions.ctas.map((cta) => ({
+          webinarId: webinar.id,
+          ...cta,
+          ctaKey: crypto.randomBytes(18).toString("base64url"),
+        })));
+      }
+      if (data.emails.length) {
+        await tx.insert(emailSequences).values(data.emails.map((email, index) => ({
+          webinarId: webinar.id,
+          ...email,
+          enabled: false,
+          sortOrder: index,
+        })));
+      }
+      return webinar;
+    });
   }
 
   async getWebinar(id: string): Promise<Webinar | undefined> {

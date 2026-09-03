@@ -345,6 +345,19 @@ export default function AdminDashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isAiWizardOpen, setIsAiWizardOpen] = useState(false);
+  const [aiWizardStep, setAiWizardStep] = useState(1);
+  const [aiWizard, setAiWizard] = useState({
+    title: "",
+    audience: "",
+    goal: "",
+    ctaText: "",
+    ctaUrl: "",
+    sourceContent: "",
+    vimeoUrl: "",
+    startTime: "",
+    videoDurationMinutes: "",
+  });
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<"starter" | "growth" | "scale">("starter");
   const [addonWebinars, setAddonWebinars] = useState(0);
@@ -446,6 +459,59 @@ export default function AdminDashboard() {
           variant: "destructive",
         });
       }
+    },
+  });
+
+  const aiWizardMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/webinars/ai-wizard", {
+        title: aiWizard.title,
+        audience: aiWizard.audience,
+        goal: aiWizard.goal,
+        ctaText: aiWizard.ctaText,
+        ctaUrl: aiWizard.ctaUrl,
+        sourceContent: aiWizard.sourceContent,
+        vimeoUrl: aiWizard.vimeoUrl,
+        startTime: new Date(aiWizard.startTime).toISOString(),
+        videoDuration: aiWizard.videoDurationMinutes
+          ? Math.round(Number(aiWizard.videoDurationMinutes) * 60)
+          : 0,
+      });
+      return response.json() as Promise<{
+        webinar: Webinar;
+        pointsUsed: number;
+        counts: { messages: number; polls: number; tips: number; ctas: number; emails: number };
+      }>;
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      setIsAiWizardOpen(false);
+      setAiWizardStep(1);
+      setAiWizard({
+        title: "",
+        audience: "",
+        goal: "",
+        ctaText: "",
+        ctaUrl: "",
+        sourceContent: "",
+        vimeoUrl: "",
+        startTime: "",
+        videoDurationMinutes: "",
+      });
+      toast({
+        title: "AI Webinar 草稿已建立",
+        description: `已產生 ${result.counts.messages} 則訊息、${result.counts.polls} 個投票、${result.counts.ctas} 個 CTA 與 ${result.counts.emails} 封 Email。`,
+      });
+      setLocation(`/admin/webinars/${result.webinar.id}`);
+    },
+    onError: (error: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      toast({
+        title: "AI 建立失敗",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -899,6 +965,257 @@ export default function AdminDashboard() {
             <h2 className="text-2xl font-bold">{s.management}</h2>
             <p className="text-muted-foreground">{s.managementDesc}</p>
           </div>
+          <div className="flex items-center gap-2 flex-wrap">
+          <Dialog open={isAiWizardOpen} onOpenChange={(open) => {
+            if (!aiWizardMutation.isPending) setIsAiWizardOpen(open);
+          }}>
+            <Button
+              variant="outline"
+              className="border-primary text-primary"
+              data-testid="button-ai-webinar-wizard"
+              onClick={() => {
+                setAiWizardStep(1);
+                setIsAiWizardOpen(true);
+              }}
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              AI Webinar 建立精靈
+            </Button>
+            <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                  AI Webinar 建立精靈
+                </DialogTitle>
+                <DialogDescription>
+                  AI 會建立可編輯的草稿，不會自動發布或寄信。
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { step: 1, label: "策略" },
+                  { step: 2, label: "內容" },
+                  { step: 3, label: "確認" },
+                ].map((item) => (
+                  <div
+                    key={item.step}
+                    className={`rounded-md border px-3 py-2 text-center text-sm ${
+                      aiWizardStep === item.step
+                        ? "border-primary bg-primary/10 text-primary font-medium"
+                        : aiWizardStep > item.step
+                          ? "border-primary/40 bg-primary/5"
+                          : "text-muted-foreground"
+                    }`}
+                  >
+                    {item.step}. {item.label}
+                  </div>
+                ))}
+              </div>
+
+              {aiWizardStep === 1 && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-wizard-title">Webinar 主題 *</Label>
+                    <Input
+                      id="ai-wizard-title"
+                      value={aiWizard.title}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, title: event.target.value }))}
+                      placeholder="例如：如何用自動化 Webinar 穩定取得客戶"
+                      data-testid="input-ai-wizard-title"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-wizard-audience">目標受眾 *</Label>
+                    <Textarea
+                      id="ai-wizard-audience"
+                      value={aiWizard.audience}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, audience: event.target.value }))}
+                      placeholder="他們是誰？目前遇到什麼問題？"
+                      rows={3}
+                      data-testid="input-ai-wizard-audience"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-wizard-goal">商業目標 *</Label>
+                    <Textarea
+                      id="ai-wizard-goal"
+                      value={aiWizard.goal}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, goal: event.target.value }))}
+                      placeholder="希望觀眾看完後理解什麼、採取什麼行動？"
+                      rows={3}
+                      data-testid="input-ai-wizard-goal"
+                    />
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="ai-wizard-cta">主要 CTA</Label>
+                      <Input
+                        id="ai-wizard-cta"
+                        value={aiWizard.ctaText}
+                        onChange={(event) => setAiWizard((current) => ({ ...current, ctaText: event.target.value }))}
+                        placeholder="預約諮詢"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="ai-wizard-cta-url">CTA 網址</Label>
+                      <Input
+                        id="ai-wizard-cta-url"
+                        value={aiWizard.ctaUrl}
+                        onChange={(event) => setAiWizard((current) => ({ ...current, ctaUrl: event.target.value }))}
+                        placeholder="https://..."
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {aiWizardStep === 2 && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label htmlFor="ai-wizard-source">參考資料／逐字稿</Label>
+                      <Label className="cursor-pointer text-sm text-primary font-medium">
+                        讀取 TXT、MD 或 SRT
+                        <input
+                          type="file"
+                          accept=".txt,.md,.srt,text/plain"
+                          className="hidden"
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) return;
+                            if (file.size > 2 * 1024 * 1024) {
+                              toast({ title: "檔案過大", description: "文字檔請小於 2 MB", variant: "destructive" });
+                              return;
+                            }
+                            const content = await file.text();
+                            setAiWizard((current) => ({ ...current, sourceContent: content.slice(0, 40000) }));
+                            event.target.value = "";
+                          }}
+                        />
+                      </Label>
+                    </div>
+                    <Textarea
+                      id="ai-wizard-source"
+                      value={aiWizard.sourceContent}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, sourceContent: event.target.value.slice(0, 40000) }))}
+                      placeholder="貼上產品資料、課程大綱、講稿、逐字稿或銷售資訊。沒有資料也可以繼續。"
+                      rows={9}
+                      data-testid="input-ai-wizard-source"
+                    />
+                    <p className="text-xs text-muted-foreground text-right">
+                      {aiWizard.sourceContent.length.toLocaleString()} / 40,000 字
+                    </p>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="ai-wizard-vimeo">Vimeo 網址（選填）</Label>
+                      <Input
+                        id="ai-wizard-vimeo"
+                        value={aiWizard.vimeoUrl}
+                        onChange={(event) => setAiWizard((current) => ({ ...current, vimeoUrl: event.target.value }))}
+                        placeholder="https://vimeo.com/..."
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="ai-wizard-duration">影片長度（分鐘）</Label>
+                      <Input
+                        id="ai-wizard-duration"
+                        type="number"
+                        min="0"
+                        max="1440"
+                        value={aiWizard.videoDurationMinutes}
+                        onChange={(event) => setAiWizard((current) => ({ ...current, videoDurationMinutes: event.target.value }))}
+                        placeholder="例如：45"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-wizard-start">預計開始時間 *</Label>
+                    <Input
+                      id="ai-wizard-start"
+                      type="datetime-local"
+                      value={aiWizard.startTime}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, startTime: event.target.value }))}
+                      data-testid="input-ai-wizard-start"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {aiWizardStep === 3 && (
+                <div className="space-y-4">
+                  <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">本次 AI 建立</span>
+                      <Badge variant="default">30 點</Badge>
+                    </div>
+                    <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+                      <li>產生 Webinar 標題、報名頁介紹與稀缺設定</li>
+                      <li>產生定時聊天、投票、提示卡與 CTA</li>
+                      <li>產生分眾 Email Sequence</li>
+                      <li>建立 AI 助教設定與知識文件</li>
+                    </ul>
+                  </div>
+                  <div className="rounded-lg border p-4 text-sm space-y-2">
+                    <p><span className="text-muted-foreground">主題：</span>{aiWizard.title}</p>
+                    <p><span className="text-muted-foreground">受眾：</span>{aiWizard.audience}</p>
+                    <p><span className="text-muted-foreground">目標：</span>{aiWizard.goal}</p>
+                    <p><span className="text-muted-foreground">建立後：</span>只保存為草稿，不自動發布、不自動寄信</p>
+                  </div>
+                  {!aiPoints?.unlimited && (
+                    <p className={`text-sm ${aiPoints && aiPoints.points < 30 ? "text-destructive" : "text-muted-foreground"}`}>
+                      目前餘額：{aiPoints?.points ?? "—"} 點
+                      {aiPoints && aiPoints.points < 30 ? "，點數不足，請先儲值。" : "。失敗會自動退回 30 點。"}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex justify-between gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => aiWizardStep === 1 ? setIsAiWizardOpen(false) : setAiWizardStep((step) => step - 1)}
+                  disabled={aiWizardMutation.isPending}
+                >
+                  {aiWizardStep === 1 ? "取消" : "上一步"}
+                </Button>
+                {aiWizardStep < 3 ? (
+                  <Button
+                    type="button"
+                    onClick={() => setAiWizardStep((step) => step + 1)}
+                    disabled={
+                      (aiWizardStep === 1 && (!aiWizard.title.trim() || !aiWizard.audience.trim() || !aiWizard.goal.trim())) ||
+                      (aiWizardStep === 2 && !aiWizard.startTime)
+                    }
+                  >
+                    下一步
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    onClick={() => aiWizardMutation.mutate()}
+                    disabled={aiWizardMutation.isPending || Boolean(!aiPoints?.unlimited && (aiPoints?.points ?? 0) < 30)}
+                    data-testid="button-run-ai-webinar-wizard"
+                  >
+                    {aiWizardMutation.isPending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        AI 正在建立，請勿關閉
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        使用 30 點建立草稿
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <Button
               className="admin-create-button"
@@ -999,6 +1316,7 @@ export default function AdminDashboard() {
               </Form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         {isLoading ? (
