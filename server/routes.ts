@@ -46,7 +46,10 @@ import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClie
 import { looksLikeQuestion, answerViewerQuestion } from "./aiAssistant";
 import {
   ADDON_LOOKUP_KEY,
+  ANNUAL_ADDON_LOOKUP_KEY,
   SUBSCRIPTION_PLANS,
+  planLookupKey,
+  type BillingInterval,
   getMonthlyRegistrantLimit,
   getApprovedPriceIds,
   refreshSubscriptionEntitlement,
@@ -1338,9 +1341,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 39, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
-      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 7 },
-      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 7 },
+      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
+      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 7 },
+      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 7 },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -1348,10 +1351,12 @@ export async function registerRoutes(
       const plans = planDefinitions.map((plan) => ({
         ...plan,
         available: byLookupKey.has(SUBSCRIPTION_PLANS[plan.key as SubscriptionPlanKey].lookupKey),
+        annualAvailable: byLookupKey.has(SUBSCRIPTION_PLANS[plan.key as SubscriptionPlanKey].annualLookupKey),
       }));
       const catalogReady = [
-        ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
+        ...Object.values(SUBSCRIPTION_PLANS).flatMap((plan) => [plan.lookupKey, plan.annualLookupKey]),
         ADDON_LOOKUP_KEY,
+        ANNUAL_ADDON_LOOKUP_KEY,
       ].every((lookupKey) => byLookupKey.has(lookupKey));
       res.json({
         publishableKey: key,
@@ -1359,6 +1364,7 @@ export async function registerRoutes(
         catalogReady,
         plans,
         addonAmountUsd: 20,
+        annualAddonAmountUsd: 204,
       });
     } catch (error: any) {
       console.error("Stripe configuration unavailable:", error?.message || error);
@@ -1368,6 +1374,7 @@ export async function registerRoutes(
         catalogReady: false,
         plans: planDefinitions.map((plan) => ({ ...plan, available: false })),
         addonAmountUsd: 20,
+        annualAddonAmountUsd: 204,
       });
     }
   });
@@ -1386,14 +1393,15 @@ export async function registerRoutes(
       const stripe = await getUncachableStripeClient();
 
       const planKey = req.body.planKey as SubscriptionPlanKey;
+      const billingInterval: BillingInterval = req.body.billingInterval === "year" ? "year" : "month";
       const addonWebinars = Number(req.body.addonWebinars || 0);
       if (!(planKey in SUBSCRIPTION_PLANS)) return res.status(400).json({ message: "Invalid plan" });
       if (!Number.isInteger(addonWebinars) || addonWebinars < 0 || addonWebinars > 50) {
         return res.status(400).json({ message: "Invalid add-on quantity" });
       }
       const { byLookupKey } = await getApprovedPriceIds();
-      const basePriceId = byLookupKey.get(SUBSCRIPTION_PLANS[planKey].lookupKey);
-      const addonPriceId = byLookupKey.get(ADDON_LOOKUP_KEY);
+      const basePriceId = byLookupKey.get(planLookupKey(planKey, billingInterval));
+      const addonPriceId = byLookupKey.get(billingInterval === "year" ? ANNUAL_ADDON_LOOKUP_KEY : ADDON_LOOKUP_KEY);
       if (!basePriceId || (addonWebinars > 0 && !addonPriceId)) {
         return res.status(503).json({ message: "Subscription catalog is not ready" });
       }
@@ -1434,6 +1442,7 @@ export async function registerRoutes(
         for (const openSession of openSessions.data) {
           if (openSession.metadata?.kind !== "subscription" || openSession.metadata?.userId !== lockedUser.id) continue;
           const sameSelection = openSession.metadata.planKey === planKey
+            && openSession.metadata.billingInterval === billingInterval
             && openSession.metadata.addonWebinars === String(addonWebinars);
           if (sameSelection && openSession.url) {
             await tx.update(users)
@@ -1466,10 +1475,11 @@ export async function registerRoutes(
             kind: "subscription",
             userId: lockedUser.id,
             planKey,
+            billingInterval,
             addonWebinars: String(addonWebinars),
           },
           subscription_data: {
-            metadata: { userId: lockedUser.id, planKey, addonWebinars: String(addonWebinars) },
+            metadata: { userId: lockedUser.id, planKey, billingInterval, addonWebinars: String(addonWebinars) },
             ...(trialEligible ? { trial_period_days: 7 } : {}),
           },
           success_url: `${baseUrl}/admin/dashboard?checkout=success`,

@@ -1,7 +1,7 @@
 import { db } from "./db";
 import crypto from "node:crypto";
 import { authoritativeRegistrationFunnelEvent } from "./funnelAnalytics";
-import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql } from "drizzle-orm";
+import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
   registrations, type InsertRegistration, type Registration,
@@ -73,6 +73,13 @@ export interface IStorage {
   refundAiCreditReservation(reservationId: string): Promise<void>;
   getAiCreditSummary(userId: string): Promise<{ points: number; giftedPoints: number; permanentPoints: number; nextExpiry: Date | null; nextExpiryPoints: number }>;
   grantAiCredits(data: { userId: string; points: number; source: "monthly_gift" | "admin_grant"; grantedAt?: Date; expiresAt?: Date | null; idempotencyKey?: string | null }): Promise<{ added: boolean; points: number }>;
+  revokeUnusedAiCreditsByPrefix(userId: string, idempotencyKeyPrefix: string): Promise<number>;
+  reconcileAnnualAiCredits(data: {
+    userId: string;
+    idempotencyKeyPrefix: string;
+    grants: Array<{ points: number; grantedAt: Date; expiresAt: Date; idempotencyKey: string }>;
+    verifyPayment: () => Promise<boolean>;
+  }): Promise<{ valid: boolean; added: number; revoked: number }>;
   creditPointPurchase(data: { userId: string; points: number; amountTwd: number; stripeSessionId: string }): Promise<{ points: number; alreadyProcessed: boolean }>;
   getPointTransactionOwner(stripeSessionId: string): Promise<string | null>;
   
@@ -473,6 +480,7 @@ export class DatabaseStorage implements IStorage {
   async grantAiCredits(data: { userId: string; points: number; source: "monthly_gift" | "admin_grant"; grantedAt?: Date; expiresAt?: Date | null; idempotencyKey?: string | null }) {
     if (!Number.isInteger(data.points) || data.points <= 0) throw new Error("Invalid credit grant");
     return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.userId}`}))`);
       const inserted = await tx.insert(aiCreditLots).values({
         userId: data.userId,
         source: data.source,
@@ -499,6 +507,87 @@ export class DatabaseStorage implements IStorage {
       const points = active.reduce((sum, lot) => sum + lot.remainingPoints, 0);
       await tx.update(users).set({ aiPoints: points }).where(eq(users.id, data.userId));
       return { added: inserted.length > 0, points };
+    });
+  }
+
+  async revokeUnusedAiCreditsByPrefix(userId: string, idempotencyKeyPrefix: string): Promise<number> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${userId}`}))`);
+      const revoked = await tx.update(aiCreditLots)
+        .set({ remainingPoints: 0 })
+        .where(and(
+          eq(aiCreditLots.userId, userId),
+          eq(aiCreditLots.source, "monthly_gift"),
+          gt(aiCreditLots.remainingPoints, 0),
+          like(aiCreditLots.idempotencyKey, `${idempotencyKeyPrefix}%`),
+        ))
+        .returning({ remainingPoints: aiCreditLots.remainingPoints });
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      await tx.update(users).set({
+        aiPoints: active.reduce((sum, lot) => sum + lot.remainingPoints, 0),
+      }).where(eq(users.id, userId));
+      return revoked.length;
+    });
+  }
+
+  async reconcileAnnualAiCredits(data: {
+    userId: string;
+    idempotencyKeyPrefix: string;
+    grants: Array<{ points: number; grantedAt: Date; expiresAt: Date; idempotencyKey: string }>;
+    verifyPayment: () => Promise<boolean>;
+  }): Promise<{ valid: boolean; added: number; revoked: number }> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.userId}`}))`);
+      const valid = await data.verifyPayment();
+      let added = 0;
+      let revoked = 0;
+      if (valid) {
+        for (const grant of data.grants) {
+          const inserted = await tx.insert(aiCreditLots).values({
+            userId: data.userId,
+            source: "monthly_gift",
+            originalPoints: grant.points,
+            remainingPoints: grant.points,
+            grantedAt: grant.grantedAt,
+            expiresAt: grant.expiresAt,
+            idempotencyKey: grant.idempotencyKey,
+          }).onConflictDoNothing({ target: aiCreditLots.idempotencyKey }).returning({ id: aiCreditLots.id });
+          if (inserted.length > 0) {
+            added += 1;
+            await tx.insert(aiPointTransactions).values({
+              userId: data.userId,
+              type: "monthly_gift",
+              points: grant.points,
+              amountTwd: null,
+              stripeSessionId: null,
+            });
+          }
+        }
+      } else {
+        const rows = await tx.update(aiCreditLots)
+          .set({ remainingPoints: 0 })
+          .where(and(
+            eq(aiCreditLots.userId, data.userId),
+            eq(aiCreditLots.source, "monthly_gift"),
+            gt(aiCreditLots.remainingPoints, 0),
+            like(aiCreditLots.idempotencyKey, `${data.idempotencyKeyPrefix}%`),
+          ))
+          .returning({ id: aiCreditLots.id });
+        revoked = rows.length;
+      }
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, data.userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      await tx.update(users).set({
+        aiPoints: active.reduce((sum, lot) => sum + lot.remainingPoints, 0),
+      }).where(eq(users.id, data.userId));
+      return { valid, added, revoked };
     });
   }
 

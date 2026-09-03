@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   computeSubscriptionEntitlement,
+  planLookupKey,
   type EntitlementSubscription,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
@@ -56,6 +57,11 @@ test("Starter reports the actual subscribed price for new and grandfathered cust
     computeSubscriptionEntitlement(subscription("active"), "starter", 0, NOW, 49).amountUsd,
     49,
   );
+});
+
+test("monthly and annual plans use separate approved Stripe lookup keys", () => {
+  assert.equal(planLookupKey("starter", "month"), "icta_webinar_starter_monthly");
+  assert.equal(planLookupKey("starter", "year"), "icta_webinar_starter_annual");
 });
 
 test("past_due, canceled, and expired subscriptions cannot add publications", () => {

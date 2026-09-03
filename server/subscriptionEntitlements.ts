@@ -3,13 +3,20 @@ import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
 
 export const SUBSCRIPTION_PLANS = {
-  starter: { label: "Starter", amountUsd: 39, baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly" },
-  growth: { label: "Growth", amountUsd: 99, baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly" },
-  scale: { label: "Scale", amountUsd: 199, baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly" },
+  starter: { label: "Starter", amountUsd: 39, annualAmountUsd: 397.8, baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly", annualLookupKey: "icta_webinar_starter_annual" },
+  growth: { label: "Growth", amountUsd: 99, annualAmountUsd: 1009.8, baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly", annualLookupKey: "icta_webinar_growth_annual" },
+  scale: { label: "Scale", amountUsd: 199, annualAmountUsd: 2029.8, baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly", annualLookupKey: "icta_webinar_scale_annual" },
 } as const;
 
 export const ADDON_LOOKUP_KEY = "icta_webinar_room_addon_monthly";
+export const ANNUAL_ADDON_LOOKUP_KEY = "icta_webinar_room_addon_annual";
+export type BillingInterval = "month" | "year";
 export type SubscriptionPlanKey = keyof typeof SUBSCRIPTION_PLANS;
+
+export function planLookupKey(planKey: SubscriptionPlanKey, interval: BillingInterval): string {
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  return interval === "year" ? plan.annualLookupKey : plan.lookupKey;
+}
 
 export function getMonthlyRegistrantLimit(plan: string): number | null {
   return plan in SUBSCRIPTION_PLANS
@@ -103,20 +110,25 @@ export function computeSubscriptionEntitlement(
 export async function getApprovedPriceIds() {
   const stripe = await getUncachableStripeClient();
   const lookupKeys = [
-    ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
+    ...Object.values(SUBSCRIPTION_PLANS).flatMap((plan) => [plan.lookupKey, plan.annualLookupKey]),
     ADDON_LOOKUP_KEY,
+    ANNUAL_ADDON_LOOKUP_KEY,
   ];
   const prices = await stripe.prices.list({ active: true, lookup_keys: lookupKeys, limit: 10 });
   const expectedAmounts = new Map<string, number>(
-    (Object.values(SUBSCRIPTION_PLANS)).map((plan) => [plan.lookupKey, plan.amountUsd * 100]),
+    (Object.values(SUBSCRIPTION_PLANS)).flatMap((plan) => [
+      [plan.lookupKey, plan.amountUsd * 100] as const,
+      [plan.annualLookupKey, plan.annualAmountUsd * 100] as const,
+    ]),
   );
   expectedAmounts.set(ADDON_LOOKUP_KEY, 2_000);
+  expectedAmounts.set(ANNUAL_ADDON_LOOKUP_KEY, 20_400);
   const byLookupKey = new Map(prices.data.flatMap((price) => {
     const expectedAmount = price.lookup_key ? expectedAmounts.get(price.lookup_key) : undefined;
     const valid = expectedAmount !== undefined
       && price.unit_amount === expectedAmount
       && price.currency === "usd"
-      && price.recurring?.interval === "month";
+      && price.recurring?.interval === (price.lookup_key?.endsWith("_annual") ? "year" : "month");
     return valid && price.lookup_key ? [[price.lookup_key, price.id] as const] : [];
   }));
   return { stripe, byLookupKey };
@@ -173,7 +185,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
   for (const item of subscription.items.data) {
     const lookupKey = item.price.lookup_key;
     const matchingPlan = (Object.entries(SUBSCRIPTION_PLANS) as [SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]][])
-      .find(([, plan]) => plan.lookupKey === lookupKey);
+      .find(([, plan]) => plan.lookupKey === lookupKey || plan.annualLookupKey === lookupKey);
     if (matchingPlan) {
       planKey = matchingPlan[0];
       baseAmountUsd = item.price.currency === "usd" && item.price.unit_amount !== null
@@ -192,7 +204,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
           : SUBSCRIPTION_PLANS[planKey].amountUsd;
       }
     }
-    if (lookupKey === ADDON_LOOKUP_KEY) addonWebinars += item.quantity || 0;
+    if (lookupKey === ADDON_LOOKUP_KEY || lookupKey === ANNUAL_ADDON_LOOKUP_KEY) addonWebinars += item.quantity || 0;
   }
 
   if (!planKey) {

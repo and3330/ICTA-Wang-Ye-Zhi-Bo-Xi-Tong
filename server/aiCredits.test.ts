@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { allocateAiCreditLots } from "./storage";
-import { isPaidBillableSubscriptionInvoice, monthlyGiftForLookupKeys, oneYearAfter } from "./subscriptionCreditGrants";
+import { annualMonthlyGrantDates, hasRemainingPaidAmount, isPaidBillableSubscriptionInvoice, monthlyGiftForLookupKeys, oneYearAfter } from "./subscriptionCreditGrants";
 
 test("subscription plans grant the configured monthly AI points", () => {
   assert.deepEqual(monthlyGiftForLookupKeys(["icta_webinar_starter_monthly"]), { planKey: "starter", points: 100 });
   assert.deepEqual(monthlyGiftForLookupKeys(["icta_webinar_growth_monthly"]), { planKey: "growth", points: 200 });
   assert.deepEqual(monthlyGiftForLookupKeys(["icta_webinar_scale_monthly"]), { planKey: "scale", points: 300 });
+  assert.deepEqual(monthlyGiftForLookupKeys(["icta_webinar_starter_annual"]), { planKey: "starter", points: 100 });
   assert.equal(monthlyGiftForLookupKeys(["icta_webinar_room_addon_monthly"]), null);
   // A delayed Starter invoice must still grant Starter points even if the
   // subscriber has since moved to another plan.
@@ -25,6 +26,24 @@ test("monthly gifted credits expire after one calendar year, including leap day"
     oneYearAfter(new Date("2024-02-29T08:30:00.000Z")).toISOString(),
     "2025-02-28T08:30:00.000Z",
   );
+});
+
+test("annual subscriptions release one gift per elapsed subscription month", () => {
+  const dates = annualMonthlyGrantDates(
+    new Date("2026-01-31T08:30:00.000Z"),
+    new Date("2026-04-30T08:30:00.000Z"),
+  );
+  assert.deepEqual(dates.map((date) => date.toISOString()), [
+    "2026-01-31T08:30:00.000Z",
+    "2026-02-28T08:30:00.000Z",
+    "2026-03-31T08:30:00.000Z",
+    "2026-04-30T08:30:00.000Z",
+  ]);
+});
+
+test("fully refunded annual payments stop monthly gifts while partial refunds remain paid", () => {
+  assert.equal(hasRemainingPaidAmount([{ amount: 39780, amountRefunded: 39780 }]), false);
+  assert.equal(hasRemainingPaidAmount([{ amount: 39780, amountRefunded: 5000 }]), true);
 });
 
 test("a zero-dollar trial invoice never grants monthly AI points", () => {

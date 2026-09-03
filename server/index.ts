@@ -8,9 +8,10 @@ import { runMigrations } from "stripe-replit-sync";
 import { getStripeSync } from "./stripeClient";
 import { WebhookHandlers } from "./webhookHandlers";
 import { runAppMigrations } from "./db";
-import { getApprovedPriceIds, SUBSCRIPTION_PLANS, ADDON_LOOKUP_KEY } from "./subscriptionEntitlements";
+import { getApprovedPriceIds, SUBSCRIPTION_PLANS, ADDON_LOOKUP_KEY, ANNUAL_ADDON_LOOKUP_KEY } from "./subscriptionEntitlements";
 import { persistProductionError } from "./errorReporter";
 import { safeErrorText } from "./security";
+import { startAnnualSubscriptionCreditScheduler } from "./subscriptionCreditGrants";
 
 const app = express();
 const httpServer = createServer(app);
@@ -132,8 +133,9 @@ app.use((req, res, next) => {
 
       const { byLookupKey } = await getApprovedPriceIds();
       const missingLookupKeys = [
-        ...Object.values(SUBSCRIPTION_PLANS).map((plan) => plan.lookupKey),
+        ...Object.values(SUBSCRIPTION_PLANS).flatMap((plan) => [plan.lookupKey, plan.annualLookupKey]),
         ADDON_LOOKUP_KEY,
+        ANNUAL_ADDON_LOOKUP_KEY,
       ].filter((lookupKey) => !byLookupKey.has(lookupKey));
       if (missingLookupKeys.length) {
         console.warn(`Stripe subscription catalog is incomplete (${missingLookupKeys.join(", ")}); available plans can still use Checkout.`);
@@ -146,6 +148,7 @@ app.use((req, res, next) => {
   }
 
   await registerRoutes(httpServer, app, sessionMiddleware);
+  startAnnualSubscriptionCreditScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

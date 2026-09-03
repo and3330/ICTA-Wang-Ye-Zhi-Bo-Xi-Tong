@@ -360,6 +360,7 @@ export default function AdminDashboard() {
   });
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<"starter" | "growth" | "scale">("starter");
+  const [billingInterval, setBillingInterval] = useState<"month" | "year">("month");
   const [addonWebinars, setAddonWebinars] = useState(0);
   const [isRechargeOpen, setIsRechargeOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
@@ -405,8 +406,9 @@ export default function AdminDashboard() {
     publishableKey: string;
     billingAvailable: boolean;
     catalogReady: boolean;
-    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; monthlyAiPoints: number; trialDays: number; available: boolean }[];
+    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; annualAmountUsd: number; includedWebinars: number; monthlyRegistrants: number; monthlyAiPoints: number; trialDays: number; available: boolean; annualAvailable: boolean }[];
     addonAmountUsd: number;
+    annualAddonAmountUsd: number;
   }>({
     queryKey: ["/api/stripe/config"],
     enabled: !subscription?.isSuperAdmin,
@@ -591,7 +593,7 @@ export default function AdminDashboard() {
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/stripe/checkout", { planKey: selectedPlan, addonWebinars });
+      const res = await apiRequest("POST", "/api/stripe/checkout", { planKey: selectedPlan, billingInterval, addonWebinars });
       return await res.json();
     },
     onSuccess: (data: { url: string }) => {
@@ -895,31 +897,38 @@ export default function AdminDashboard() {
               <DialogTitle>選擇發布方案</DialogTitle>
               <DialogDescription>免費版只提供基本資料與草稿設定，不含 AI 點數及發布功能。新會員訂閱可免費試用 7 天。</DialogDescription>
             </DialogHeader>
+            <div className="mx-auto flex rounded-lg border bg-muted/50 p-1">
+              <button type="button" onClick={() => setBillingInterval("month")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "month" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>月繳</button>
+              <button type="button" onClick={() => setBillingInterval("year")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "year" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>年繳 <span className="text-emerald-700">85 折</span></button>
+            </div>
             <div className="grid sm:grid-cols-3 gap-3">
-              {stripeConfig?.plans.map((plan) => (
+              {stripeConfig?.plans.map((plan) => {
+                const available = billingInterval === "year" ? plan.annualAvailable : plan.available;
+                return (
                 <button
                   type="button"
-                  key={plan.key}
-                  onClick={() => plan.available && setSelectedPlan(plan.key)}
-                  disabled={!plan.available}
-                  className={`rounded-xl border p-4 text-left transition ${selectedPlan === plan.key ? "border-primary ring-2 ring-primary/20" : "hover:border-primary/50"} ${!plan.available ? "cursor-not-allowed opacity-60" : ""}`}
+                  key={`${plan.key}-${billingInterval}`}
+                  onClick={() => available && setSelectedPlan(plan.key)}
+                  disabled={!available}
+                  className={`rounded-xl border p-4 text-left transition ${selectedPlan === plan.key ? "border-primary ring-2 ring-primary/20" : "hover:border-primary/50"} ${!available ? "cursor-not-allowed opacity-60" : ""}`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-semibold">{plan.key === "starter" ? "Starter" : plan.key === "growth" ? "Growth" : "Scale"}</span>
-                    <span className="text-2xl font-bold">${plan.amountUsd}<span className="text-sm font-normal text-muted-foreground">／月</span></span>
+                    <span className="text-2xl font-bold">${billingInterval === "year" ? plan.annualAmountUsd.toLocaleString() : plan.amountUsd}<span className="text-sm font-normal text-muted-foreground">／{billingInterval === "year" ? "年" : "月"}</span></span>
                   </div>
+                  {billingInterval === "year" && <p className="mt-1 text-xs font-semibold text-emerald-700">年繳 85 折，平均每月 ${(plan.annualAmountUsd / 12).toFixed(2)}</p>}
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
-                  <p className="text-sm font-medium text-primary">正式首次扣款後，每月贈送 {plan.monthlyAiPoints} AI 點</p>
+                  <p className="text-sm font-medium text-primary">正式首次扣款後，每月發放 {plan.monthlyAiPoints} AI 點</p>
                   <p className="mt-2 text-sm font-semibold text-emerald-700">新會員免費試用 {plan.trialDays} 天</p>
-                  {!plan.available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
+                  {!available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
-              ))}
+              )})}
             </div>
             <div className="rounded-lg bg-muted/60 p-4 flex items-center justify-between gap-3">
               <div>
                 <div className="font-medium">加購直播間</div>
-                <div className="text-sm text-muted-foreground">每增加 1 間 ${stripeConfig?.addonAmountUsd || 20} USD／月</div>
+                <div className="text-sm text-muted-foreground">每增加 1 間 ${billingInterval === "year" ? (stripeConfig?.annualAddonAmountUsd || 204) : (stripeConfig?.addonAmountUsd || 20)} USD／{billingInterval === "year" ? "年（85 折）" : "月"}</div>
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="icon" onClick={() => setAddonWebinars(Math.max(0, addonWebinars - 1))}>−</Button>
@@ -929,7 +938,7 @@ export default function AdminDashboard() {
             </div>
             <Button
               onClick={() => checkoutMutation.mutate()}
-              disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.available}
+              disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !(billingInterval === "year" ? stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.annualAvailable : stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.available)}
               aria-busy={checkoutMutation.isPending}
             >
               {checkoutMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
