@@ -11,6 +11,7 @@ CREATE INDEX IF NOT EXISTS "webinar_offers_webinar_idx" ON "webinar_offers" ("we
 
 ALTER TABLE "cta_buttons" ALTER COLUMN "url" DROP NOT NULL;
 ALTER TABLE "cta_buttons" ADD COLUMN IF NOT EXISTS "offer_id" varchar REFERENCES "webinar_offers"("id") ON DELETE RESTRICT;
+ALTER TABLE "cta_buttons" DROP CONSTRAINT IF EXISTS "cta_buttons_destination_check";
 ALTER TABLE "cta_buttons" ADD CONSTRAINT "cta_buttons_destination_check"
   CHECK ("url" IS NOT NULL OR "offer_id" IS NOT NULL);
 
@@ -29,6 +30,7 @@ END
 WHERE "event_type" = 'purchase' AND "amount_minor" IS NULL AND "value" IS NOT NULL;
 ALTER TABLE "webinar_funnel_events" ADD CONSTRAINT "webinar_funnel_events_event_type_check"
   CHECK ("event_type" IN ('landing_view','registration','webinar_enter','video_progress','dropoff','cta_view','cta_click','checkout_start','purchase','refund'));
+ALTER TABLE "webinar_funnel_events" DROP CONSTRAINT IF EXISTS "webinar_funnel_events_payment_value_check";
 ALTER TABLE "webinar_funnel_events" ADD CONSTRAINT "webinar_funnel_events_payment_value_check"
   CHECK (
     ("event_type" IN ('purchase','refund') AND "amount_minor" IS NOT NULL AND "amount_minor" >= 0 AND "currency" IS NOT NULL)
