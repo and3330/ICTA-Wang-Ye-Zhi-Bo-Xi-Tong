@@ -383,6 +383,7 @@ export default function AdminDashboard() {
 
   const { data: subscription } = useQuery<{
     plan: string;
+    amountUsd: number | null;
     status: string;
     active: boolean;
     planStartedAt: string | null;
@@ -823,7 +824,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold">{s.subPlanLabel}</span>
                     <Badge variant={subscription.active ? "default" : "outline"} data-testid="badge-current-plan">
-                      {subscription.plan === "starter" ? "$49 Starter" : subscription.plan === "growth" ? "$99 Growth" : subscription.plan === "scale" ? "$199 Scale" : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
+                      {subscription.plan === "starter" ? `$${subscription.amountUsd ?? 39} Starter` : subscription.plan === "growth" ? `$${subscription.amountUsd ?? 99} Growth` : subscription.plan === "scale" ? `$${subscription.amountUsd ?? 199} Scale` : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
                     </Badge>
                     {subscription.cancelAtPeriodEnd && <Badge variant="secondary">期末取消</Badge>}
                     {!subscription.active && subscription.plan !== "free" && <Badge variant="destructive">{s.subExpired}</Badge>}

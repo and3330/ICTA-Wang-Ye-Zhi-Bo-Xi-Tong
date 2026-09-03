@@ -7,4 +7,5 @@
 - [Funnel event trust boundaries](funnel-event-trust-boundaries.md) — revenue is webhook-authoritative; refund delivery must tolerate replay, concurrency, and out-of-order events.
 - [Stripe account split](stripe-account-split.md) — workspace Stripe connector and the app's live billing client target different accounts; mutate the subscription catalog through the app client.
 - [Stripe archived lookup keys](stripe-archived-lookup-keys.md) — an inactive Price still owns its lookup key; inspect and reactivate the exact Price instead of trying to create a duplicate.
+- [Subscription price grandfathering](subscription-price-grandfathering.md) — Starter is $39 for new subscriptions; preserve old subscribed prices, entitlements, credits, and accurate dashboard display.
 - [AI credit and trial rules](ai-credit-expiry.md) — free/trial users receive no AI points; paid monthly gifts expire after one year; purchases remain permanent.

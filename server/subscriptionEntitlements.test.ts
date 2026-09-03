@@ -50,6 +50,14 @@ test("Starter, Growth, Scale, and add-on quantities map to the correct quota", (
   assert.equal(entitlement("active", "scale", 0).maxWebinars, 15);
 });
 
+test("Starter reports the actual subscribed price for new and grandfathered customers", () => {
+  assert.equal(entitlement("active", "starter").amountUsd, 39);
+  assert.equal(
+    computeSubscriptionEntitlement(subscription("active"), "starter", 0, NOW, 49).amountUsd,
+    49,
+  );
+});
+
 test("past_due, canceled, and expired subscriptions cannot add publications", () => {
   for (const status of ["past_due", "canceled", "expired"]) {
     const result = entitlement(status, "growth", 2);

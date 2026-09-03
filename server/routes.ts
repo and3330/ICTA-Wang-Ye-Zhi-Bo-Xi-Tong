@@ -987,6 +987,7 @@ export async function registerRoutes(
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
       res.json({
         plan: entitlement.plan,
+        amountUsd: entitlement.amountUsd,
         status: entitlement.status,
         active: entitlement.active,
         planStartedAt: entitlement.startedAt,
@@ -1337,7 +1338,7 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
+      { key: "starter", amountUsd: 39, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
       { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 7 },
       { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 7 },
     ];

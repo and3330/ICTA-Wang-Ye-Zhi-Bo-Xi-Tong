@@ -43,8 +43,17 @@ async function grantPaidSubscriptionInvoice(
     const priceId = line.pricing?.price_details?.price;
     return priceId ? [priceId] : [];
   })));
-  const prices = await Promise.all(priceIds.map((priceId) => stripe.prices.retrieve(priceId)));
-  const gift = monthlyGiftForLookupKeys(prices.map((price) => price.lookup_key));
+  const prices = await Promise.all(priceIds.map((priceId) => stripe.prices.retrieve(priceId, { expand: ["product"] })));
+  const gift = monthlyGiftForLookupKeys(prices.flatMap((price) => {
+    const keys: Array<string | null | undefined> = [price.lookup_key];
+    if (typeof price.product !== "string" && !("deleted" in price.product)) {
+      const catalogKey = price.product.metadata?.ictaCatalogKey;
+      if (catalogKey && catalogKey in SUBSCRIPTION_PLANS) {
+        keys.push(SUBSCRIPTION_PLANS[catalogKey as SubscriptionPlanKey].lookupKey);
+      }
+    }
+    return keys;
+  }));
   if (!gift) return;
 
   const paidTimestamp = invoice.status_transitions?.paid_at || invoice.created;

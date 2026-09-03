@@ -3,9 +3,9 @@ import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
 
 export const SUBSCRIPTION_PLANS = {
-  starter: { label: "Starter", baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly" },
-  growth: { label: "Growth", baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly" },
-  scale: { label: "Scale", baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly" },
+  starter: { label: "Starter", amountUsd: 39, baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly" },
+  growth: { label: "Growth", amountUsd: 99, baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly" },
+  scale: { label: "Scale", amountUsd: 199, baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly" },
 } as const;
 
 export const ADDON_LOOKUP_KEY = "icta_webinar_room_addon_monthly";
@@ -21,6 +21,7 @@ export type SubscriptionEntitlement = {
   plan: "free" | SubscriptionPlanKey | "legacy" | "enterprise";
   status: string;
   active: boolean;
+  amountUsd: number | null;
   maxWebinars: number;
   addonWebinars: number;
   startedAt: Date | null;
@@ -41,7 +42,11 @@ export type EntitlementSubscription = {
       quantity?: number | null;
       current_period_start?: number | null;
       current_period_end?: number | null;
-      price: { lookup_key?: string | null };
+      price: {
+        lookup_key?: string | null;
+        unit_amount?: number | null;
+        currency?: string;
+      };
     }>;
   };
 };
@@ -51,6 +56,7 @@ function freeEntitlement(status = "inactive"): SubscriptionEntitlement {
     plan: "free",
     status,
     active: false,
+    amountUsd: null,
     maxWebinars: 0,
     addonWebinars: 0,
     startedAt: null,
@@ -65,6 +71,7 @@ export function computeSubscriptionEntitlement(
   planKey: SubscriptionPlanKey | "legacy",
   addonWebinars: number,
   now = new Date(),
+  amountUsd = planKey === "legacy" ? 49 : SUBSCRIPTION_PLANS[planKey].amountUsd,
 ): SubscriptionEntitlement {
   const periodStart = subscription.current_period_start
     || subscription.items.data[0]?.current_period_start;
@@ -79,6 +86,7 @@ export function computeSubscriptionEntitlement(
     plan: planKey,
     status: subscription.status,
     active,
+    amountUsd,
     maxWebinars: active
       ? (planKey === "legacy" ? 3 : SUBSCRIPTION_PLANS[planKey].baseWebinars) + addonWebinars
       : 0,
@@ -99,7 +107,18 @@ export async function getApprovedPriceIds() {
     ADDON_LOOKUP_KEY,
   ];
   const prices = await stripe.prices.list({ active: true, lookup_keys: lookupKeys, limit: 10 });
-  const byLookupKey = new Map(prices.data.map((price) => [price.lookup_key, price.id]));
+  const expectedAmounts = new Map<string, number>(
+    (Object.values(SUBSCRIPTION_PLANS)).map((plan) => [plan.lookupKey, plan.amountUsd * 100]),
+  );
+  expectedAmounts.set(ADDON_LOOKUP_KEY, 2_000);
+  const byLookupKey = new Map(prices.data.flatMap((price) => {
+    const expectedAmount = price.lookup_key ? expectedAmounts.get(price.lookup_key) : undefined;
+    const valid = expectedAmount !== undefined
+      && price.unit_amount === expectedAmount
+      && price.currency === "usd"
+      && price.recurring?.interval === "month";
+    return valid && price.lookup_key ? [[price.lookup_key, price.id] as const] : [];
+  }));
   return { stripe, byLookupKey };
 }
 
@@ -109,6 +128,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
       plan: "enterprise",
       status: "active",
       active: true,
+      amountUsd: null,
       maxWebinars: 999,
       addonWebinars: 0,
       startedAt: user.createdAt || null,
@@ -148,12 +168,30 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
   }
 
   let planKey: SubscriptionPlanKey | "legacy" | null = null;
+  let baseAmountUsd: number | null = null;
   let addonWebinars = 0;
   for (const item of subscription.items.data) {
     const lookupKey = item.price.lookup_key;
     const matchingPlan = (Object.entries(SUBSCRIPTION_PLANS) as [SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]][])
       .find(([, plan]) => plan.lookupKey === lookupKey);
-    if (matchingPlan) planKey = matchingPlan[0];
+    if (matchingPlan) {
+      planKey = matchingPlan[0];
+      baseAmountUsd = item.price.currency === "usd" && item.price.unit_amount !== null
+        ? item.price.unit_amount / 100
+        : matchingPlan[1].amountUsd;
+    }
+    if (!matchingPlan) {
+      const product = typeof item.price.product === "string"
+        ? await stripe.products.retrieve(item.price.product)
+        : item.price.product;
+      const catalogKey = !("deleted" in product) ? product.metadata?.ictaCatalogKey : undefined;
+      if (catalogKey && catalogKey in SUBSCRIPTION_PLANS) {
+        planKey = catalogKey as SubscriptionPlanKey;
+        baseAmountUsd = item.price.currency === "usd" && item.price.unit_amount !== null
+          ? item.price.unit_amount / 100
+          : SUBSCRIPTION_PLANS[planKey].amountUsd;
+      }
+    }
     if (lookupKey === ADDON_LOOKUP_KEY) addonWebinars += item.quantity || 0;
   }
 
@@ -175,6 +213,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
         product.metadata?.maxWebinars === "3"
       ) {
         planKey = "legacy";
+        baseAmountUsd = 49;
         break;
       }
     }
@@ -197,6 +236,8 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
     subscription as EntitlementSubscription,
     planKey,
     addonWebinars,
+    new Date(),
+    baseAmountUsd ?? (planKey === "legacy" ? 49 : SUBSCRIPTION_PLANS[planKey].amountUsd),
   );
 
   await storage.updateUser(user.id, {
