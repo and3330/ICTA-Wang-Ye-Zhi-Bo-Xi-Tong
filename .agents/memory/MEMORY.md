@@ -6,4 +6,5 @@
 - [Subscription publication entitlement](subscription-publication-entitlement.md) — Stripe-approved recurring prices grant publish capacity; draft editing stays free and publish admission must be atomic.
 - [Funnel event trust boundaries](funnel-event-trust-boundaries.md) — revenue is webhook-authoritative; refund delivery must tolerate replay, concurrency, and out-of-order events.
 - [Stripe account split](stripe-account-split.md) — workspace Stripe connector and the app's live billing client target different accounts; mutate the subscription catalog through the app client.
+- [Stripe archived lookup keys](stripe-archived-lookup-keys.md) — an inactive Price still owns its lookup key; inspect and reactivate the exact Price instead of trying to create a duplicate.
 - [AI credit and trial rules](ai-credit-expiry.md) — free/trial users receive no AI points; paid monthly gifts expire after one year; purchases remain permanent.
