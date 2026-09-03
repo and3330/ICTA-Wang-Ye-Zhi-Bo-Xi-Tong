@@ -1,0 +1,1 @@
+ALTER TABLE "users" ALTER COLUMN "ai_points" SET DEFAULT 0;

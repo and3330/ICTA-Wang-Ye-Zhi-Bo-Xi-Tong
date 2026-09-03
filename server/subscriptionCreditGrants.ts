@@ -20,11 +20,17 @@ export function monthlyGiftForLookupKeys(lookupKeys: Array<string | null | undef
   return null;
 }
 
+export function isPaidBillableSubscriptionInvoice(invoice: Pick<Stripe.Invoice, "status" | "amount_paid" | "billing_reason">): boolean {
+  return invoice.status === "paid"
+    && invoice.amount_paid > 0
+    && ["subscription_create", "subscription_cycle"].includes(invoice.billing_reason || "");
+}
+
 async function grantPaidSubscriptionInvoice(
   invoice: Stripe.Invoice & Record<string, any>,
   knownUserId?: string,
 ): Promise<void> {
-  if (!["subscription_create", "subscription_cycle"].includes(invoice.billing_reason || "")) return;
+  if (!isPaidBillableSubscriptionInvoice(invoice)) return;
   const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
   const user = knownUserId
     ? await storage.getUser(knownUserId)
@@ -63,7 +69,7 @@ export async function reconcileCurrentSubscriptionCredit(userId: string, subscri
     limit: 100,
   });
   for await (const invoice of invoices) {
-    if (["subscription_create", "subscription_cycle"].includes(invoice.billing_reason || "")) {
+    if (isPaidBillableSubscriptionInvoice(invoice)) {
       await grantPaidSubscriptionInvoice(invoice as Stripe.Invoice & Record<string, any>, userId);
     }
   }

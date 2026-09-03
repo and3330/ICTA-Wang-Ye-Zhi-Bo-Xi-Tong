@@ -1251,16 +1251,28 @@ export default function AdminWebinarDetail() {
     enabled: !!id,
   });
 
+  const { data: aiPointBalance, isLoading: isAiPointBalanceLoading } = useQuery<{ points: number; unlimited: boolean }>({
+    queryKey: ["/api/ai-points"],
+  });
+
   // AI 生成相關狀態
   const [aiGenGoal, setAiGenGoal] = useState("");
   const [aiGenReplace, setAiGenReplace] = useState(false);
   const [seqGoal, setSeqGoal] = useState("");
   const [postGoal, setPostGoal] = useState("");
 
-  const aiErrorTitle = (err: any) => {
+  const isAiPointsError = (err: any) => {
     const msg = String(err?.message || "");
-    if (msg.includes("402") || msg.includes("點數") || msg.includes("点数")) return s.aiGenNoPoints;
-    return s.aiGenFail;
+    return msg.includes("402") || msg.includes("點數") || msg.includes("点数");
+  };
+
+  const handleAiError = (err: any) => {
+    if (isAiPointsError(err)) {
+      toast({ title: s.aiGenNoPoints, description: "請先購買 AI 點數後再使用此功能。", variant: "destructive" });
+      setLocation("/admin/dashboard?buy-points=1");
+      return;
+    }
+    toast({ title: s.aiGenFail, description: String(err?.message || ""), variant: "destructive" });
   };
 
   const generateInteractions = useMutation({
@@ -1278,7 +1290,7 @@ export default function AdminWebinarDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "fake-users"] });
       toast({ title: s.aiGenInterSuccess });
     },
-    onError: (err) => toast({ title: aiErrorTitle(err), variant: "destructive" }),
+    onError: handleAiError,
   });
 
   const generateEmailSequence = useMutation({
@@ -1292,7 +1304,7 @@ export default function AdminWebinarDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "email-sequences"] });
       toast({ title: s.seqGenSuccess });
     },
-    onError: (err) => toast({ title: aiErrorTitle(err), variant: "destructive" }),
+    onError: handleAiError,
   });
 
   const generateSocialPosts = useMutation({
@@ -1306,7 +1318,7 @@ export default function AdminWebinarDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "social-posts"] });
       toast({ title: s.postGenSuccess });
     },
-    onError: (err) => toast({ title: aiErrorTitle(err), variant: "destructive" }),
+    onError: handleAiError,
   });
 
   const updateSequence = useMutation({
@@ -5400,7 +5412,15 @@ export default function AdminWebinarDetail() {
                     </div>
                     <Switch
                       checked={aiEnabled}
-                      onCheckedChange={setAiEnabled}
+                      disabled={isAiPointBalanceLoading || !aiPointBalance}
+                      onCheckedChange={(enabled) => {
+                        if (enabled && aiPointBalance && !aiPointBalance.unlimited && aiPointBalance.points <= 0) {
+                          toast({ title: s.aiGenNoPoints, description: "請先購買 AI 點數後再啟用 AI 助教。", variant: "destructive" });
+                          setLocation("/admin/dashboard?buy-points=1");
+                          return;
+                        }
+                        setAiEnabled(enabled);
+                      }}
                       data-testid="switch-ai-enabled"
                     />
                   </div>

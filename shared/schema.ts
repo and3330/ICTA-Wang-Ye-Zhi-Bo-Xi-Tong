@@ -547,9 +547,11 @@ export const users = pgTable("users", {
   maxWebinars: integer("max_webinars").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   isSuperAdmin: boolean("is_super_admin").notNull().default(false),
-  aiPoints: integer("ai_points").notNull().default(20), // AI 回覆點數餘額（新廠商送 20 點試用）
+  aiPoints: integer("ai_points").notNull().default(0), // 免費帳號不附 AI 點數
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
+  stripeSubscriptionCheckoutSessionId: text("stripe_subscription_checkout_session_id"),
+  stripeTrialClaimedAt: timestamp("stripe_trial_claimed_at"),
   subscriptionStatus: text("subscription_status").notNull().default("inactive"),
   subscriptionStartedAt: timestamp("subscription_started_at"),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
@@ -559,7 +561,7 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, stripeSubscriptionCheckoutSessionId: true, stripeTrialClaimedAt: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 

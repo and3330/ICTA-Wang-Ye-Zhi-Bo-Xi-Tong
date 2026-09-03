@@ -404,7 +404,7 @@ export default function AdminDashboard() {
     publishableKey: string;
     billingAvailable: boolean;
     catalogReady: boolean;
-    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; monthlyAiPoints: number; available: boolean }[];
+    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; monthlyAiPoints: number; trialDays: number; available: boolean }[];
     addonAmountUsd: number;
   }>({
     queryKey: ["/api/stripe/config"],
@@ -512,6 +512,12 @@ export default function AdminDashboard() {
     },
     onError: (error: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      if (String(error?.message || "").includes("402") || String(error?.message || "").includes("點數")) {
+        setIsAiWizardOpen(false);
+        setIsRechargeOpen(true);
+        toast({ title: "AI 點數不足", description: "請先購買點數後再使用 AI 建立精靈。", variant: "destructive" });
+        return;
+      }
       toast({
         title: "AI 建立失敗",
         description: error.message,
@@ -639,6 +645,10 @@ export default function AdminDashboard() {
       window.history.replaceState({}, "", "/admin/dashboard");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
       toast({ title: s.toastCreateSuccess, description: "付款已完成，訂閱狀態正在同步" });
+    }
+    if (params.get("buy-points") === "1") {
+      window.history.replaceState({}, "", "/admin/dashboard");
+      setIsRechargeOpen(true);
     }
     if (params.get("recharge") === "success") {
       const sessionId = params.get("session_id");
@@ -837,7 +847,7 @@ export default function AdminDashboard() {
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>選擇發布方案</DialogTitle>
-              <DialogDescription>草稿功能永久免費。訂閱後可發布直播間並取得公開網址。</DialogDescription>
+              <DialogDescription>免費版只提供基本資料與草稿設定，不含 AI 點數及發布功能。新會員訂閱可免費試用 7 天。</DialogDescription>
             </DialogHeader>
             <div className="grid sm:grid-cols-3 gap-3">
               {stripeConfig?.plans.map((plan) => (
@@ -854,7 +864,8 @@ export default function AdminDashboard() {
                   </div>
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
-                  <p className="text-sm font-medium text-primary">每月贈送 {plan.monthlyAiPoints} AI 點</p>
+                  <p className="text-sm font-medium text-primary">正式首次扣款後，每月贈送 {plan.monthlyAiPoints} AI 點</p>
+                  <p className="mt-2 text-sm font-semibold text-emerald-700">新會員免費試用 {plan.trialDays} 天</p>
                   {!plan.available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
               ))}
@@ -1183,10 +1194,17 @@ export default function AdminDashboard() {
                     <p><span className="text-muted-foreground">建立後：</span>只保存為草稿，不自動發布、不自動寄信</p>
                   </div>
                   {!aiPoints?.unlimited && (
-                    <p className={`text-sm ${aiPoints && aiPoints.points < 30 ? "text-destructive" : "text-muted-foreground"}`}>
-                      目前餘額：{aiPoints?.points ?? "—"} 點
-                      {aiPoints && aiPoints.points < 30 ? "，點數不足，請先儲值。" : "。失敗會自動退回 30 點。"}
-                    </p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className={`text-sm ${aiPoints && aiPoints.points < 30 ? "text-destructive" : "text-muted-foreground"}`}>
+                        目前餘額：{aiPoints?.points ?? "—"} 點
+                        {aiPoints && aiPoints.points < 30 ? "，點數不足。" : "。失敗會自動退回 30 點。"}
+                      </p>
+                      {aiPoints && aiPoints.points < 30 && (
+                        <Button type="button" size="sm" variant="outline" onClick={() => setIsRechargeOpen(true)}>
+                          購買 AI 點數
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1214,8 +1232,15 @@ export default function AdminDashboard() {
                 ) : (
                   <Button
                     type="button"
-                    onClick={() => aiWizardMutation.mutate()}
-                    disabled={aiWizardMutation.isPending || Boolean(!aiPoints?.unlimited && (aiPoints?.points ?? 0) < 30)}
+                    onClick={() => {
+                      if (!aiPoints?.unlimited && (aiPoints?.points ?? 0) < 30) {
+                        setIsAiWizardOpen(false);
+                        setIsRechargeOpen(true);
+                        return;
+                      }
+                      aiWizardMutation.mutate();
+                    }}
+                    disabled={aiWizardMutation.isPending}
                     data-testid="button-run-ai-webinar-wizard"
                   >
                     {aiWizardMutation.isPending ? (

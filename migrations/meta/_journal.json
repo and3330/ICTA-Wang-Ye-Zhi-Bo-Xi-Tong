@@ -50,6 +50,20 @@
       "when": 1788400000000,
       "tag": "0006_ai_credit_lots",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788401000000,
+      "tag": "0007_free_accounts_zero_ai_points",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788402000000,
+      "tag": "0008_subscription_trial_claim",
+      "breakpoints": true
     }
   ]
 }

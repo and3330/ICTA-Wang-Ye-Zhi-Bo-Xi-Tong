@@ -35,7 +35,10 @@ import {
   analyticsVisitorTokenSchema,
   safeCtaUrlSchema,
   createWebinarOfferSchema,
+  users,
 } from "@shared/schema";
+import { db } from "./db";
+import { eq, sql } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
@@ -1321,9 +1324,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100 },
-      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200 },
-      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300 },
+      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
+      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 7 },
+      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 7 },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -1368,16 +1371,6 @@ export async function registerRoutes(
 
       const stripe = await getUncachableStripeClient();
 
-      let customerId = user.stripeCustomerId;
-      if (!customerId) {
-        const customer = await stripe.customers.create({
-          email: user.email || undefined,
-          metadata: { userId: user.id, username: user.username },
-        });
-        await storage.updateUser(user.id, { stripeCustomerId: customer.id } as any);
-        customerId = customer.id;
-      }
-
       const planKey = req.body.planKey as SubscriptionPlanKey;
       const addonWebinars = Number(req.body.addonWebinars || 0);
       if (!(planKey in SUBSCRIPTION_PLANS)) return res.status(400).json({ message: "Invalid plan" });
@@ -1392,24 +1385,94 @@ export async function registerRoutes(
       }
 
       const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const session = await stripe.checkout.sessions.create({
-        customer: customerId,
-        payment_method_types: ["card"],
-        line_items: [
-          { price: basePriceId, quantity: 1 },
-          ...(addonWebinars > 0 ? [{ price: addonPriceId!, quantity: addonWebinars }] : []),
-        ],
-        mode: "subscription",
-        client_reference_id: user.id,
-        subscription_data: {
-          metadata: { userId: user.id, planKey, addonWebinars: String(addonWebinars) },
-        },
-        success_url: `${baseUrl}/admin/dashboard?checkout=success`,
-        cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
+      const session = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`subscription-checkout:${user.id}`}))`);
+        const [lockedUser] = await tx.select().from(users).where(eq(users.id, user.id)).for("update");
+        if (!lockedUser) throw new Error("Unauthorized");
+
+        let customerId = lockedUser.stripeCustomerId;
+        if (!customerId) {
+          const customer = await stripe.customers.create({
+            email: lockedUser.email || undefined,
+            metadata: { userId: lockedUser.id, username: lockedUser.username },
+          }, {
+            idempotencyKey: `icta-customer-${lockedUser.id}`,
+          });
+          customerId = customer.id;
+          await tx.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, lockedUser.id));
+        }
+
+        const previousSubscriptions = await stripe.subscriptions.list({
+          customer: customerId,
+          status: "all",
+          limit: 100,
+        });
+        if (previousSubscriptions.data.some((subscription) => ["active", "trialing"].includes(subscription.status))) {
+          throw new Error("ACTIVE_SUBSCRIPTION_EXISTS");
+        }
+
+        let previousTrialSessionExpired = false;
+        const openSessions = await stripe.checkout.sessions.list({
+          customer: customerId,
+          status: "open",
+          limit: 100,
+        });
+        for (const openSession of openSessions.data) {
+          if (openSession.metadata?.kind !== "subscription" || openSession.metadata?.userId !== lockedUser.id) continue;
+          const sameSelection = openSession.metadata.planKey === planKey
+            && openSession.metadata.addonWebinars === String(addonWebinars);
+          if (sameSelection && openSession.url) {
+            await tx.update(users)
+              .set({ stripeSubscriptionCheckoutSessionId: openSession.id })
+              .where(eq(users.id, lockedUser.id));
+            return openSession;
+          }
+          await stripe.checkout.sessions.expire(openSession.id);
+          if (openSession.id === lockedUser.stripeSubscriptionCheckoutSessionId) {
+            previousTrialSessionExpired = true;
+          }
+        }
+        if (lockedUser.stripeSubscriptionCheckoutSessionId && !previousTrialSessionExpired) {
+          const priorSession = await stripe.checkout.sessions.retrieve(lockedUser.stripeSubscriptionCheckoutSessionId);
+          previousTrialSessionExpired = priorSession.status === "expired";
+        }
+
+        const trialEligible = previousSubscriptions.data.length === 0
+          && (!lockedUser.stripeTrialClaimedAt || previousTrialSessionExpired);
+        const created = await stripe.checkout.sessions.create({
+          customer: customerId,
+          payment_method_types: ["card"],
+          line_items: [
+            { price: basePriceId, quantity: 1 },
+            ...(addonWebinars > 0 ? [{ price: addonPriceId!, quantity: addonWebinars }] : []),
+          ],
+          mode: "subscription",
+          client_reference_id: lockedUser.id,
+          metadata: {
+            kind: "subscription",
+            userId: lockedUser.id,
+            planKey,
+            addonWebinars: String(addonWebinars),
+          },
+          subscription_data: {
+            metadata: { userId: lockedUser.id, planKey, addonWebinars: String(addonWebinars) },
+            ...(trialEligible ? { trial_period_days: 7 } : {}),
+          },
+          success_url: `${baseUrl}/admin/dashboard?checkout=success`,
+          cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
+        });
+        await tx.update(users).set({
+          stripeSubscriptionCheckoutSessionId: created.id,
+          ...(trialEligible ? { stripeTrialClaimedAt: new Date() } : {}),
+        }).where(eq(users.id, lockedUser.id));
+        return created;
       });
 
       res.json({ url: session.url });
     } catch (error: any) {
+      if (error?.message === "ACTIVE_SUBSCRIPTION_EXISTS") {
+        return res.status(409).json({ message: "ACTIVE_SUBSCRIPTION_EXISTS", code: "ACTIVE_SUBSCRIPTION_EXISTS" });
+      }
       res.status(500).json({ message: error.message });
     }
   });
