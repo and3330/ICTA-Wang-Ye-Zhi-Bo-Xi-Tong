@@ -49,6 +49,8 @@ integrations = ["google-mail:1.0.0", "stripe:2.0.0", "javascript_anthropic_ai_in
 
 [userenv.shared]
 STRIPE_MONTHLY_PRICE_ID = "price_1Sy8bxIbl9Q8nuPzsLN1d2VC"
+ARK_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
+ARK_MODEL = "ep-20260903145930-lmhk7"
 
 [postMerge]
 path = "scripts/post-merge.sh"
