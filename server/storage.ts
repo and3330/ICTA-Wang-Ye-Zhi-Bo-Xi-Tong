@@ -80,6 +80,7 @@ export interface IStorage {
   createWebinar(data: InsertWebinar): Promise<Webinar>;
   createAiWizardWebinar(data: {
     webinar: InsertWebinar;
+    reservationId?: string | null;
     knowledge: string;
     interactions: {
       fakeUsers: string[];
@@ -559,6 +560,7 @@ export class DatabaseStorage implements IStorage {
 
   async createAiWizardWebinar(data: {
     webinar: InsertWebinar;
+    reservationId?: string | null;
     knowledge: string;
     interactions: {
       fakeUsers: string[];
@@ -613,6 +615,18 @@ export class DatabaseStorage implements IStorage {
           enabled: false,
           sortOrder: index,
         })));
+      }
+      if (data.reservationId) {
+        const consumed = await tx.update(aiCreditReservations)
+          .set({ status: "consumed", completedAt: new Date() })
+          .where(and(
+            eq(aiCreditReservations.id, data.reservationId),
+            eq(aiCreditReservations.status, "reserved"),
+          ))
+          .returning({ id: aiCreditReservations.id });
+        if (consumed.length !== 1) {
+          throw new Error("AI credit reservation could not be finalized");
+        }
       }
       return webinar;
     });

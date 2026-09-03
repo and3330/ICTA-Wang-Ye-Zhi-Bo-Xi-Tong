@@ -1218,11 +1218,11 @@ export async function registerRoutes(
       });
       const webinar = await storage.createAiWizardWebinar({
         webinar: webinarInput,
+        reservationId: reservation?.reservationId,
         knowledge,
         interactions: { ...interactions, ctas: safeCtas },
         emails,
       });
-      if (reservation) await storage.finalizeAiCreditReservation(reservation.reservationId);
 
       res.json({
         success: true,
@@ -1238,8 +1238,21 @@ export async function registerRoutes(
         },
       });
     } catch (error: any) {
-      if (reservation) await storage.refundAiCreditReservation(reservation.reservationId);
-      res.status(502).json({ message: `${error.message || "AI 建立失敗"}（未扣點）` });
+      let refunded = !reservation;
+      if (reservation) {
+        try {
+          await storage.refundAiCreditReservation(reservation.reservationId);
+          refunded = true;
+        } catch (refundError) {
+          console.error("AI wizard credit refund failed:", refundError);
+          void persistProductionError(refundError, req, 500).catch(() => {});
+        }
+      }
+      res.status(502).json({
+        message: refunded
+          ? "AI 建立失敗，請稍後再試（未扣點）"
+          : "AI 建立失敗，點數退款處理異常，系統已通知客服協助處理",
+      });
     }
   });
 
