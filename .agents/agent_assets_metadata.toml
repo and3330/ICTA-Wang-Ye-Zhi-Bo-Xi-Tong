@@ -28,3 +28,17 @@ mtime_ms = 1788377664417
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/66b63193-ab9d-4b60-815c-2ed8d9d4e883/ab127f9c-1b19-4091-8a8e-b9c72039d36b"
 storage_version_token = "1788377745070343"
 content_type = "text/html"
+
+[[outputs]]
+id = "JK4n2YZwMnZI7zWCUbWL5"
+uri = "file://attached_assets/facebook-ad/icta-facebook-ad-1080x1350.png"
+type = "image"
+title = "ICTA Facebook 廣告圖｜每天不到 40 元"
+description = "1080×1350（4:5）Facebook Feed 廣告 PNG，包含「24 小時幫你賣」與「立即免費試用」CTA。"
+logical_id = "75cd1adf-503e-4603-b3f4-a79d2a4239be"
+content_hash = "sha256:68ecb9ea9d477e12c45e3d675442abb42c5bc3a412c95856c0976df050d6b32b"
+size = 52905
+mtime_ms = 1788469671753
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/75cd1adf-503e-4603-b3f4-a79d2a4239be/ad76e49e-d39d-4222-9d80-53fe5a1bb444"
+storage_version_token = "1788469684047835"
+content_type = "image/png"
