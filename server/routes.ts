@@ -49,6 +49,7 @@ import {
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
+import { reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
 import { canViewWebinar } from "./webinarAccess";
 import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
@@ -794,14 +795,14 @@ export async function registerRoutes(
 
     // 先原子預扣（reserve）再呼叫 AI：避免「只剩 1 點 + 並發多題」時兩題都呼叫 Anthropic 浪費成本。
     // 預扣失敗（不足）→ 顯示預設訊息、不呼叫 AI。
-    let reserved = false;
+    let reservationId: string | null = null;
     if (!unlimited) {
-      const remaining = ownerId ? await storage.deductAiPoints(ownerId, AI_POINTS_PER_REPLY) : null;
-      if (remaining === null) {
+      const reservation = ownerId ? await storage.reserveAiCredits(ownerId, AI_POINTS_PER_REPLY) : null;
+      if (!reservation) {
         await sendAiMessage(webinarId, sessionId, teacherName, outOfPointsMsg);
         return;
       }
-      reserved = true;
+      reservationId = reservation.reservationId;
     }
 
     const answer = await answerViewerQuestion(
@@ -813,10 +814,11 @@ export async function registerRoutes(
     );
     if (!answer) {
       // AI 失敗：退回預扣的點數（不向觀眾收費）
-      if (reserved && ownerId) await storage.addAiPoints(ownerId, AI_POINTS_PER_REPLY);
+      if (reservationId) await storage.refundAiCreditReservation(reservationId);
       return;
     }
 
+    if (reservationId) await storage.finalizeAiCreditReservation(reservationId);
     await sendAiMessage(webinarId, sessionId, teacherName, answer);
   }
 
@@ -1166,8 +1168,8 @@ export async function registerRoutes(
     }
 
     const unlimited = owner.isSuperAdmin || owner.subscriptionPlan === "enterprise";
-    const remaining = unlimited ? owner.aiPoints : await storage.deductAiPoints(ownerId, AI_WEBINAR_WIZARD_POINTS);
-    if (!unlimited && remaining === null) {
+    const reservation = unlimited ? null : await storage.reserveAiCredits(ownerId, AI_WEBINAR_WIZARD_POINTS);
+    if (!unlimited && !reservation) {
       return res.status(402).json({ message: `AI 點數不足，建立精靈需要 ${AI_WEBINAR_WIZARD_POINTS} 點` });
     }
 
@@ -1217,12 +1219,13 @@ export async function registerRoutes(
         interactions: { ...interactions, ctas: safeCtas },
         emails,
       });
+      if (reservation) await storage.finalizeAiCreditReservation(reservation.reservationId);
 
       res.json({
         success: true,
         webinar,
         pointsUsed: unlimited ? 0 : AI_WEBINAR_WIZARD_POINTS,
-        remainingPoints: unlimited ? null : remaining,
+        remainingPoints: unlimited ? null : reservation!.remaining,
         counts: {
           messages: interactions.messages.length,
           polls: interactions.polls.length,
@@ -1232,7 +1235,7 @@ export async function registerRoutes(
         },
       });
     } catch (error: any) {
-      if (!unlimited) await storage.addAiPoints(ownerId, AI_WEBINAR_WIZARD_POINTS);
+      if (reservation) await storage.refundAiCreditReservation(reservation.reservationId);
       res.status(502).json({ message: `${error.message || "AI 建立失敗"}（未扣點）` });
     }
   });
@@ -1318,9 +1321,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000 },
-      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000 },
-      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000 },
+      { key: "starter", amountUsd: 49, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100 },
+      { key: "growth", amountUsd: 99, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200 },
+      { key: "scale", amountUsd: 199, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300 },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -1437,6 +1440,9 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ message: "Unauthorized" });
 
       const entitlement = await refreshSubscriptionEntitlement(user);
+      if (entitlement.active && entitlement.stripeSubscriptionId && entitlement.plan !== "enterprise" && entitlement.plan !== "legacy") {
+        await reconcileCurrentSubscriptionCredit(user.id, entitlement.stripeSubscriptionId);
+      }
       return res.json(entitlement);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -1450,9 +1456,24 @@ export async function registerRoutes(
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
       const unlimited = user.isSuperAdmin || user.subscriptionPlan === "enterprise";
+      if (!unlimited && user.stripeCustomerId) {
+        try {
+          const entitlement = await refreshSubscriptionEntitlement(user);
+          if (entitlement.active && entitlement.stripeSubscriptionId && entitlement.plan !== "legacy") {
+            await reconcileCurrentSubscriptionCredit(user.id, entitlement.stripeSubscriptionId);
+          }
+        } catch (error) {
+          console.warn("Could not reconcile current subscription AI credits:", error);
+        }
+      }
+      const summary = await storage.getAiCreditSummary(user.id);
+      const planMonthlyGift = user.subscriptionPlan in SUBSCRIPTION_PLANS
+        ? SUBSCRIPTION_PLANS[user.subscriptionPlan as SubscriptionPlanKey].monthlyAiPoints
+        : 0;
       res.json({
-        points: user.aiPoints,
+        ...summary,
         unlimited,
+        planMonthlyGift,
         pointsPerReply: AI_POINTS_PER_REPLY,
         pointsPerTwd: POINTS_PER_TWD,
         minTwd: RECHARGE_MIN_TWD,
@@ -1532,7 +1553,8 @@ export async function registerRoutes(
       const existingOwner = await storage.getPointTransactionOwner(sessionId);
       if (existingOwner) {
         if (existingOwner !== user.id) return res.status(403).json({ message: "無效的付款資訊" });
-        return res.json({ success: true, alreadyProcessed: true, points: user.aiPoints });
+        const summary = await storage.getAiCreditSummary(user.id);
+        return res.json({ success: true, alreadyProcessed: true, points: summary.points });
       }
 
       const stripe = await getUncachableStripeClient();
@@ -1564,12 +1586,11 @@ export async function registerRoutes(
       const admin = await storage.getUser(req.session.userId!);
       if (!admin?.isSuperAdmin) return res.status(403).json({ message: "需要超級管理員權限" });
       const points = Math.floor(Number(req.body?.points));
-      if (!Number.isFinite(points) || points === 0) return res.status(400).json({ message: "無效的點數" });
+      if (!Number.isFinite(points) || points <= 0) return res.status(400).json({ message: "無效的點數" });
       const target = await storage.getUser(String(req.params.id));
       if (!target) return res.status(404).json({ message: "找不到使用者" });
-      await storage.recordPointTransaction({ userId: target.id, type: "grant", points, amountTwd: null, stripeSessionId: null });
-      const newBalance = await storage.addAiPoints(target.id, points);
-      res.json({ success: true, points: newBalance });
+      const result = await storage.grantAiCredits({ userId: target.id, points, source: "admin_grant" });
+      res.json({ success: true, points: result.points });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -2570,19 +2591,18 @@ export async function registerRoutes(
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }
-  async function reserveGenerationPoints(webinarId: string): Promise<{ ok: true; ownerId: string | null; reserved: boolean } | { ok: false; status: number; message: string }> {
+  async function reserveGenerationPoints(webinarId: string): Promise<{ ok: true; reservationId: string | null } | { ok: false; status: number; message: string }> {
     const webinar = await storage.getWebinar(webinarId);
     if (!webinar) return { ok: false, status: 404, message: "找不到直播間" };
     const ownerId = webinar.userId || null;
     const owner = ownerId ? await storage.getUser(ownerId) : undefined;
     const unlimited = !!owner && (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise");
-    if (unlimited) return { ok: true, ownerId, reserved: false };
-    if (!ownerId) return { ok: true, ownerId: null, reserved: false };
-    const remaining = await storage.deductAiPoints(ownerId, AI_POINTS_PER_GENERATION);
-    if (remaining === null) {
+    if (unlimited || !ownerId) return { ok: true, reservationId: null };
+    const reservation = await storage.reserveAiCredits(ownerId, AI_POINTS_PER_GENERATION);
+    if (!reservation) {
       return { ok: false, status: 402, message: `AI 點數不足，本次生成需要 ${AI_POINTS_PER_GENERATION} 點，請先儲值` };
     }
-    return { ok: true, ownerId, reserved: true };
+    return { ok: true, reservationId: reservation.reservationId };
   }
 
   // 1. 一鍵生成互動（假人聊天 / CTA / 投票 / 提示卡，含時間點）
@@ -2593,7 +2613,7 @@ export async function registerRoutes(
     try {
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -2604,7 +2624,7 @@ export async function registerRoutes(
 
       const result = await generateInteractions(webinar.title, transcript, webinar.videoDuration || 0, goal);
       if (!result) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
 
@@ -2649,6 +2669,7 @@ export async function registerRoutes(
         await storage.createCtaButton({ webinarId, text: c.text, url: c.url, startTime: c.startTime } as any);
       }
 
+      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
       res.json({
         success: true,
         counts: {
@@ -2660,7 +2681,7 @@ export async function registerRoutes(
         },
       });
     } catch (error: any) {
-      if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+      if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });
@@ -2673,7 +2694,7 @@ export async function registerRoutes(
     try {
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -2681,7 +2702,7 @@ export async function registerRoutes(
       const knowledge = await getWebinarKnowledge(webinarId);
       const emails = await generateEmailSequence(webinar.title, goal, knowledge);
       if (!emails || emails.length === 0) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
       if (replace) {
@@ -2703,9 +2724,10 @@ export async function registerRoutes(
         } as any);
         created.push(seq);
       }
+      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
       res.json({ success: true, count: created.length, sequences: created });
     } catch (error: any) {
-      if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+      if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });
@@ -2718,7 +2740,7 @@ export async function registerRoutes(
     try {
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -2726,7 +2748,7 @@ export async function registerRoutes(
       const knowledge = await getWebinarKnowledge(webinarId);
       const posts = await generateSocialPosts(webinar.title, goal, knowledge);
       if (!posts || posts.length === 0) {
-        if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
       if (replace) {
@@ -2738,9 +2760,10 @@ export async function registerRoutes(
         const sp = await storage.createSocialPost({ webinarId, platform: p.platform, content: p.content, status: "draft" } as any);
         created.push(sp);
       }
+      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
       res.json({ success: true, count: created.length, posts: created });
     } catch (error: any) {
-      if (reserve.reserved && reserve.ownerId) await storage.addAiPoints(reserve.ownerId, AI_POINTS_PER_GENERATION);
+      if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });

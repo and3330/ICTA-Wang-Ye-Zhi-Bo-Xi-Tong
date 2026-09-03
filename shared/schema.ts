@@ -631,6 +631,32 @@ export const insertAiPointTransactionSchema = createInsertSchema(aiPointTransact
 export type InsertAiPointTransaction = z.infer<typeof insertAiPointTransactionSchema>;
 export type AiPointTransaction = typeof aiPointTransactions.$inferSelect;
 
+export const aiCreditLots = pgTable("ai_credit_lots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  source: text("source").notNull(), // legacy, monthly_gift, purchase, admin_grant
+  originalPoints: integer("original_points").notNull(),
+  remainingPoints: integer("remaining_points").notNull(),
+  grantedAt: timestamp("granted_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at"),
+  idempotencyKey: text("idempotency_key").unique(),
+}, (table) => ({
+  userExpiryIndex: index("ai_credit_lots_user_expiry_idx").on(table.userId, table.expiresAt),
+}));
+export type AiCreditLot = typeof aiCreditLots.$inferSelect;
+
+export const aiCreditReservations = pgTable("ai_credit_reservations", {
+  id: varchar("id").primaryKey(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  points: integer("points").notNull(),
+  allocations: jsonb("allocations").notNull().$type<Array<{ lotId: string; points: number }>>(),
+  status: text("status").notNull().default("reserved"), // reserved, consumed, refunded
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (table) => ({
+  userCreatedIndex: index("ai_credit_reservations_user_created_idx").on(table.userId, table.createdAt),
+}));
+
 // Webinar Sessions (用於循環排程的場次)
 export const webinarSessions = pgTable("webinar_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

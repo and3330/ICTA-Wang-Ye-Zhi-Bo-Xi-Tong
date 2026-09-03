@@ -43,6 +43,13 @@
       "when": 1788164647250,
       "tag": "0005_pending_webinar_refunds",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788400000000,
+      "tag": "0006_ai_credit_lots",
+      "breakpoints": true
     }
   ]
 }

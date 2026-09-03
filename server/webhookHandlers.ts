@@ -1,6 +1,7 @@
 import { getStripeSync } from './stripeClient';
 import type Stripe from "stripe";
 import { processVerifiedOfferPaymentEvent } from "./offerPayments";
+import { processSubscriptionCreditEvent } from "./subscriptionCreditGrants";
 
 export class WebhookHandlers {
   static async processWebhook(
@@ -9,6 +10,7 @@ export class WebhookHandlers {
     dependencies: {
       verifyAndSync?: (payload: Buffer, signature: string) => Promise<void>;
       applyVerifiedEvent?: typeof processVerifiedOfferPaymentEvent;
+      applySubscriptionCreditEvent?: typeof processSubscriptionCreditEvent;
     } = {},
   ): Promise<void> {
     if (!Buffer.isBuffer(payload)) {
@@ -30,5 +32,6 @@ export class WebhookHandlers {
     // application payment attribution.
     const event = JSON.parse(payload.toString("utf8")) as Stripe.Event;
     await (dependencies.applyVerifiedEvent || processVerifiedOfferPaymentEvent)(event);
+    await (dependencies.applySubscriptionCreditEvent || processSubscriptionCreditEvent)(event);
   }
 }

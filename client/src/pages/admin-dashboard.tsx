@@ -404,7 +404,7 @@ export default function AdminDashboard() {
     publishableKey: string;
     billingAvailable: boolean;
     catalogReady: boolean;
-    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; available: boolean }[];
+    plans: { key: "starter" | "growth" | "scale"; amountUsd: number; includedWebinars: number; monthlyRegistrants: number; monthlyAiPoints: number; available: boolean }[];
     addonAmountUsd: number;
   }>({
     queryKey: ["/api/stripe/config"],
@@ -413,6 +413,11 @@ export default function AdminDashboard() {
 
   const { data: aiPoints } = useQuery<{
     points: number;
+    giftedPoints: number;
+    permanentPoints: number;
+    nextExpiry: string | null;
+    nextExpiryPoints: number;
+    planMonthlyGift: number;
     unlimited: boolean;
     pointsPerReply: number;
     pointsPerTwd: number;
@@ -849,6 +854,7 @@ export default function AdminDashboard() {
                   </div>
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
+                  <p className="text-sm font-medium text-primary">每月贈送 {plan.monthlyAiPoints} AI 點</p>
                   {!plan.available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
               ))}
@@ -904,6 +910,19 @@ export default function AdminDashboard() {
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1 max-w-md">{s.aiPointsHint}</p>
+                  {!aiPoints.unlimited && (
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>方案贈點：<strong className="text-foreground">{aiPoints.giftedPoints}</strong></span>
+                      <span>永久點數：<strong className="text-foreground">{aiPoints.permanentPoints}</strong></span>
+                      {aiPoints.planMonthlyGift > 0 && <span>目前方案每月贈送 {aiPoints.planMonthlyGift} 點</span>}
+                      {aiPoints.nextExpiry && (
+                        <span>
+                          最近到期：{new Intl.DateTimeFormat("zh-TW").format(new Date(aiPoints.nextExpiry))}
+                          （{aiPoints.nextExpiryPoints} 點）
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
               {!aiPoints.unlimited && (

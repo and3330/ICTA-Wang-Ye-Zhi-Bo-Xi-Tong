@@ -25,11 +25,28 @@ import {
   webinarDocuments, type InsertWebinarDocument, type WebinarDocument,
   emailSequences, type InsertEmailSequence, type EmailSequence,
   socialPosts, type InsertSocialPost, type SocialPost,
-  aiPointTransactions, type AiPointTransaction,
+  aiPointTransactions, aiCreditLots, aiCreditReservations,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
 } from "@shared/schema";
+
+export function allocateAiCreditLots(
+  lots: Array<{ id: string; remainingPoints: number }>,
+  points: number,
+): Array<{ lotId: string; points: number }> | null {
+  const available = lots.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+  if (available < points) return null;
+  let needed = points;
+  const allocations: Array<{ lotId: string; points: number }> = [];
+  for (const lot of lots) {
+    if (needed <= 0) break;
+    const used = Math.min(needed, lot.remainingPoints);
+    allocations.push({ lotId: lot.id, points: used });
+    needed -= used;
+  }
+  return allocations;
+}
 
 export interface IStorage {
   // Users (Admin)
@@ -51,10 +68,11 @@ export interface IStorage {
   listSupportFeedback(): Promise<SupportFeedback[]>;
   updateSupportFeedback(id: string, data: { status?: string; adminNote?: string | null }): Promise<SupportFeedback | undefined>;
   // AI 點數
-  deductAiPoints(userId: string, points: number): Promise<number | null>; // 原子扣點；不足回 null
-  addAiPoints(userId: string, points: number): Promise<number>; // 原子加點，回新餘額
-  isStripeSessionProcessed(stripeSessionId: string): Promise<boolean>;
-  recordPointTransaction(data: { userId: string; type: string; points: number; amountTwd?: number | null; stripeSessionId?: string | null }): Promise<AiPointTransaction>;
+  reserveAiCredits(userId: string, points: number): Promise<{ reservationId: string; remaining: number } | null>;
+  finalizeAiCreditReservation(reservationId: string): Promise<void>;
+  refundAiCreditReservation(reservationId: string): Promise<void>;
+  getAiCreditSummary(userId: string): Promise<{ points: number; giftedPoints: number; permanentPoints: number; nextExpiry: Date | null; nextExpiryPoints: number }>;
+  grantAiCredits(data: { userId: string; points: number; source: "monthly_gift" | "admin_grant"; grantedAt?: Date; expiresAt?: Date | null; idempotencyKey?: string | null }): Promise<{ added: boolean; points: number }>;
   creditPointPurchase(data: { userId: string; points: number; amountTwd: number; stripeSessionId: string }): Promise<{ points: number; alreadyProcessed: boolean }>;
   getPointTransactionOwner(stripeSessionId: string): Promise<string | null>;
   
@@ -264,8 +282,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createUser(data: InsertUser): Promise<User> {
-    const result = await db.insert(users).values(data).returning();
-    return result[0];
+    return db.transaction(async (tx) => {
+      const [user] = await tx.insert(users).values(data).returning();
+      if (user.aiPoints > 0) {
+        await tx.insert(aiCreditLots).values({
+          userId: user.id,
+          source: "legacy",
+          originalPoints: user.aiPoints,
+          remainingPoints: user.aiPoints,
+          expiresAt: null,
+          idempotencyKey: `signup:${user.id}`,
+        });
+      }
+      return user;
+    });
   }
 
   async listAllUsers(): Promise<User[]> {
@@ -361,39 +391,114 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  // 原子扣點：只有餘額足夠才扣，避免並發競態。成功回新餘額，不足回 null
-  async deductAiPoints(userId: string, points: number): Promise<number | null> {
-    const result = await db
-      .update(users)
-      .set({ aiPoints: sql`${users.aiPoints} - ${points}` })
-      .where(and(eq(users.id, userId), gte(users.aiPoints, points)))
-      .returning({ aiPoints: users.aiPoints });
-    return result[0]?.aiPoints ?? null;
+  async getAiCreditSummary(userId: string) {
+    const now = new Date();
+    const activeLots = await db.select().from(aiCreditLots).where(and(
+      eq(aiCreditLots.userId, userId),
+      gt(aiCreditLots.remainingPoints, 0),
+      or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, now)),
+    ));
+    const gifted = activeLots.filter((lot) => lot.source === "monthly_gift");
+    const expiring = gifted.filter((lot) => lot.expiresAt)
+      .sort((a, b) => a.expiresAt!.getTime() - b.expiresAt!.getTime());
+    return {
+      points: activeLots.reduce((sum, lot) => sum + lot.remainingPoints, 0),
+      giftedPoints: gifted.reduce((sum, lot) => sum + lot.remainingPoints, 0),
+      permanentPoints: activeLots.filter((lot) => lot.source !== "monthly_gift")
+        .reduce((sum, lot) => sum + lot.remainingPoints, 0),
+      nextExpiry: expiring[0]?.expiresAt || null,
+      nextExpiryPoints: expiring[0]?.remainingPoints || 0,
+    };
   }
 
-  async addAiPoints(userId: string, points: number): Promise<number> {
-    const result = await db
-      .update(users)
-      .set({ aiPoints: sql`${users.aiPoints} + ${points}` })
-      .where(eq(users.id, userId))
-      .returning({ aiPoints: users.aiPoints });
-    return result[0]?.aiPoints ?? 0;
+  async reserveAiCredits(userId: string, points: number): Promise<{ reservationId: string; remaining: number } | null> {
+    if (!Number.isInteger(points) || points <= 0) throw new Error("Invalid credit reservation");
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${userId}`}))`);
+      const now = new Date();
+      const lots = await tx.select().from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, now)),
+      )).orderBy(sql`${aiCreditLots.expiresAt} ASC NULLS LAST`, asc(aiCreditLots.grantedAt)).for("update");
+      const available = lots.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+      if (available < points) return null;
+
+      const allocations = allocateAiCreditLots(lots, points)!;
+      for (const allocation of allocations) {
+        const lot = lots.find((candidate) => candidate.id === allocation.lotId)!;
+        const used = allocation.points;
+        await tx.update(aiCreditLots)
+          .set({ remainingPoints: lot.remainingPoints - used })
+          .where(eq(aiCreditLots.id, lot.id));
+      }
+      const reservationId = crypto.randomUUID();
+      await tx.insert(aiCreditReservations).values({ id: reservationId, userId, points, allocations, status: "reserved" });
+      await tx.update(users).set({ aiPoints: available - points }).where(eq(users.id, userId));
+      return { reservationId, remaining: available - points };
+    });
   }
 
-  async isStripeSessionProcessed(stripeSessionId: string): Promise<boolean> {
-    const result = await db.select({ id: aiPointTransactions.id }).from(aiPointTransactions).where(eq(aiPointTransactions.stripeSessionId, stripeSessionId));
-    return result.length > 0;
+  async finalizeAiCreditReservation(reservationId: string): Promise<void> {
+    await db.update(aiCreditReservations)
+      .set({ status: "consumed", completedAt: new Date() })
+      .where(and(eq(aiCreditReservations.id, reservationId), eq(aiCreditReservations.status, "reserved")));
   }
 
-  async recordPointTransaction(data: { userId: string; type: string; points: number; amountTwd?: number | null; stripeSessionId?: string | null }): Promise<AiPointTransaction> {
-    const result = await db.insert(aiPointTransactions).values({
-      userId: data.userId,
-      type: data.type,
-      points: data.points,
-      amountTwd: data.amountTwd ?? null,
-      stripeSessionId: data.stripeSessionId ?? null,
-    }).returning();
-    return result[0];
+  async refundAiCreditReservation(reservationId: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [reservation] = await tx.select().from(aiCreditReservations)
+        .where(eq(aiCreditReservations.id, reservationId)).for("update");
+      if (!reservation || reservation.status !== "reserved") return;
+      for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
+        await tx.update(aiCreditLots)
+          .set({ remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})` })
+          .where(eq(aiCreditLots.id, allocation.lotId));
+      }
+      await tx.update(aiCreditReservations)
+        .set({ status: "refunded", completedAt: new Date() })
+        .where(eq(aiCreditReservations.id, reservationId));
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, reservation.userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      await tx.update(users)
+        .set({ aiPoints: active.reduce((sum, lot) => sum + lot.remainingPoints, 0) })
+        .where(eq(users.id, reservation.userId));
+    });
+  }
+
+  async grantAiCredits(data: { userId: string; points: number; source: "monthly_gift" | "admin_grant"; grantedAt?: Date; expiresAt?: Date | null; idempotencyKey?: string | null }) {
+    if (!Number.isInteger(data.points) || data.points <= 0) throw new Error("Invalid credit grant");
+    return db.transaction(async (tx) => {
+      const inserted = await tx.insert(aiCreditLots).values({
+        userId: data.userId,
+        source: data.source,
+        originalPoints: data.points,
+        remainingPoints: data.points,
+        grantedAt: data.grantedAt || new Date(),
+        expiresAt: data.expiresAt || null,
+        idempotencyKey: data.idempotencyKey || null,
+      }).onConflictDoNothing({ target: aiCreditLots.idempotencyKey }).returning({ id: aiCreditLots.id });
+      if (inserted.length > 0) {
+        await tx.insert(aiPointTransactions).values({
+          userId: data.userId,
+          type: data.source,
+          points: data.points,
+          amountTwd: null,
+          stripeSessionId: null,
+        });
+      }
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, data.userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      const points = active.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+      await tx.update(users).set({ aiPoints: points }).where(eq(users.id, data.userId));
+      return { added: inserted.length > 0, points };
+    });
   }
 
   // 交易記錄 + 加點在同一個 DB transaction 中完成（冪等 + 一致性）
@@ -413,16 +518,30 @@ export class DatabaseStorage implements IStorage {
         .returning({ id: aiPointTransactions.id });
 
       if (inserted.length === 0) {
-        const current = await tx.select({ aiPoints: users.aiPoints }).from(users).where(eq(users.id, data.userId));
-        return { points: current[0]?.aiPoints ?? 0, alreadyProcessed: true };
+        const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+          eq(aiCreditLots.userId, data.userId),
+          gt(aiCreditLots.remainingPoints, 0),
+          or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+        ));
+        return { points: active.reduce((sum, lot) => sum + lot.remainingPoints, 0), alreadyProcessed: true };
       }
 
-      const updated = await tx
-        .update(users)
-        .set({ aiPoints: sql`${users.aiPoints} + ${data.points}` })
-        .where(eq(users.id, data.userId))
-        .returning({ aiPoints: users.aiPoints });
-      return { points: updated[0]?.aiPoints ?? 0, alreadyProcessed: false };
+      await tx.insert(aiCreditLots).values({
+        userId: data.userId,
+        source: "purchase",
+        originalPoints: data.points,
+        remainingPoints: data.points,
+        expiresAt: null,
+        idempotencyKey: `purchase:${data.stripeSessionId}`,
+      });
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, data.userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      const points = active.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+      await tx.update(users).set({ aiPoints: points }).where(eq(users.id, data.userId));
+      return { points, alreadyProcessed: false };
     });
   }
 
