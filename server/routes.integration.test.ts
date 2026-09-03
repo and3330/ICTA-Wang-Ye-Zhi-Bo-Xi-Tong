@@ -147,3 +147,34 @@ test("draft access and expired publishing are enforced through real HTTP and Web
   assert.equal(retainedResponse.status, 200);
   assert.equal((await retainedResponse.json() as Webinar).description, draft.description);
 });
+
+test("public funnel endpoint rejects forged purchase and refund events", async (t) => {
+  const webinarId = "9c15edb6-af0d-481e-8806-d686ad204517";
+  const originalGetWebinar = storage.getWebinar;
+  storage.getWebinar = async (id) => id === webinarId
+    ? ({ id, publishStatus: "published", videoDuration: 100 } as Webinar)
+    : undefined;
+  const app = express();
+  app.use(express.json());
+  const server = createServer(app);
+  await registerRoutes(server, app, undefined, { startScheduler: () => {} });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const url = `http://127.0.0.1:${address.port}/api/webinars/${webinarId}/funnel-events`;
+  t.after(async () => {
+    storage.getWebinar = originalGetWebinar;
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  });
+  const identity = { visitorToken: "visitor-token-long-enough", dedupeKey: "forged-event-key" };
+  const purchase = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...identity, eventType: "purchase", value: 1, currency: "USD" }),
+  });
+  assert.equal(purchase.status, 403);
+  const refund = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...identity, eventType: "refund" }),
+  });
+  assert.equal(refund.status, 403);
+});

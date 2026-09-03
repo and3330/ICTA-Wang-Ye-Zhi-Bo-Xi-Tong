@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { z } from "zod";
 import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
@@ -33,6 +34,7 @@ import {
   gtmContainerIdSchema,
   analyticsVisitorTokenSchema,
   safeCtaUrlSchema,
+  createWebinarOfferSchema,
 } from "@shared/schema";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, getWebinarKnowledge } from "./aiGenerator";
 
@@ -1682,8 +1684,139 @@ export async function registerRoutes(
         ...req.body,
         webinarId: req.params.id
       });
+      if (data.offerId) {
+        const offer = await storage.getWebinarOffer(data.offerId);
+        if (!offer || !offer.active || offer.webinarId !== req.params.id) {
+          return res.status(400).json({ message: "offerId does not belong to this webinar" });
+        }
+      }
       const cta = await storage.createCtaButton(data);
       res.json(cta);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  // Stripe owns offer product/price details; this endpoint returns a joined
+  // view without duplicating catalog values into application tables.
+  app.get("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const offers = await storage.getWebinarOffers(webinarId);
+      const stripe = await getUncachableStripeClient();
+      const result = await Promise.all(offers.map(async (offer) => {
+        const [product, price] = await Promise.all([
+          stripe.products.retrieve(offer.stripeProductId),
+          stripe.prices.retrieve(offer.stripePriceId),
+        ]);
+        return {
+          ...offer,
+          name: "deleted" in product ? "Unavailable product" : product.name,
+          amountMinor: price.unit_amount,
+          currency: price.currency.toUpperCase(),
+        };
+      }));
+      res.json(result);
+    } catch (error: any) {
+      res.status(502).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const input = createWebinarOfferSchema.parse(req.body);
+      const stripe = await getUncachableStripeClient();
+      const product = await stripe.products.create({
+        name: input.name,
+        metadata: { kind: "webinar_offer", webinarId },
+      });
+      const price = await stripe.prices.create({
+        product: product.id,
+        unit_amount: input.amountMinor,
+        currency: input.currency.toLowerCase(),
+        metadata: { kind: "webinar_offer", webinarId },
+      });
+      const offer = await storage.createWebinarOffer({
+        webinarId,
+        stripeProductId: product.id,
+        stripePriceId: price.id,
+        checkoutMode: input.checkoutMode,
+      });
+      res.json({ ...offer, name: product.name, amountMinor: price.unit_amount, currency: price.currency.toUpperCase() });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  const offerCheckoutSchema = z.object({
+    ctaId: z.string().uuid(),
+    registrationId: z.string().uuid().optional(),
+    visitorToken: analyticsVisitorTokenSchema.optional(),
+    sessionId: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  }).strict().refine(value => value.registrationId || value.visitorToken || value.sessionId, {
+    message: "A visitor identity is required",
+  });
+
+  app.post("/api/webinars/:id/offer-checkout", async (req, res) => {
+    try {
+      const webinarId = req.params.id;
+      const webinar = await storage.getWebinar(webinarId);
+      if (!webinar || webinar.publishStatus !== "published") return res.status(404).json({ message: "Webinar not found" });
+      const input = offerCheckoutSchema.parse(req.body);
+      const ctas = await storage.getCtaButtonsByWebinar(webinarId);
+      const cta = ctas.find(item => item.id === input.ctaId);
+      if (!cta?.offerId) return res.status(400).json({ message: "CTA is not linked to an offer" });
+      const offer = await storage.getWebinarOffer(cta.offerId);
+      if (!offer || !offer.active || offer.webinarId !== webinarId) {
+        return res.status(400).json({ message: "Offer is unavailable" });
+      }
+      if (input.registrationId) {
+        const registration = await storage.getRegistration(input.registrationId);
+        if (!registration || registration.webinarId !== webinarId) {
+          return res.status(400).json({ message: "registrationId does not belong to this webinar" });
+        }
+      }
+
+      const stripe = await getUncachableStripeClient();
+      const price = await stripe.prices.retrieve(offer.stripePriceId);
+      const productId = typeof price.product === "string" ? price.product : price.product.id;
+      if (!price.active || price.type !== "one_time" || price.unit_amount === null || productId !== offer.stripeProductId) {
+        return res.status(409).json({ message: "Offer price is unavailable" });
+      }
+      const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : "";
+      const metadata = {
+        kind: "webinar_offer",
+        webinarId,
+        offerId: offer.id,
+        ctaId: cta.id,
+        stripePriceId: offer.stripePriceId,
+        ...(input.registrationId ? { registrationId: input.registrationId } : {}),
+        ...(visitorTokenHash ? { visitorTokenHash } : {}),
+      };
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        line_items: [{ price: offer.stripePriceId, quantity: 1 }],
+        metadata,
+        payment_intent_data: { metadata },
+        client_reference_id: input.registrationId || undefined,
+        success_url: `${baseUrl}/webinar/${encodeURIComponent(webinarId)}?checkout=success`,
+        cancel_url: `${baseUrl}/webinar/${encodeURIComponent(webinarId)}?checkout=cancel`,
+      });
+      await storage.createFunnelEvent({
+        webinarId,
+        eventType: "checkout_start",
+        registrationId: input.registrationId,
+        sessionId: input.sessionId,
+        ctaId: cta.id,
+        ctaKey: cta.ctaKey,
+        offerId: offer.id,
+        visitorTokenHash: visitorTokenHash || undefined,
+        dedupeKey: sha256(`checkout:${session.id}`),
+        metadata: { serverRecorded: true },
+      });
+      res.json({ url: session.url });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -1881,8 +2014,8 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Webinar not found" });
       }
       const input = funnelEventInputSchema.parse(req.body);
-      if (input.eventType === "purchase") {
-        return res.status(403).json({ message: "Purchase events must be recorded by a verified server-side payment integration" });
+      if (input.eventType === "purchase" || input.eventType === "refund") {
+        return res.status(403).json({ message: "Payment events must be recorded by a verified server-side payment integration" });
       }
 
       if (input.registrationId) {
@@ -2061,12 +2194,13 @@ export async function registerRoutes(
         userId: req.session.userId,
       });
 
-      const [sourceFakeUsers, sourceMessages, sourceCtas, sourcePolls, sourceTips] = await Promise.all([
+      const [sourceFakeUsers, sourceMessages, sourceCtas, sourcePolls, sourceTips, sourceOffers] = await Promise.all([
         storage.getFakeUsersByWebinar(sourceWebinar.id),
         storage.getScheduledMessagesByWebinar(sourceWebinar.id),
         storage.getCtaButtonsByWebinar(sourceWebinar.id),
         storage.getPollsByWebinar(sourceWebinar.id),
         storage.getTipsByWebinar(sourceWebinar.id),
+        storage.getWebinarOffers(sourceWebinar.id),
       ]);
 
       const fakeUserIdMap = new Map<string, string>();
@@ -2088,11 +2222,22 @@ export async function registerRoutes(
         });
       }
 
+      const offerIdMap = new Map<string, string>();
+      for (const offer of sourceOffers) {
+        const copied = await storage.createWebinarOffer({
+          webinarId: newWebinar.id,
+          stripeProductId: offer.stripeProductId,
+          stripePriceId: offer.stripePriceId,
+          checkoutMode: "payment",
+        });
+        offerIdMap.set(offer.id, copied.id);
+      }
       for (const cta of sourceCtas) {
         await storage.createCtaButton({
           webinarId: newWebinar.id,
           text: cta.text,
           url: cta.url,
+          offerId: cta.offerId ? offerIdMap.get(cta.offerId) : undefined,
           startTime: cta.startTime,
           endTime: cta.endTime ?? undefined,
           style: cta.style || undefined,

@@ -28,6 +28,7 @@ import {
   aiPointTransactions, type AiPointTransaction,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
+  webinarOffers, webinarPayments, type WebinarOffer,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -89,6 +90,10 @@ export interface IStorage {
   deleteScheduledMessage(id: string): Promise<void>;
   
   // CTA Buttons
+  createWebinarOffer(data: { webinarId: string; stripeProductId: string; stripePriceId: string; checkoutMode: "payment" }): Promise<WebinarOffer>;
+  getWebinarOffers(webinarId: string): Promise<WebinarOffer[]>;
+  getWebinarOffer(id: string): Promise<WebinarOffer | undefined>;
+  deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined>;
   createCtaButton(data: InsertCtaButton): Promise<CtaButton>;
   getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]>;
   deleteCtaButton(id: string): Promise<void>;
@@ -455,12 +460,15 @@ export class DatabaseStorage implements IStorage {
     await db.delete(emailReminders).where(eq(emailReminders.webinarId, id));
     await db.delete(viewerProgress).where(eq(viewerProgress.webinarId, id));
     await db.delete(questions).where(eq(questions.webinarId, id));
+    await db.delete(webinarFunnelEvents).where(eq(webinarFunnelEvents.webinarId, id));
+    await db.delete(webinarPayments).where(eq(webinarPayments.webinarId, id));
     // Now delete registrations
     await db.delete(registrations).where(eq(registrations.webinarId, id));
     // Delete other direct children
     await db.delete(scheduledMessages).where(eq(scheduledMessages.webinarId, id));
     await db.delete(fakeUsers).where(eq(fakeUsers.webinarId, id));
     await db.delete(ctaButtons).where(eq(ctaButtons.webinarId, id));
+    await db.delete(webinarOffers).where(eq(webinarOffers.webinarId, id));
     await db.delete(polls).where(eq(polls.webinarId, id));
     await db.delete(tips).where(eq(tips.webinarId, id));
     await db.delete(feedbackSurveys).where(eq(feedbackSurveys.webinarId, id));
@@ -570,6 +578,28 @@ export class DatabaseStorage implements IStorage {
   }
 
   // CTA Buttons
+  async createWebinarOffer(data: { webinarId: string; stripeProductId: string; stripePriceId: string; checkoutMode: "payment" }): Promise<WebinarOffer> {
+    const result = await db.insert(webinarOffers).values(data).returning();
+    return result[0];
+  }
+
+  async getWebinarOffers(webinarId: string): Promise<WebinarOffer[]> {
+    return db.select().from(webinarOffers)
+      .where(and(eq(webinarOffers.webinarId, webinarId), eq(webinarOffers.active, true)))
+      .orderBy(desc(webinarOffers.createdAt));
+  }
+
+  async getWebinarOffer(id: string): Promise<WebinarOffer | undefined> {
+    const result = await db.select().from(webinarOffers).where(eq(webinarOffers.id, id)).limit(1);
+    return result[0];
+  }
+
+  async deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined> {
+    const result = await db.update(webinarOffers).set({ active: false })
+      .where(and(eq(webinarOffers.id, id), eq(webinarOffers.webinarId, webinarId))).returning();
+    return result[0];
+  }
+
   async createCtaButton(data: InsertCtaButton): Promise<CtaButton> {
     // Client input never controls the stable analytics key.
     const ctaKey = crypto.randomBytes(18).toString("base64url");

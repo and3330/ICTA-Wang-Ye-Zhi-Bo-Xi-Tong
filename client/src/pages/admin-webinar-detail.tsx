@@ -76,8 +76,16 @@ interface FunnelAnalyticsResponse {
   }>;
   dropoffBuckets: Array<{ range: string; count: number }>;
   revenue: Record<string, number>;
+  checkoutToPurchaseRate: number;
 }
 
+interface WebinarOfferView {
+  id: string;
+  name: string;
+  amountMinor: number;
+  currency: string;
+  checkoutMode: "payment";
+}
 const funnelStageLabels: Record<string, string> = {
   landing_view: "落地頁",
   registration: "報名",
@@ -88,6 +96,11 @@ const funnelStageLabels: Record<string, string> = {
   purchase: "購買",
 };
 
+function formatMinorCurrency(currency: string, amountMinor: number) {
+  const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
+  const digits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
+  return formatter.format(amountMinor / (10 ** digits));
+}
 const t: Record<LangAdmin, Record<string, string>> = {
   "zh-TW": {
     valEnterName: "請輸入名稱",
@@ -964,10 +977,15 @@ function createSchemas(s: Record<string, string>) {
     }),
     cta: z.object({
       text: z.string().min(1, s.valEnterButtonText),
-      url: z.string().url(s.valEnterValidUrl),
+      url: z.string().optional(),
+      offerId: z.string().optional(),
       startTime: z.string().min(1, s.valEnterStartTime),
       endTime: z.string().optional(),
       style: z.string().default("primary"),
+    }).superRefine((value, context) => {
+      if (!value.offerId && !z.string().url().safeParse(value.url).success) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: s.valEnterValidUrl });
+      }
     }),
     poll: z.object({
       question: z.string().min(1, s.valEnterQuestion),
@@ -1012,6 +1030,10 @@ export default function AdminWebinarDetail() {
   const [isFakeUserOpen, setIsFakeUserOpen] = useState(false);
   const [isMessageOpen, setIsMessageOpen] = useState(false);
   const [isCtaOpen, setIsCtaOpen] = useState(false);
+  const [isOfferOpen, setIsOfferOpen] = useState(false);
+  const [offerName, setOfferName] = useState("");
+  const [offerAmountMinor, setOfferAmountMinor] = useState("");
+  const [offerCurrency, setOfferCurrency] = useState("TWD");
   const [isPollOpen, setIsPollOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [funnelFrom, setFunnelFrom] = useState(() => {
@@ -1156,6 +1178,11 @@ export default function AdminWebinarDetail() {
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
+    enabled: !!id,
+  });
+
+  const { data: offers } = useQuery<WebinarOfferView[]>({
+    queryKey: ["/api/webinars", id, "offers"],
     enabled: !!id,
   });
 
@@ -1437,7 +1464,7 @@ export default function AdminWebinarDetail() {
 
   const ctaForm = useForm({
     resolver: zodResolver(schemas.cta),
-    defaultValues: { text: "", url: "", startTime: "", endTime: "", style: "primary" },
+    defaultValues: { text: "", url: "", offerId: "", startTime: "", endTime: "", style: "primary" },
   });
 
   const pollForm = useForm({
@@ -1486,7 +1513,8 @@ export default function AdminWebinarDetail() {
       };
       return apiRequest("POST", `/api/webinars/${id}/ctas`, {
         text: data.text,
-        url: data.url,
+        url: data.offerId ? null : data.url,
+        offerId: data.offerId || null,
         startTime: parseTime(data.startTime),
         endTime: data.endTime ? parseTime(data.endTime) : null,
         style: data.style,
@@ -1498,6 +1526,30 @@ export default function AdminWebinarDetail() {
       ctaForm.reset();
       toast({ title: s.toastCtaCreated });
     },
+  });
+
+  const createOffer = useMutation({
+    mutationFn: async () => {
+      const amountMinor = Number(offerAmountMinor);
+      if (!offerName.trim() || !Number.isInteger(amountMinor) || amountMinor <= 0) {
+        throw new Error("請輸入有效的商品名稱與最小貨幣單位金額");
+      }
+      const response = await apiRequest("POST", `/api/webinars/${id}/offers`, {
+        name: offerName.trim(),
+        amountMinor,
+        currency: offerCurrency,
+        checkoutMode: "payment",
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "offers"] });
+      setIsOfferOpen(false);
+      setOfferName("");
+      setOfferAmountMinor("");
+      toast({ title: "優惠已建立於 Stripe" });
+    },
+    onError: (error: any) => toast({ title: error.message, variant: "destructive" }),
   });
 
   const createPoll = useMutation({
@@ -2693,6 +2745,43 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
               <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">銷售優惠</CardTitle>
+                    <CardDescription>商品與價格會建立在 Stripe；此處只保存直播間關聯。</CardDescription>
+                  </div>
+                  <Dialog open={isOfferOpen} onOpenChange={setIsOfferOpen}>
+                    <DialogTrigger asChild>
+                      <Button size="sm" data-testid="button-add-offer"><Plus className="h-4 w-4 mr-1" />新增優惠</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>新增 Stripe 優惠</DialogTitle>
+                        <DialogDescription>金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。</DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-2"><Label>商品名稱</Label><Input value={offerName} onChange={(e) => setOfferName(e.target.value)} data-testid="input-offer-name" /></div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2"><Label>金額（最小貨幣單位）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
+                          <div className="space-y-2"><Label>幣別</Label><Input maxLength={3} value={offerCurrency} onChange={(e) => setOfferCurrency(e.target.value.toUpperCase())} data-testid="input-offer-currency" /></div>
+                        </div>
+                        <Button onClick={() => createOffer.mutate()} disabled={createOffer.isPending} data-testid="button-create-offer">
+                          {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立商品與一次性價格
+                        </Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </CardHeader>
+                <CardContent>
+                  {offers?.length ? <div className="space-y-2">{offers.map((offer) => (
+                    <div key={offer.id} className="flex items-center justify-between rounded-md bg-muted p-3">
+                      <span className="font-medium">{offer.name}</span>
+                      <Badge variant="outline">{offer.currency} {offer.amountMinor.toLocaleString()} minor units</Badge>
+                    </div>
+                  ))}</div> : <p className="text-center text-muted-foreground py-5">尚未設定優惠</p>}
+                </CardContent>
+              </Card>
+              <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <Mail className="h-4 w-4" />
@@ -3119,6 +3208,23 @@ export default function AdminWebinarDetail() {
                           />
                           <FormField
                             control={ctaForm.control}
+                            name="offerId"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>目的地</FormLabel>
+                                <Select value={field.value || "__external__"} onValueChange={(value) => field.onChange(value === "__external__" ? "" : value)}>
+                                  <FormControl><SelectTrigger data-testid="select-cta-offer"><SelectValue /></SelectTrigger></FormControl>
+                                  <SelectContent>
+                                    <SelectItem value="__external__">外部網址</SelectItem>
+                                    {offers?.map((offer) => <SelectItem key={offer.id} value={offer.id}>{offer.name} · {offer.currency} {offer.amountMinor}</SelectItem>)}
+                                  </SelectContent>
+                                </Select>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          {!ctaForm.watch("offerId") && <FormField
+                            control={ctaForm.control}
                             name="url"
                             render={({ field }) => (
                               <FormItem>
@@ -3129,7 +3235,7 @@ export default function AdminWebinarDetail() {
                                 <FormMessage />
                               </FormItem>
                             )}
-                          />
+                          />}
                           <div className="grid grid-cols-2 gap-4">
                             <FormField
                               control={ctaForm.control}
@@ -3203,7 +3309,9 @@ export default function AdminWebinarDetail() {
                                 {cta.text}
                               </Badge>
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1 truncate">{cta.url}</p>
+                            <p className="text-xs text-muted-foreground mt-1 truncate">
+                              {cta.offerId ? `Stripe 優惠：${offers?.find(offer => offer.id === cta.offerId)?.name || cta.offerId}` : cta.url}
+                            </p>
                           </div>
                           <Button
                             variant="ghost"
@@ -4233,10 +4341,14 @@ export default function AdminWebinarDetail() {
                       </div>
                     ) : (
                       <div className="space-y-5">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                           <div className="rounded-lg bg-background border p-3">
                             <p className="text-2xl font-semibold tracking-tight">{funnelQuery.data.uniqueViewers.toLocaleString()}</p>
                             <p className="text-xs text-muted-foreground">不重複觀眾</p>
+                          </div>
+                          <div className="rounded-lg bg-background border p-3">
+                            <p className="text-2xl font-semibold tracking-tight">{funnelQuery.data.checkoutToPurchaseRate.toFixed(2)}%</p>
+                            <p className="text-xs text-muted-foreground">結帳 → 購買</p>
                           </div>
                           <div className="rounded-lg bg-background border p-3">
                             <p className="text-2xl font-semibold tracking-tight">{(funnelQuery.data.counts.landing_view || 0).toLocaleString()}</p>
@@ -4249,7 +4361,7 @@ export default function AdminWebinarDetail() {
                           <div className="rounded-lg bg-background border p-3">
                             <p className="text-2xl font-semibold tracking-tight">
                               {Object.entries(funnelQuery.data.revenue).length
-                                ? Object.entries(funnelQuery.data.revenue).map(([currency, value]) => `${currency} ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`).join(" · ")
+                                ? Object.entries(funnelQuery.data.revenue).map(([currency, value]) => formatMinorCurrency(currency, value)).join(" · ")
                                 : "—"}
                             </p>
                             <p className="text-xs text-muted-foreground">收入（依幣別）</p>

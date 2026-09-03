@@ -20,3 +20,9 @@ Ephemeral live CTA identifiers must be server-issued, short-lived, HMAC-protecte
 **Why:** Accepting arbitrary CTA keys allows cross-webinar or fabricated CTA performance while UUID-only validation drops live CTAs entirely.
 
 **How to apply:** Verify canonical encoding, signature, webinar binding, and expiry before accepting live CTA events. Persisted CTA keys remain server-generated, backfilled, non-null, and unique.
+
+Refund webhooks must be durable before their matching payment arrives, and cumulative refund reconciliation must serialize by provider payment identity.
+
+**Why:** Payment providers may deliver retries, concurrent partial refunds, or a refund before checkout completion. Treating delivery order as guaranteed can lose refunds or reverse revenue more than once.
+
+**How to apply:** Persist unmatched verified refunds, lock reconciliation by payment identity, and derive one delta from the provider's maximum cumulative refunded amount rather than summing webhook payloads.

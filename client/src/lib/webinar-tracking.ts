@@ -151,3 +151,32 @@ export function openTrackedExternalUrl(
   trackWebinarEvent(webinarId, "checkout_start", cta);
   return window.open(url, "_blank", "noopener,noreferrer");
 }
+
+export async function openOfferCheckout(
+  webinarId: string,
+  ctaId: string,
+  identity: { registrationId?: string; sessionId?: string } = {},
+): Promise<void> {
+  trackWebinarEvent(webinarId, "cta_click", { ctaId });
+  const popup = window.open("", "_blank");
+  try {
+    const response = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/offer-checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        ctaId,
+        visitorToken: getWebinarVisitorToken(webinarId),
+        ...identity,
+      }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.message || "Unable to start checkout");
+    const result = await response.json() as { url?: string };
+    if (!result.url) throw new Error("Stripe Checkout URL is unavailable");
+    if (popup) popup.location.href = result.url;
+    else window.location.href = result.url;
+  } catch (error) {
+    popup?.close();
+    throw error;
+  }
+}

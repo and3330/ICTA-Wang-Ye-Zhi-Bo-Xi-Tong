@@ -124,8 +124,9 @@ export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuratio
       const index = Math.min(3, Math.floor((event.positionSeconds / videoDuration) * 4));
       dropoffBuckets[index].count++;
     }
-    if (event.eventType === "purchase" && event.currency && event.value !== null) {
-      revenue[event.currency] = (revenue[event.currency] ?? 0) + Number(event.value);
+    if ((event.eventType === "purchase" || event.eventType === "refund") && event.currency && event.amountMinor !== null) {
+      const direction = event.eventType === "refund" ? -1 : 1;
+      revenue[event.currency] = (revenue[event.currency] ?? 0) + direction * event.amountMinor;
     }
   }
 
@@ -144,6 +145,9 @@ export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuratio
     uniqueViewers: allViewers.size,
     uniqueByStage: uniqueCounts,
     stageConversionRates,
+    checkoutToPurchaseRate: uniqueCounts.checkout_start
+      ? Math.round((uniqueCounts.purchase / uniqueCounts.checkout_start) * 10000) / 100
+      : 0,
     ctaPerformance: Array.from(ctas.values()).map(item => ({
       ctaKey: item.ctaKey,
       views: item.views,

@@ -97,7 +97,9 @@ test("funnel aggregation deduplicates viewers and computes CTA/dropoff metrics",
     event("4", "cta_view", "viewer-a", { ctaId: "cta-1", ctaKey: "cta_live_a" }),
     event("5", "cta_click", "viewer-a", { ctaId: "cta-1", ctaKey: "cta_live_a" }),
     event("6", "dropoff", "viewer-a", { positionSeconds: 55 }),
-    event("7", "purchase", "viewer-a", { value: "125.50", currency: "TWD" }),
+    event("7", "checkout_start", "viewer-a", { ctaId: "cta-1", ctaKey: "cta_live_a" }),
+    event("8", "purchase", "viewer-a", { amountMinor: 12550, currency: "TWD" }),
+    event("9", "refund", "viewer-a", { amountMinor: 500, currency: "TWD" }),
   ], 100);
 
   assert.equal(result.counts.landing_view, 2);
@@ -106,5 +108,8 @@ test("funnel aggregation deduplicates viewers and computes CTA/dropoff metrics",
   assert.equal(result.ctaPerformance[0].clickThroughRate, 100);
   assert.equal(result.ctaPerformance[0].ctaKey, "cta_live_a");
   assert.equal(result.dropoffBuckets[2].count, 1);
-  assert.equal(result.revenue.TWD, 125.5);
+  assert.equal(result.revenue.TWD, 12050);
+  assert.equal(result.checkoutToPurchaseRate, 100);
+  assert.equal(result.counts.purchase, 1);
+  assert.equal(result.counts.refund, 1);
 });

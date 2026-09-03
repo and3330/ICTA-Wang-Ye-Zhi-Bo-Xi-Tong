@@ -29,6 +29,20 @@
       "when": 1788164647248,
       "tag": "0003_cta_tracking_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788164647249,
+      "tag": "0004_webinar_offers_and_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788164647250,
+      "tag": "0005_pending_webinar_refunds",
+      "breakpoints": true
     }
   ]
 }

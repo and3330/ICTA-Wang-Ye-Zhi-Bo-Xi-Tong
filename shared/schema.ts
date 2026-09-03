@@ -225,12 +225,23 @@ export const insertScheduledMessageSchema = createInsertSchema(scheduledMessages
 export type InsertScheduledMessage = z.infer<typeof insertScheduledMessageSchema>;
 export type ScheduledMessage = typeof scheduledMessages.$inferSelect;
 
-// CTA Buttons (行動呼籲按鈕)
+export const webinarOffers = pgTable("webinar_offers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  stripeProductId: text("stripe_product_id").notNull(),
+  stripePriceId: text("stripe_price_id").notNull(),
+  checkoutMode: text("checkout_mode").notNull().default("payment"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  webinarIndex: index("webinar_offers_webinar_idx").on(table.webinarId),
+}));
 export const ctaButtons = pgTable("cta_buttons", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
   text: text("text").notNull(),
-  url: text("url").notNull(),
+  url: text("url"),
+  offerId: varchar("offer_id").references(() => webinarOffers.id, { onDelete: "restrict" }),
   startTime: integer("start_time").notNull(), // seconds when to show
   endTime: integer("end_time"), // seconds when to hide (null = until end)
   style: text("style").default("primary"), // primary, secondary, danger
@@ -245,9 +256,14 @@ export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value
     return false;
   }
 }, "CTA URL must be an absolute HTTP or HTTPS URL");
-export const insertCtaButtonSchema = createInsertSchema(ctaButtons).omit({ id: true, ctaKey: true }).extend({
-  url: safeCtaUrlSchema,
-});
+export const insertCtaButtonSchema = createInsertSchema(ctaButtons)
+  .omit({ id: true, ctaKey: true })
+  .extend({ url: safeCtaUrlSchema.nullish(), offerId: z.string().uuid().nullish() })
+  .superRefine((value, context) => {
+    if (!value.offerId && !value.url) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "CTA URL is required when no offer is linked" });
+    }
+  });
 export type InsertCtaButton = z.infer<typeof insertCtaButtonSchema>;
 export type CtaButton = typeof ctaButtons.$inferSelect;
 
@@ -419,6 +435,7 @@ export const webinarFunnelEventTypes = [
   "cta_click",
   "checkout_start",
   "purchase",
+  "refund",
 ] as const;
 export type WebinarFunnelEventType = typeof webinarFunnelEventTypes[number];
 
@@ -445,9 +462,11 @@ export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
   sessionId: varchar("session_id", { length: 128 }),
   ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "set null" }),
   ctaKey: varchar("cta_key", { length: 64 }),
+  offerId: varchar("offer_id").references(() => webinarOffers.id, { onDelete: "set null" }),
   visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
   positionSeconds: integer("position_seconds"),
   value: numeric("value", { precision: 14, scale: 2 }),
+  amountMinor: integer("amount_minor"),
   currency: varchar("currency", { length: 3 }),
   dedupeKey: varchar("dedupe_key", { length: 64 }).notNull(),
   metadata: jsonb("metadata").$type<WebinarFunnelMetadata>().notNull().default({}),
@@ -462,7 +481,11 @@ export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
 export type WebinarFunnelEvent = typeof webinarFunnelEvents.$inferSelect;
 export type InsertWebinarFunnelEvent = typeof webinarFunnelEvents.$inferInsert;
 
-// Email Reminders (Email 提醒排程)
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  processedAt: timestamp("processed_at").notNull().defaultNow(),
+});
 export const emailReminders = pgTable("email_reminders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
@@ -682,3 +705,47 @@ export const socialPosts = pgTable("social_posts", {
 export const insertSocialPostSchema = createInsertSchema(socialPosts).omit({ id: true, createdAt: true });
 export type InsertSocialPost = z.infer<typeof insertSocialPostSchema>;
 export type SocialPost = typeof socialPosts.$inferSelect;
+
+export type WebinarOffer = typeof webinarOffers.$inferSelect;
+
+export const webinarPayments = pgTable("webinar_payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "restrict" }),
+  offerId: varchar("offer_id").notNull().references(() => webinarOffers.id, { onDelete: "restrict" }),
+  ctaId: varchar("cta_id").notNull().references(() => ctaButtons.id, { onDelete: "restrict" }),
+  registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
+  visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
+  stripeCheckoutSessionId: text("stripe_checkout_session_id").notNull().unique(),
+  stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+  amountMinor: integer("amount_minor").notNull(),
+  refundedMinor: integer("refunded_minor").notNull().default(0),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  status: text("status").notNull().default("paid"),
+  purchasedAt: timestamp("purchased_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const currencyCodeSchema = z.string().trim().regex(/^[A-Za-z]{3}$/)
+  .transform(value => value.toUpperCase());
+
+export const createWebinarOfferSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  amountMinor: z.number().int().min(1).max(999999999),
+  currency: currencyCodeSchema,
+  checkoutMode: z.literal("payment").default("payment"),
+}).strict();
+
+export type CreateWebinarOffer = z.infer<typeof createWebinarOfferSchema>;
+
+export type WebinarPayment = typeof webinarPayments.$inferSelect;
+
+export const webinarPendingRefunds = pgTable("webinar_pending_refunds", {
+  stripeEventId: text("stripe_event_id").primaryKey(),
+  stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
+  cumulativeRefundMinor: integer("cumulative_refund_minor").notNull(),
+  currency: varchar("currency", { length: 3 }),
+  reconciledAt: timestamp("reconciled_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  pendingPaymentIndex: index("webinar_pending_refunds_payment_idx").on(table.stripePaymentIntentId),
+}));

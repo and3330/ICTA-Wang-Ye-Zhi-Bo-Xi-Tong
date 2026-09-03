@@ -16,8 +16,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Clock, Play } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { getWatchToken } from "@/lib/watch-access";
+import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 interface WebSocketMessage {
   type: string;
@@ -734,11 +734,19 @@ export default function WebinarRoom() {
                     key={cta.id}
                     variant={cta.style === "primary" ? "default" : cta.style === "danger" ? "destructive" : "secondary"}
                     className="w-full sm:w-auto animate-pulse"
-                    onClick={() => openTrackedExternalUrl(
-                      id,
-                      cta.url,
-                      liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
-                    )}
+                    onClick={() => {
+                      if (cta.offerId && id) {
+                        void openOfferCheckout(id, cta.id, { sessionId }).catch((error) => {
+                          toast({ title: error.message || "Unable to start checkout", variant: "destructive" });
+                        });
+                      } else if (cta.url) {
+                        openTrackedExternalUrl(
+                          id,
+                          cta.url,
+                          liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
+                        );
+                      }
+                    }}
                     data-testid={`cta-button-${cta.id}`}
                   >
                     <ExternalLink className="w-4 h-4 mr-2" />

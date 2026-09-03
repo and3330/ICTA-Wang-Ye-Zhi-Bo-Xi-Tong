@@ -9,8 +9,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { Heart, Send, ExternalLink, Loader2 } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { getWatchToken } from "@/lib/watch-access";
+import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -333,11 +333,14 @@ export default function EmbedWebinar() {
           <div key={cta.id} className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-10">
             <Button
               size="sm"
-              onClick={() => openTrackedExternalUrl(
-                id,
-                cta.url,
-                liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
-              )}
+              onClick={() => {
+                if (cta.offerId && id) void openOfferCheckout(id, cta.id, { sessionId });
+                else if (cta.url) openTrackedExternalUrl(
+                  id,
+                  cta.url,
+                  liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
+                );
+              }}
             >
                 <ExternalLink className="h-3 w-3 mr-1" />
                 {cta.text}
