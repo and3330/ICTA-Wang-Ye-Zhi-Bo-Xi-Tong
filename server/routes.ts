@@ -52,7 +52,7 @@ import {
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
-import { reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
+import { isPaidBillableSubscriptionInvoice, reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
 import { canViewWebinar } from "./webinarAccess";
 import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
@@ -1507,6 +1507,58 @@ export async function registerRoutes(
       res.json({ url: portalSession.url });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/stripe/end-trial", requireAdmin, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.session.userId!);
+      if (!user || !user.stripeCustomerId) {
+        return res.status(400).json({ message: "No Stripe customer found" });
+      }
+
+      const entitlement = await refreshSubscriptionEntitlement(user);
+      if (!entitlement.stripeSubscriptionId || entitlement.status !== "trialing") {
+        return res.status(409).json({ message: "SUBSCRIPTION_NOT_TRIALING", code: "SUBSCRIPTION_NOT_TRIALING" });
+      }
+
+      const stripe = await getUncachableStripeClient();
+      const subscription = await stripe.subscriptions.retrieve(entitlement.stripeSubscriptionId);
+      const customerId = typeof subscription.customer === "string"
+        ? subscription.customer
+        : subscription.customer.id;
+      if (customerId !== user.stripeCustomerId || subscription.status !== "trialing") {
+        return res.status(409).json({ message: "SUBSCRIPTION_NOT_TRIALING", code: "SUBSCRIPTION_NOT_TRIALING" });
+      }
+
+      const updated = await stripe.subscriptions.update(subscription.id, {
+        trial_end: "now",
+        expand: ["latest_invoice"],
+      }, {
+        idempotencyKey: `end-trial-now:${subscription.id}`,
+      });
+
+      const latestInvoice = typeof updated.latest_invoice === "string"
+        ? await stripe.invoices.retrieve(updated.latest_invoice)
+        : updated.latest_invoice;
+      const paid = Boolean(latestInvoice && isPaidBillableSubscriptionInvoice(latestInvoice));
+
+      if (paid) {
+        try {
+          await reconcileCurrentSubscriptionCredit(user.id, updated.id);
+        } catch (reconcileError) {
+          console.error("Early trial payment succeeded but AI credit reconciliation is pending:", reconcileError);
+        }
+      }
+
+      res.json({
+        status: updated.status,
+        paid,
+        paymentUrl: paid ? null : latestInvoice?.hosted_invoice_url || null,
+      });
+    } catch (error: any) {
+      console.error("Failed to end Stripe trial:", error);
+      res.status(502).json({ message: "無法完成提前付款，請確認付款方式後再試一次。" });
     }
   });
 

@@ -611,6 +611,36 @@ export default function AdminDashboard() {
     },
   });
 
+  const endTrialMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/stripe/end-trial", {});
+      return await res.json() as { status: string; paid: boolean; paymentUrl: string | null };
+    },
+    onSuccess: async (data) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] }),
+      ]);
+      if (!data.paid && data.paymentUrl) {
+        window.location.href = data.paymentUrl;
+        return;
+      }
+      toast({
+        title: data.paid ? "付款成功" : "付款處理中",
+        description: data.paid
+          ? "試用已提前結束，方案 AI 點數將自動入帳。"
+          : "Stripe 正在處理付款；只有付款成功後才會發放 AI 點數。",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "提前付款失敗",
+        description: error.message || "請確認付款方式後再試一次。",
+        variant: "destructive",
+      });
+    },
+  });
+
   const rechargeMutation = useMutation({
     mutationFn: async (body: { packageId?: string; amount?: number }) => {
       const res = await apiRequest("POST", "/api/stripe/recharge-checkout", body);
@@ -803,6 +833,21 @@ export default function AdminDashboard() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 admin-subscription-actions">
+                  {subscription.status === "trialing" && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        if (window.confirm("將立即結束 7 天試用並向目前付款方式收取本月方案費用。付款成功後會立即發放方案 AI 點數，是否繼續？")) {
+                          endTrialMutation.mutate();
+                        }
+                      }}
+                      disabled={endTrialMutation.isPending}
+                      data-testid="button-end-trial"
+                    >
+                      {endTrialMutation.isPending ? "付款處理中…" : "立即付款取得 AI 點數"}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     onClick={() => subscription.active && subscription.hasStripeCustomer ? portalMutation.mutate() : setIsUpgradeOpen(true)}
