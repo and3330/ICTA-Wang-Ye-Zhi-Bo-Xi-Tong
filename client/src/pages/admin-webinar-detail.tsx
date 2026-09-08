@@ -85,6 +85,7 @@ interface WebinarOfferView {
   amountMinor: number;
   currency: string;
   checkoutMode: "payment";
+  paymentProvider: "stripe" | "ecpay";
 }
 const funnelStageLabels: Record<string, string> = {
   landing_view: "落地頁",
@@ -1034,6 +1035,7 @@ export default function AdminWebinarDetail() {
   const [offerName, setOfferName] = useState("");
   const [offerAmountMinor, setOfferAmountMinor] = useState("");
   const [offerCurrency, setOfferCurrency] = useState("TWD");
+  const [offerProvider, setOfferProvider] = useState<"stripe" | "ecpay">("stripe");
   const [isPollOpen, setIsPollOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [funnelFrom, setFunnelFrom] = useState(() => {
@@ -1547,9 +1549,10 @@ export default function AdminWebinarDetail() {
         throw new Error("請輸入有效的商品名稱與最小貨幣單位金額");
       }
       const response = await apiRequest("POST", `/api/webinars/${id}/offers`, {
+        paymentProvider: offerProvider,
         name: offerName.trim(),
         amountMinor,
-        currency: offerCurrency,
+        currency: offerProvider === "ecpay" ? "TWD" : offerCurrency,
         checkoutMode: "payment",
       });
       return response.json();
@@ -1559,7 +1562,7 @@ export default function AdminWebinarDetail() {
       setIsOfferOpen(false);
       setOfferName("");
       setOfferAmountMinor("");
-      toast({ title: "優惠已建立於 Stripe" });
+      toast({ title: offerProvider === "ecpay" ? "綠界優惠已建立" : "優惠已建立於 Stripe" });
     },
     onError: (error: any) => toast({ title: error.message, variant: "destructive" }),
   });
@@ -2760,7 +2763,7 @@ export default function AdminWebinarDetail() {
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base">銷售優惠</CardTitle>
-                    <CardDescription>商品與價格會建立在 Stripe；此處只保存直播間關聯。</CardDescription>
+                    <CardDescription>可使用既有 Stripe 結帳，或由你的綠界商店直接收款。</CardDescription>
                   </div>
                   <Dialog open={isOfferOpen} onOpenChange={setIsOfferOpen}>
                     <DialogTrigger asChild>
@@ -2768,17 +2771,18 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>新增 Stripe 優惠</DialogTitle>
-                        <DialogDescription>金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。</DialogDescription>
+                        <DialogTitle>新增銷售優惠</DialogTitle>
+                        <DialogDescription>{offerProvider === "ecpay" ? "綠界金額為新台幣整數元，需先在管理首頁啟用綠界。" : "Stripe 金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。"}</DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4">
+                        <div className="space-y-2"><Label>付款服務</Label><Select value={offerProvider} onValueChange={(value: "stripe" | "ecpay") => { setOfferProvider(value); if (value === "ecpay") setOfferCurrency("TWD"); }}><SelectTrigger data-testid="select-offer-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="stripe">Stripe</SelectItem><SelectItem value="ecpay">綠界 ECPay（自有商店）</SelectItem></SelectContent></Select></div>
                         <div className="space-y-2"><Label>商品名稱</Label><Input value={offerName} onChange={(e) => setOfferName(e.target.value)} data-testid="input-offer-name" /></div>
                         <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-2"><Label>金額（最小貨幣單位）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
-                          <div className="space-y-2"><Label>幣別</Label><Input maxLength={3} value={offerCurrency} onChange={(e) => setOfferCurrency(e.target.value.toUpperCase())} data-testid="input-offer-currency" /></div>
+                          <div className="space-y-2"><Label>幣別</Label><Input maxLength={3} disabled={offerProvider === "ecpay"} value={offerCurrency} onChange={(e) => setOfferCurrency(e.target.value.toUpperCase())} data-testid="input-offer-currency" /></div>
                         </div>
                         <Button onClick={() => createOffer.mutate()} disabled={createOffer.isPending} data-testid="button-create-offer">
-                          {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立商品與一次性價格
+                          {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立優惠
                         </Button>
                       </div>
                     </DialogContent>
@@ -2787,7 +2791,7 @@ export default function AdminWebinarDetail() {
                 <CardContent>
                   {offers?.length ? <div className="space-y-2">{offers.map((offer) => (
                     <div key={offer.id} className="flex items-center justify-between rounded-md bg-muted p-3">
-                      <span className="font-medium">{offer.name}</span>
+                      <span className="font-medium">{offer.name} <Badge variant="secondary">{offer.paymentProvider === "ecpay" ? "綠界" : "Stripe"}</Badge></span>
                       <Badge variant="outline">{offer.currency} {offer.amountMinor.toLocaleString()} minor units</Badge>
                     </div>
                   ))}</div> : <p className="text-center text-muted-foreground py-5">尚未設定優惠</p>}
@@ -3322,7 +3326,7 @@ export default function AdminWebinarDetail() {
                               </Badge>
                             </div>
                             <p className="text-xs text-muted-foreground mt-1 truncate">
-                              {cta.offerId ? `Stripe 優惠：${offers?.find(offer => offer.id === cta.offerId)?.name || cta.offerId}` : cta.url}
+                              {cta.offerId ? `${offers?.find(offer => offer.id === cta.offerId)?.paymentProvider === "ecpay" ? "綠界" : "Stripe"} 優惠：${offers?.find(offer => offer.id === cta.offerId)?.name || cta.offerId}` : cta.url}
                             </p>
                           </div>
                           <Button

@@ -228,8 +228,11 @@ export type ScheduledMessage = typeof scheduledMessages.$inferSelect;
 export const webinarOffers = pgTable("webinar_offers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
-  stripeProductId: text("stripe_product_id").notNull(),
-  stripePriceId: text("stripe_price_id").notNull(),
+  paymentProvider: text("payment_provider").notNull().default("stripe"),
+  stripeProductId: text("stripe_product_id"),
+  stripePriceId: text("stripe_price_id"),
+  ecpayItemName: text("ecpay_item_name"),
+  ecpayAmountTwd: integer("ecpay_amount_twd"),
   checkoutMode: text("checkout_mode").notNull().default("payment"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -565,6 +568,20 @@ export const insertUserSchema = createInsertSchema(users).omit({ id: true, creat
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+export const ecpayConnections = pgTable("ecpay_connections", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
+  merchantId: varchar("merchant_id", { length: 10 }).notNull(),
+  environment: text("environment").notNull().default("stage"),
+  hashKeyEncrypted: text("hash_key_encrypted").notNull(),
+  hashIvEncrypted: text("hash_iv_encrypted").notNull(),
+  enabled: boolean("enabled").notNull().default(false),
+  verifiedAt: timestamp("verified_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export type EcpayConnection = typeof ecpayConnections.$inferSelect;
+
 // Authentication tokens contain hashes only. Raw tokens are never persisted.
 export const authTokens = pgTable("auth_tokens", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -743,13 +760,20 @@ export const webinarPayments = pgTable("webinar_payments", {
   ctaId: varchar("cta_id").notNull().references(() => ctaButtons.id, { onDelete: "restrict" }),
   registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
   visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
-  stripeCheckoutSessionId: text("stripe_checkout_session_id").notNull().unique(),
+  paymentProvider: text("payment_provider").notNull().default("stripe"),
+  stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
   stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+  providerOrderId: varchar("provider_order_id", { length: 64 }).unique(),
+  ecpayConnectionId: varchar("ecpay_connection_id").references(() => ecpayConnections.id, { onDelete: "restrict" }),
+  merchantIdSnapshot: varchar("merchant_id_snapshot", { length: 10 }),
+  providerEnvironment: text("provider_environment"),
+  providerHashKeySnapshot: text("provider_hash_key_snapshot"),
+  providerHashIvSnapshot: text("provider_hash_iv_snapshot"),
   amountMinor: integer("amount_minor").notNull(),
   refundedMinor: integer("refunded_minor").notNull().default(0),
   currency: varchar("currency", { length: 3 }).notNull(),
   status: text("status").notNull().default("paid"),
-  purchasedAt: timestamp("purchased_at").notNull().defaultNow(),
+  purchasedAt: timestamp("purchased_at"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -757,11 +781,16 @@ export const currencyCodeSchema = z.string().trim().regex(/^[A-Za-z]{3}$/)
   .transform(value => value.toUpperCase());
 
 export const createWebinarOfferSchema = z.object({
+  paymentProvider: z.enum(["stripe", "ecpay"]).default("stripe"),
   name: z.string().trim().min(1).max(200),
   amountMinor: z.number().int().min(1).max(999999999),
   currency: currencyCodeSchema,
   checkoutMode: z.literal("payment").default("payment"),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.paymentProvider === "ecpay" && value.currency !== "TWD") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["currency"], message: "ECPay offers must use TWD" });
+  }
+});
 
 export type CreateWebinarOffer = z.infer<typeof createWebinarOfferSchema>;
 

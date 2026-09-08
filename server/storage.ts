@@ -128,7 +128,7 @@ export interface IStorage {
   deleteScheduledMessage(id: string): Promise<void>;
   
   // CTA Buttons
-  createWebinarOffer(data: { webinarId: string; stripeProductId: string; stripePriceId: string; checkoutMode: "payment" }): Promise<WebinarOffer>;
+  createWebinarOffer(data: typeof webinarOffers.$inferInsert): Promise<WebinarOffer>;
   getWebinarOffers(webinarId: string): Promise<WebinarOffer[]>;
   getWebinarOffer(id: string): Promise<WebinarOffer | undefined>;
   deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined>;
@@ -873,7 +873,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // CTA Buttons
-  async createWebinarOffer(data: { webinarId: string; stripeProductId: string; stripePriceId: string; checkoutMode: "payment" }): Promise<WebinarOffer> {
+  async createWebinarOffer(data: typeof webinarOffers.$inferInsert): Promise<WebinarOffer> {
     const result = await db.insert(webinarOffers).values(data).returning();
     return result[0];
   }

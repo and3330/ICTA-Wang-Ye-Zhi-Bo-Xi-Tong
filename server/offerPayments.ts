@@ -17,7 +17,7 @@ const metadataId = (value: string | undefined) =>
 
 export function assertOfferAttribution(input: {
   webinarId: string;
-  offer: { webinarId: string; stripePriceId: string };
+  offer: { webinarId: string; stripePriceId: string | null };
   cta: { webinarId: string; offerId: string | null };
   offerId: string;
   stripePriceId: string | undefined;
@@ -163,6 +163,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
         amountMinor: amountMinor!,
         currency,
         status: "paid",
+         purchasedAt: new Date(),
       }).onConflictDoNothing({ target: webinarPayments.stripeCheckoutSessionId })
         .returning({ id: webinarPayments.id });
       if (inserted[0]) {
@@ -204,6 +205,47 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
       const payment = await lockPayment(tx, paymentIntentId);
       if (payment) await reconcilePendingRefunds(tx, paymentIntentId, payment);
     }
+    return { duplicate: false };
+  });
+}
+
+/** Applies a previously authenticated ECPay server callback idempotently. */
+export async function processVerifiedEcpayPayment(providerOrderId: string): Promise<{ duplicate: boolean }> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT 1 FROM webinar_payments WHERE provider_order_id = ${providerOrderId} FOR UPDATE`);
+    const [payment] = await tx.select().from(webinarPayments)
+      .where(and(eq(webinarPayments.providerOrderId, providerOrderId), eq(webinarPayments.paymentProvider, "ecpay")));
+    if (!payment) throw new Error("ECPay order not found");
+    if (payment.status === "paid") return { duplicate: true };
+    if (payment.status !== "pending") throw new Error("ECPay order is not payable");
+    const [cta] = await tx.select().from(ctaButtons).where(and(
+      eq(ctaButtons.id, payment.ctaId),
+      eq(ctaButtons.webinarId, payment.webinarId),
+      eq(ctaButtons.offerId, payment.offerId),
+    ));
+    if (!cta) throw new Error("Invalid persisted ECPay attribution");
+    const changed = await tx.update(webinarPayments).set({
+      status: "paid",
+      purchasedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(eq(webinarPayments.id, payment.id), eq(webinarPayments.status, "pending")))
+      .returning({ id: webinarPayments.id });
+    if (!changed[0]) return { duplicate: true };
+    await tx.insert(webinarFunnelEvents).values({
+      webinarId: payment.webinarId,
+      eventType: "purchase",
+      registrationId: payment.registrationId,
+      ctaId: payment.ctaId,
+      ctaKey: cta.ctaKey,
+      offerId: payment.offerId,
+      visitorTokenHash: payment.visitorTokenHash,
+      amountMinor: payment.amountMinor,
+      currency: payment.currency,
+      dedupeKey: sha256(`ecpay:${providerOrderId}`),
+      metadata: { serverRecorded: true },
+    }).onConflictDoNothing({
+      target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
+    });
     return { duplicate: false };
   });
 }

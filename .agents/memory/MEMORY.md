@@ -10,3 +10,4 @@
 - [Subscription price grandfathering](subscription-price-grandfathering.md) — Starter is $39 for new subscriptions; preserve old subscribed prices, entitlements, credits, and accurate dashboard display.
 - [Annual billing credits](annual-billing-credits.md) — annual plans cost 85% of 12 monthly payments, while paid AI gifts still release monthly and stop after a full refund.
 - [AI credit and trial rules](ai-credit-expiry.md) — free/trial users receive no AI points; paid monthly gifts expire after one year; purchases remain permanent.
+- [Member-owned ECPay checkout](member-owned-ecpay.md) — webinar商品優先用會員自有綠界帳號直收；平台代收是管理員核准的後續模式，SaaS訂閱仍由Stripe負責。

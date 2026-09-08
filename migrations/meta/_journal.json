@@ -64,6 +64,13 @@
       "when": 1788402000000,
       "tag": "0008_subscription_trial_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788403000000,
+      "tag": "0009_member_ecpay_aio",
+      "breakpoints": true
     }
   ]
 }

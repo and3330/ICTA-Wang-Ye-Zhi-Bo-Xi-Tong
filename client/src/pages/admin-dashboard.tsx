@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -368,6 +369,8 @@ export default function AdminDashboard() {
   const [supportCategory, setSupportCategory] = useState<"feedback" | "question" | "bug">("feedback");
   const [supportSubject, setSupportSubject] = useState("");
   const [supportMessage, setSupportMessage] = useState("");
+  const [isEcpayOpen, setIsEcpayOpen] = useState(false);
+  const [ecpayForm, setEcpayForm] = useState({ merchantId: "", hashKey: "", hashIv: "", environment: "stage" as "stage" | "production", enabled: false });
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
 
@@ -428,6 +431,51 @@ export default function AdminDashboard() {
     packages: { id: string; twd: number; points: number }[];
   }>({
     queryKey: ["/api/ai-points"],
+  });
+
+  const { data: ecpayConnection } = useQuery<{
+    merchantId: string; environment: "stage" | "production"; enabled: boolean;
+    verified: boolean; hasCredentials: boolean; updatedAt: string;
+  } | null>({ queryKey: ["/api/admin/ecpay-connection"] });
+
+  useEffect(() => {
+    if (ecpayConnection) setEcpayForm({
+      merchantId: ecpayConnection.merchantId,
+      hashKey: "",
+      hashIv: "",
+      environment: ecpayConnection.environment,
+      enabled: ecpayConnection.enabled,
+    });
+  }, [ecpayConnection]);
+
+  const saveEcpayMutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        ...ecpayForm,
+        hashKey: ecpayForm.hashKey || undefined,
+        hashIv: ecpayForm.hashIv || undefined,
+      };
+      const response = await apiRequest("PUT", "/api/admin/ecpay-connection", body);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/ecpay-connection"] });
+      setEcpayForm((value) => ({ ...value, hashKey: "", hashIv: "" }));
+      toast({ title: "綠界設定已安全儲存", description: "憑證已加密；測試環境結帳才是實際驗證。" });
+    },
+    onError: (error: any) => toast({ title: "儲存失敗", description: error.message, variant: "destructive" }),
+  });
+  const testEcpayMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/admin/ecpay-connection/test", {})).json(),
+    onSuccess: (result: any) => toast({ title: "設定完整", description: result.message }),
+    onError: (error: any) => toast({ title: "設定檢查失敗", description: error.message, variant: "destructive" }),
+  });
+  const disableEcpayMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/admin/ecpay-connection/disable", {})).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/ecpay-connection"] });
+      toast({ title: "綠界收款已停用" });
+    },
   });
 
   const form = useForm<WebinarForm>({
@@ -785,6 +833,9 @@ export default function AdminDashboard() {
               <MessageCircle className="h-4 w-4 mr-1" />
               {lang === "zh-CN" ? "客服" : "客服支援"}
             </Button>
+            <Button variant="ghost" size="sm" onClick={() => setIsEcpayOpen(true)} data-testid="button-open-ecpay">
+              綠界金流
+            </Button>
             <Button variant="ghost" onClick={handleLogout} data-testid="button-logout">
               <LogOut className="h-4 w-4 mr-2" />
               {s.logout}
@@ -794,6 +845,31 @@ export default function AdminDashboard() {
       </header>
 
       <main className="container mx-auto px-4 py-8 space-y-6">
+        <Dialog open={isEcpayOpen} onOpenChange={setIsEcpayOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>綠界 ECPay 自有商店</DialogTitle>
+              <DialogDescription>串接你自己的綠界 AIO 帳號，直播優惠款項會直接進入你的商店。</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+                HashKey 與 HashIV 會以 AES-256-GCM 加密保存，API 不會再次顯示明文。綠界沒有安全的「只驗證憑證、不建立訂單」介面，因此此處僅標示設定完整；請先選測試環境完成一次結帳。
+              </div>
+              <div className="space-y-2"><Label>MerchantID</Label><Input value={ecpayForm.merchantId} onChange={(e) => setEcpayForm((v) => ({ ...v, merchantId: e.target.value }))} autoComplete="off" data-testid="input-ecpay-merchant-id" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2"><Label>HashKey</Label><Input type="password" value={ecpayForm.hashKey} placeholder={ecpayConnection?.hasCredentials ? "已安全儲存（留空不變）" : "請輸入 HashKey"} onChange={(e) => setEcpayForm((v) => ({ ...v, hashKey: e.target.value }))} autoComplete="new-password" /></div>
+                <div className="space-y-2"><Label>HashIV</Label><Input type="password" value={ecpayForm.hashIv} placeholder={ecpayConnection?.hasCredentials ? "已安全儲存（留空不變）" : "請輸入 HashIV"} onChange={(e) => setEcpayForm((v) => ({ ...v, hashIv: e.target.value }))} autoComplete="new-password" /></div>
+              </div>
+              <div className="space-y-2"><Label>環境</Label><Select value={ecpayForm.environment} onValueChange={(environment: "stage" | "production") => setEcpayForm((v) => ({ ...v, environment }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="stage">測試環境 Stage（建議先用）</SelectItem><SelectItem value="production">正式環境 Production</SelectItem></SelectContent></Select></div>
+              <div className="flex items-center justify-between rounded-md border p-3"><div><Label>啟用綠界收款</Label><p className="text-xs text-muted-foreground">停用後既有 Stripe 優惠不受影響。</p></div><Switch checked={ecpayForm.enabled} onCheckedChange={(enabled) => setEcpayForm((v) => ({ ...v, enabled }))} /></div>
+              <div className="flex flex-wrap justify-end gap-2">
+                {ecpayConnection?.enabled && <Button variant="destructive" onClick={() => disableEcpayMutation.mutate()} disabled={disableEcpayMutation.isPending}>停用</Button>}
+                {ecpayConnection && <Button variant="outline" onClick={() => testEcpayMutation.mutate()} disabled={testEcpayMutation.isPending}>檢查設定</Button>}
+                <Button onClick={() => saveEcpayMutation.mutate()} disabled={saveEcpayMutation.isPending}>{saveEcpayMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}儲存</Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
         <Dialog open={isSupportOpen} onOpenChange={setIsSupportOpen}>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>

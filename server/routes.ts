@@ -36,9 +36,11 @@ import {
   safeCtaUrlSchema,
   createWebinarOfferSchema,
   users,
+  ecpayConnections,
+  webinarPayments,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
@@ -69,6 +71,16 @@ import {
   safeRequestMetadata,
   sha256,
 } from "./funnelAnalytics";
+import {
+  createCheckMacValue,
+  decryptEcpayCredential,
+  ecpayActionUrl,
+  encryptEcpayCredential,
+  merchantTradeNo,
+  merchantTradeDate,
+  validateEcpayCallback,
+} from "./ecpay";
+import { processVerifiedEcpayPayment } from "./offerPayments";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -1954,17 +1966,149 @@ export async function registerRoutes(
     }
   });
 
-  // Stripe owns offer product/price details; this endpoint returns a joined
-  // view without duplicating catalog values into application tables.
+  const ecpayConnectionInput = z.object({
+    merchantId: z.string().trim().regex(/^\d{7,10}$/, "MerchantID 必須為 7 至 10 位數字"),
+    environment: z.enum(["stage", "production"]),
+    hashKey: z.string().trim().min(8).max(64).regex(/^[\x21-\x7E]+$/).optional(),
+    hashIv: z.string().trim().min(8).max(64).regex(/^[\x21-\x7E]+$/).optional(),
+    enabled: z.boolean().default(false),
+  }).strict();
+  const publicConnection = (connection: typeof ecpayConnections.$inferSelect | undefined) => connection ? ({
+    merchantId: connection.merchantId,
+    environment: connection.environment,
+    enabled: connection.enabled,
+    verified: !!connection.verifiedAt,
+    verifiedAt: connection.verifiedAt,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
+    hasCredentials: !!connection.hashKeyEncrypted && !!connection.hashIvEncrypted,
+  }) : null;
+
+  app.get("/api/admin/ecpay-connection", requireAdmin, async (req, res) => {
+    const [connection] = await db.select().from(ecpayConnections)
+      .where(eq(ecpayConnections.userId, req.session.userId!)).limit(1);
+    res.json(publicConnection(connection));
+  });
+
+  app.put("/api/admin/ecpay-connection", requireAdmin, async (req, res) => {
+    try {
+      const input = ecpayConnectionInput.parse(req.body);
+      const [existing] = await db.select().from(ecpayConnections)
+        .where(eq(ecpayConnections.userId, req.session.userId!)).limit(1);
+      const usableHashKey = input.hashKey && !/^\*+$/.test(input.hashKey) ? input.hashKey : undefined;
+      const usableHashIv = input.hashIv && !/^\*+$/.test(input.hashIv) ? input.hashIv : undefined;
+      if (!existing && (!usableHashKey || !usableHashIv)) {
+        return res.status(400).json({ message: "首次設定必須提供 HashKey 與 HashIV" });
+      }
+      const values = {
+        merchantId: input.merchantId,
+        environment: input.environment,
+        enabled: input.enabled,
+        hashKeyEncrypted: usableHashKey ? encryptEcpayCredential(usableHashKey) : existing!.hashKeyEncrypted,
+        hashIvEncrypted: usableHashIv ? encryptEcpayCredential(usableHashIv) : existing!.hashIvEncrypted,
+        // Credentials/environment changes invalidate any historical verification.
+        verifiedAt: usableHashKey || usableHashIv || existing?.merchantId !== input.merchantId || existing?.environment !== input.environment
+          ? null : existing?.verifiedAt,
+        updatedAt: new Date(),
+      } as const;
+      const [saved] = existing
+        ? await db.update(ecpayConnections).set(values).where(and(
+            eq(ecpayConnections.id, existing.id),
+            eq(ecpayConnections.userId, req.session.userId!),
+          )).returning()
+        : await db.insert(ecpayConnections).values({ userId: req.session.userId!, ...values }).returning();
+      res.json(publicConnection(saved));
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/admin/ecpay-connection/test", requireAdmin, async (req, res) => {
+    const [connection] = await db.select().from(ecpayConnections)
+      .where(eq(ecpayConnections.userId, req.session.userId!)).limit(1);
+    if (!connection) return res.status(404).json({ message: "尚未設定 ECPay" });
+    try {
+      decryptEcpayCredential(connection.hashKeyEncrypted);
+      decryptEcpayCredential(connection.hashIvEncrypted);
+      // AIO has no safe credential-only probe. Do not claim provider verification.
+      res.json({ configured: true, verified: false, message: "憑證已安全儲存；請以測試環境結帳完成實際驗證。" });
+    } catch {
+      res.status(409).json({ message: "無法解密已儲存的憑證，請重新輸入。" });
+    }
+  });
+
+  app.post("/api/admin/ecpay-connection/disable", requireAdmin, async (req, res) => {
+    const [saved] = await db.update(ecpayConnections).set({ enabled: false, updatedAt: new Date() })
+      .where(eq(ecpayConnections.userId, req.session.userId!)).returning();
+    res.json(publicConnection(saved));
+  });
+
+  app.delete("/api/admin/ecpay-connection", requireAdmin, async (req, res) => {
+    const [connection] = await db.select({ id: ecpayConnections.id }).from(ecpayConnections)
+      .where(eq(ecpayConnections.userId, req.session.userId!)).limit(1);
+    if (connection) {
+      const [referenced] = await db.select({ id: webinarPayments.id }).from(webinarPayments)
+        .where(eq(webinarPayments.ecpayConnectionId, connection.id)).limit(1);
+      if (referenced) {
+        return res.status(409).json({ message: "此設定已有交易稽核紀錄，為確保回呼與帳務完整只能停用，無法刪除。" });
+      }
+    }
+    await db.delete(ecpayConnections).where(eq(ecpayConnections.userId, req.session.userId!));
+    res.json({ success: true });
+  });
+
+  app.post("/api/ecpay/return", async (req, res) => {
+    const fail = () => res.type("text/plain").status(400).send("0|Error");
+    try {
+      if (!req.is("application/x-www-form-urlencoded")) return fail();
+      const fields = Object.fromEntries(Object.entries(req.body || {}).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+      const tradeNo = fields.MerchantTradeNo;
+      const merchantId = fields.MerchantID;
+      if (!tradeNo || !merchantId) return fail();
+      const [payment] = await db.select().from(webinarPayments).where(and(
+        eq(webinarPayments.paymentProvider, "ecpay"),
+        eq(webinarPayments.providerOrderId, tradeNo),
+      )).limit(1);
+      if (
+        !payment ||
+        !payment.ecpayConnectionId ||
+        payment.merchantIdSnapshot !== merchantId
+      ) return fail();
+      const [connection] = await db.select({ id: ecpayConnections.id }).from(ecpayConnections)
+        .where(eq(ecpayConnections.id, payment.ecpayConnectionId)).limit(1);
+      if (!connection || !payment.providerHashKeySnapshot || !payment.providerHashIvSnapshot) return fail();
+      const valid = validateEcpayCallback(
+        fields,
+        {
+          merchantId: payment.merchantIdSnapshot!,
+          merchantTradeNo: payment.providerOrderId!,
+          amount: payment.amountMinor,
+          hashKey: decryptEcpayCredential(payment.providerHashKeySnapshot),
+          hashIv: decryptEcpayCredential(payment.providerHashIvSnapshot),
+        },
+      );
+      if (!valid) return fail();
+      await processVerifiedEcpayPayment(tradeNo);
+      return res.type("text/plain").send("1|OK");
+    } catch {
+      return fail();
+    }
+  });
+
+  // Stripe owns Stripe offer product/price details. ECPay details are immutable
+  // server-side offer snapshots so checkout never trusts browser amounts.
   app.get("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
     try {
       const webinarId = req.params.id as string;
       const offers = await storage.getWebinarOffers(webinarId);
-      const stripe = await getUncachableStripeClient();
       const result = await Promise.all(offers.map(async (offer) => {
+        if (offer.paymentProvider === "ecpay") {
+          return { ...offer, name: offer.ecpayItemName, amountMinor: offer.ecpayAmountTwd, currency: "TWD" };
+        }
+        const stripe = await getUncachableStripeClient();
         const [product, price] = await Promise.all([
-          stripe.products.retrieve(offer.stripeProductId),
-          stripe.prices.retrieve(offer.stripePriceId),
+          stripe.products.retrieve(offer.stripeProductId!),
+          stripe.prices.retrieve(offer.stripePriceId!),
         ]);
         return {
           ...offer,
@@ -1983,6 +2127,21 @@ export async function registerRoutes(
     try {
       const webinarId = req.params.id as string;
       const input = createWebinarOfferSchema.parse(req.body);
+      if (input.paymentProvider === "ecpay") {
+        const [connection] = await db.select().from(ecpayConnections).where(and(
+          eq(ecpayConnections.userId, req.session.userId!),
+          eq(ecpayConnections.enabled, true),
+        )).limit(1);
+        if (!connection) return res.status(409).json({ message: "請先設定並啟用 ECPay 金流" });
+        const offer = await storage.createWebinarOffer({
+          webinarId,
+          paymentProvider: "ecpay",
+          ecpayItemName: input.name,
+          ecpayAmountTwd: input.amountMinor,
+          checkoutMode: "payment",
+        });
+        return res.json({ ...offer, name: offer.ecpayItemName, amountMinor: offer.ecpayAmountTwd, currency: "TWD" });
+      }
       const stripe = await getUncachableStripeClient();
       const product = await stripe.products.create({
         name: input.name,
@@ -1996,6 +2155,7 @@ export async function registerRoutes(
       });
       const offer = await storage.createWebinarOffer({
         webinarId,
+        paymentProvider: "stripe",
         stripeProductId: product.id,
         stripePriceId: price.id,
         checkoutMode: input.checkoutMode,
@@ -2035,13 +2195,67 @@ export async function registerRoutes(
         }
       }
 
+      const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : "";
+      if (offer.paymentProvider === "ecpay") {
+        const amountTwd = offer.ecpayAmountTwd;
+        if (!webinar.userId || !offer.ecpayItemName || !Number.isInteger(amountTwd) || amountTwd === null || amountTwd <= 0) {
+          return res.status(409).json({ message: "ECPay offer is unavailable" });
+        }
+        const [connection] = await db.select().from(ecpayConnections).where(and(
+          eq(ecpayConnections.userId, webinar.userId),
+          eq(ecpayConnections.enabled, true),
+        )).limit(1);
+        if (!connection) return res.status(409).json({ message: "ECPay checkout is unavailable" });
+        const tradeNo = merchantTradeNo();
+        const [payment] = await db.insert(webinarPayments).values({
+          webinarId,
+          offerId: offer.id,
+          ctaId: cta.id,
+          registrationId: input.registrationId,
+          visitorTokenHash: visitorTokenHash || null,
+          paymentProvider: "ecpay",
+          providerOrderId: tradeNo,
+          ecpayConnectionId: connection.id,
+          merchantIdSnapshot: connection.merchantId,
+          providerEnvironment: connection.environment,
+          providerHashKeySnapshot: connection.hashKeyEncrypted,
+          providerHashIvSnapshot: connection.hashIvEncrypted,
+          amountMinor: amountTwd,
+          currency: "TWD",
+          status: "pending",
+        }).returning();
+        const fields: Record<string, string | number> = {
+          MerchantID: connection.merchantId,
+          MerchantTradeNo: tradeNo,
+          MerchantTradeDate: merchantTradeDate(),
+          PaymentType: "aio",
+          TotalAmount: payment.amountMinor,
+          TradeDesc: "Webinar offer",
+          ItemName: offer.ecpayItemName.replace(/[<>&#]/g, " ").slice(0, 200),
+          ReturnURL: `${appBaseUrl()}/api/ecpay/return`,
+          ChoosePayment: "ALL",
+          EncryptType: "1",
+        };
+        fields.CheckMacValue = createCheckMacValue(
+          fields,
+          decryptEcpayCredential(connection.hashKeyEncrypted),
+          decryptEcpayCredential(connection.hashIvEncrypted),
+        );
+        await storage.createFunnelEvent({
+          webinarId, eventType: "checkout_start", registrationId: input.registrationId,
+          sessionId: input.sessionId, ctaId: cta.id, ctaKey: cta.ctaKey, offerId: offer.id,
+          visitorTokenHash: visitorTokenHash || undefined, dedupeKey: sha256(`checkout:ecpay:${tradeNo}`),
+          metadata: { serverRecorded: true },
+        });
+        return res.json({ provider: "ecpay", action: ecpayActionUrl(connection.environment as "stage" | "production"), fields });
+      }
+
       const stripe = await getUncachableStripeClient();
-      const price = await stripe.prices.retrieve(offer.stripePriceId);
+      const price = await stripe.prices.retrieve(offer.stripePriceId!);
       const productId = typeof price.product === "string" ? price.product : price.product.id;
       if (!price.active || price.type !== "one_time" || price.unit_amount === null || productId !== offer.stripeProductId) {
         return res.status(409).json({ message: "Offer price is unavailable" });
       }
-      const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : "";
       const metadata = {
         kind: "webinar_offer",
         webinarId,
@@ -2054,7 +2268,7 @@ export async function registerRoutes(
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
-        line_items: [{ price: offer.stripePriceId, quantity: 1 }],
+        line_items: [{ price: offer.stripePriceId!, quantity: 1 }],
         metadata,
         payment_intent_data: { metadata },
         client_reference_id: input.registrationId || undefined,
@@ -2073,7 +2287,7 @@ export async function registerRoutes(
         dedupeKey: sha256(`checkout:${session.id}`),
         metadata: { serverRecorded: true },
       });
-      res.json({ url: session.url });
+      res.json({ provider: "stripe", url: session.url });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }

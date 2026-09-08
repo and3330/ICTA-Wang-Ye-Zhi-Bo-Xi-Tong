@@ -171,7 +171,30 @@ export async function openOfferCheckout(
       }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => null))?.message || "Unable to start checkout");
-    const result = await response.json() as { url?: string };
+    const result = await response.json() as {
+      provider?: "stripe" | "ecpay";
+      url?: string;
+      action?: string;
+      fields?: Record<string, string | number>;
+    };
+    if (result.provider === "ecpay") {
+      if (!result.action || !result.fields) throw new Error("ECPay checkout data is unavailable");
+      const target = popup || window;
+      const doc = target.document;
+      const form = doc.createElement("form");
+      form.method = "POST";
+      form.action = result.action;
+      for (const [name, value] of Object.entries(result.fields)) {
+        const input = doc.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = String(value);
+        form.appendChild(input);
+      }
+      doc.body.appendChild(form);
+      form.submit();
+      return;
+    }
     if (!result.url) throw new Error("Stripe Checkout URL is unavailable");
     if (popup) popup.location.href = result.url;
     else window.location.href = result.url;
