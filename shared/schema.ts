@@ -239,6 +239,26 @@ export const webinarOffers = pgTable("webinar_offers", {
 }, (table) => ({
   webinarIndex: index("webinar_offers_webinar_idx").on(table.webinarId),
 }));
+
+export const offerSalesPages = pgTable("offer_sales_pages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  offerId: varchar("offer_id").notNull().references(() => webinarOffers.id, { onDelete: "restrict" }),
+  slug: varchar("slug", { length: 80 }).notNull().unique(),
+  title: varchar("title", { length: 200 }).notNull(),
+  status: text("status").$type<"draft" | "published">().notNull().default("draft"),
+  orderedBlocks: jsonb("ordered_blocks").$type<unknown[]>().notNull().default([]),
+  version: integer("version").notNull().default(1),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  offerUnique: uniqueIndex("offer_sales_pages_offer_uniq").on(table.offerId),
+  webinarIndex: index("offer_sales_pages_webinar_idx").on(table.webinarId),
+}));
+export type OfferSalesPage = typeof offerSalesPages.$inferSelect;
+export type InsertOfferSalesPage = typeof offerSalesPages.$inferInsert;
+
 export const ctaButtons = pgTable("cta_buttons", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
@@ -757,7 +777,7 @@ export const webinarPayments = pgTable("webinar_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "restrict" }),
   offerId: varchar("offer_id").notNull().references(() => webinarOffers.id, { onDelete: "restrict" }),
-  ctaId: varchar("cta_id").notNull().references(() => ctaButtons.id, { onDelete: "restrict" }),
+  ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "restrict" }),
   registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
   visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
   paymentProvider: text("payment_provider").notNull().default("stripe"),

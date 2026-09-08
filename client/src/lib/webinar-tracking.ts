@@ -203,3 +203,33 @@ export async function openOfferCheckout(
     throw error;
   }
 }
+
+/** Checkout a sales-page offer directly. The server remains authoritative for price and provider. */
+export async function openSalesPageOfferCheckout(webinarId: string, pageId: string, offerId: string): Promise<void> {
+  const popup = window.open("", "_blank");
+  try {
+    const response = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/offer-checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ pageId, offerId, visitorToken: getWebinarVisitorToken(webinarId) }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.message || "Unable to start checkout");
+    const result = await response.json() as { provider?: "stripe" | "ecpay"; url?: string; action?: string; fields?: Record<string, string | number> };
+    if (result.provider === "ecpay") {
+      if (!result.action || !result.fields) throw new Error("ECPay checkout data is unavailable");
+      const target = popup || window;
+      const form = target.document.createElement("form");
+      form.method = "POST"; form.action = result.action;
+      Object.entries(result.fields).forEach(([name, value]) => {
+        const input = target.document.createElement("input");
+        input.type = "hidden"; input.name = name; input.value = String(value); form.appendChild(input);
+      });
+      target.document.body.appendChild(form); form.submit(); return;
+    }
+    if (!result.url) throw new Error("Stripe Checkout URL is unavailable");
+    if (popup) popup.location.href = result.url; else window.location.href = result.url;
+  } catch (error) {
+    popup?.close(); throw error;
+  }
+}

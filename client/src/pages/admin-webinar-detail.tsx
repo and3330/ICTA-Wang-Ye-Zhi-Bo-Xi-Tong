@@ -24,7 +24,7 @@ import {
   Lightbulb, HelpCircle, Star, TrendingUp, Settings, Code,
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
-  Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database
+  Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -86,6 +86,12 @@ interface WebinarOfferView {
   currency: string;
   checkoutMode: "payment";
   paymentProvider: "stripe" | "ecpay";
+}
+interface SalesPageView {
+  id: string;
+  offerId: string;
+  slug: string;
+  status: "draft" | "published";
 }
 const funnelStageLabels: Record<string, string> = {
   landing_view: "落地頁",
@@ -164,6 +170,18 @@ const t: Record<LangAdmin, Record<string, string>> = {
     tabAnalytics: "分析",
     tabSettings: "設定",
     tabAi: "AI 助教",
+    aiTrainingTitle: "AI 訓練區",
+    aiTrainingDesc: "確認 AI 助教已具備足夠知識，並快速完成上線前的必要設定。",
+    aiTrainingReady: "已準備好啟用",
+    aiTrainingNeedsDocs: "需要加入知識內容",
+    aiTrainingActive: "AI 回覆已啟用",
+    aiTrainingInactive: "AI 回覆尚未啟用",
+    aiTrainingDocs: "知識文檔",
+    aiTrainingCharacters: "訓練字數",
+    aiTrainingPoints: "可用 AI 點數",
+    aiTrainingUnlimited: "無限",
+    aiTrainingAddKnowledge: "管理知識文檔",
+    aiTrainingConfigure: "調整回覆設定",
     aiTitle: "AI 自動回覆設定",
     aiDesc: "啟用後，當觀眾在聊天室提問，AI 會根據你提供的資料，以老師名義自動回覆該觀眾。",
     aiEnabledLabel: "啟用 AI 自動回覆",
@@ -594,6 +612,18 @@ const t: Record<LangAdmin, Record<string, string>> = {
     tabAnalytics: "分析",
     tabSettings: "设置",
     tabAi: "AI 助教",
+    aiTrainingTitle: "AI 训练区",
+    aiTrainingDesc: "确认 AI 助教已具备足够知识，并快速完成上线前的必要设置。",
+    aiTrainingReady: "已准备好启用",
+    aiTrainingNeedsDocs: "需要加入知识内容",
+    aiTrainingActive: "AI 回复已启用",
+    aiTrainingInactive: "AI 回复尚未启用",
+    aiTrainingDocs: "知识文档",
+    aiTrainingCharacters: "训练字数",
+    aiTrainingPoints: "可用 AI 点数",
+    aiTrainingUnlimited: "无限",
+    aiTrainingAddKnowledge: "管理知识文档",
+    aiTrainingConfigure: "调整回复设置",
     aiTitle: "AI 自动回复设置",
     aiDesc: "启用后，当观众在聊天室提问，AI 会根据你提供的资料，以老师名义自动回复该观众。",
     aiEnabledLabel: "启用 AI 自动回复",
@@ -1187,6 +1217,10 @@ export default function AdminWebinarDetail() {
     queryKey: ["/api/webinars", id, "offers"],
     enabled: !!id,
   });
+  const { data: salesPages } = useQuery<SalesPageView[]>({
+    queryKey: ["/api/webinars", id, "sales-pages"],
+    enabled: !!id,
+  });
 
   const { data: polls } = useQuery<Poll[]>({
     queryKey: ["/api/webinars", id, "polls"],
@@ -1256,6 +1290,8 @@ export default function AdminWebinarDetail() {
   const { data: aiPointBalance, isLoading: isAiPointBalanceLoading } = useQuery<{ points: number; unlimited: boolean }>({
     queryKey: ["/api/ai-points"],
   });
+  const aiKnowledgeCharacters = (documents || []).reduce((total, document) => total + document.content.length, 0);
+  const aiTrainingReady = (documents?.length || 0) > 0;
 
   // AI 生成相關狀態
   const [aiGenGoal, setAiGenGoal] = useState("");
@@ -1565,6 +1601,25 @@ export default function AdminWebinarDetail() {
       toast({ title: offerProvider === "ecpay" ? "綠界優惠已建立" : "優惠已建立於 Stripe" });
     },
     onError: (error: any) => toast({ title: error.message, variant: "destructive" }),
+  });
+  const createSalesPage = useMutation({
+    mutationFn: async (offer: WebinarOfferView) => {
+      const safe = offer.name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
+      const slug = `${safe.slice(0, 58)}-${Date.now().toString(36)}`;
+      const blocks = [
+        { id: "hero_main", enabled: true, type: "hero", headline: `讓「${offer.name}」帶你走得更遠`, subheadline: "一套專為實作設計的方法，現在就開始建立你的下一步。", ctaLabel: "立即加入" },
+        { id: "benefits_main", enabled: true, type: "benefits", headline: "這次，你會帶走什麼", items: ["清楚的行動框架", "可以立即套用的方法", "更篤定的下一步"] },
+        { id: "offer_main", enabled: true, type: "offer", headline: "現在加入完整方案", priceLabel: "", buttonLabel: "立即取得課程" },
+        { id: "faq_main", enabled: true, type: "faq", items: [{ question: "我適合參加嗎？", answer: "如果你正在尋找更清楚、更能落地的方法，這個方案很適合你。" }] },
+      ];
+      const response = await apiRequest("POST", `/api/webinars/${id}/sales-pages`, { offerId: offer.id, slug, title: `${offer.name} 銷售頁`, blocks });
+      return response.json() as Promise<SalesPageView>;
+    },
+    onSuccess: (page) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "sales-pages"] });
+      setLocation(`/admin/webinar/${id}/sales/${page.id}`);
+    },
+    onError: (error: any) => toast({ title: "建立銷售頁失敗", description: error.message, variant: "destructive" }),
   });
 
   const createPoll = useMutation({
@@ -2789,12 +2844,21 @@ export default function AdminWebinarDetail() {
                   </Dialog>
                 </CardHeader>
                 <CardContent>
-                  {offers?.length ? <div className="space-y-2">{offers.map((offer) => (
-                    <div key={offer.id} className="flex items-center justify-between rounded-md bg-muted p-3">
+                  {offers?.length ? <div className="space-y-2">{offers.map((offer) => {
+                    const salesPage = salesPages?.find((page) => page.offerId === offer.id);
+                    const publicUrl = salesPage ? `${window.location.origin}/sales/${salesPage.slug}` : "";
+                    return <div key={offer.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted p-3">
                       <span className="font-medium">{offer.name} <Badge variant="secondary">{offer.paymentProvider === "ecpay" ? "綠界" : "Stripe"}</Badge></span>
-                      <Badge variant="outline">{offer.currency} {offer.amountMinor.toLocaleString()} minor units</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{offer.currency} {offer.amountMinor.toLocaleString()} minor units</Badge>
+                        {salesPage ? <>
+                          <Badge variant={salesPage.status === "published" ? "default" : "secondary"}>{salesPage.status === "published" ? "已發布" : "草稿"}</Badge>
+                          <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/sales/${salesPage.id}`)}><Edit className="h-3.5 w-3.5 mr-1" />編輯銷售頁</Button>
+                          {salesPage.status === "published" && <><Button size="icon" variant="ghost" onClick={() => navigator.clipboard.writeText(publicUrl)} title="複製公開網址"><Copy className="h-4 w-4" /></Button><Button size="icon" variant="ghost" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")} title="開啟公開頁"><ExternalLink className="h-4 w-4" /></Button></>}
+                        </> : <Button size="sm" variant="outline" onClick={() => createSalesPage.mutate(offer)} disabled={createSalesPage.isPending}><FileText className="h-3.5 w-3.5 mr-1" />建立銷售頁</Button>}
+                      </div>
                     </div>
-                  ))}</div> : <p className="text-center text-muted-foreground py-5">尚未設定優惠</p>}
+                  })}</div> : <p className="text-center text-muted-foreground py-5">尚未設定優惠</p>}
                 </CardContent>
               </Card>
               <Card>
@@ -5395,12 +5459,78 @@ export default function AdminWebinarDetail() {
           <TabsContent value="ai">
             <div className="admin-workspace-grid">
               {contextualRail([
+                { id: "training", label: s.aiTrainingTitle, icon: BrainCircuit },
                 { id: "assistant", label: s.aiTitle, icon: Bot },
                 { id: "knowledge", label: s.aiDocsTitle, icon: FileText },
                 { id: "generated-content", label: "AI 生成內容", icon: Sparkles },
               ], aiSection, setAiSection)}
               <div className="space-y-6">
-              <Card>
+              <Card id="webinar-section-training" className="overflow-hidden border-primary/20">
+                <CardHeader className="border-b bg-gradient-to-r from-primary/10 via-primary/5 to-transparent">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="space-y-1">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+                          <BrainCircuit className="h-5 w-5" />
+                        </span>
+                        {s.aiTrainingTitle}
+                      </CardTitle>
+                      <CardDescription>{s.aiTrainingDesc}</CardDescription>
+                    </div>
+                    <Badge variant={aiTrainingReady ? "default" : "secondary"} className="w-fit gap-1.5">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {aiTrainingReady ? s.aiTrainingReady : s.aiTrainingNeedsDocs}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-5 pt-6">
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border bg-muted/35 p-4">
+                      <p className="text-xs font-medium text-muted-foreground">{s.aiTrainingDocs}</p>
+                      <p className="mt-2 text-2xl font-semibold tabular-nums">{documents?.length || 0}</p>
+                    </div>
+                    <div className="rounded-xl border bg-muted/35 p-4">
+                      <p className="text-xs font-medium text-muted-foreground">{s.aiTrainingCharacters}</p>
+                      <p className="mt-2 text-2xl font-semibold tabular-nums">{aiKnowledgeCharacters.toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-xl border bg-muted/35 p-4">
+                      <p className="text-xs font-medium text-muted-foreground">{s.aiTrainingPoints}</p>
+                      <p className="mt-2 text-2xl font-semibold tabular-nums">
+                        {isAiPointBalanceLoading ? "—" : aiPointBalance?.unlimited ? s.aiTrainingUnlimited : (aiPointBalance?.points || 0).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-3">
+                      <span className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full", aiEnabled ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground")}>
+                        <Bot className="h-4 w-4" />
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium">{aiEnabled ? s.aiTrainingActive : s.aiTrainingInactive}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {aiTrainingReady ? `${documents?.length || 0} ${s.aiTrainingDocs} · ${aiKnowledgeCharacters.toLocaleString()} ${s.aiTrainingCharacters}` : s.aiDocsDesc}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => {
+                        setAiSection("knowledge");
+                        document.getElementById("webinar-section-knowledge")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}>
+                        <FileText className="mr-1.5 h-4 w-4" />{s.aiTrainingAddKnowledge}
+                      </Button>
+                      <Button type="button" size="sm" onClick={() => {
+                        setAiSection("assistant");
+                        document.getElementById("webinar-section-assistant")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}>
+                        <Settings className="mr-1.5 h-4 w-4" />{s.aiTrainingConfigure}
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card id="webinar-section-assistant" className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <Bot className="h-5 w-5" />
@@ -5459,7 +5589,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
 
-                <Card>
+                <Card id="webinar-section-knowledge" className="scroll-mt-24">
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base flex items-center gap-2">

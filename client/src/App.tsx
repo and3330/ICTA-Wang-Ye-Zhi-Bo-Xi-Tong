@@ -18,6 +18,8 @@ import Legal from "@/pages/legal";
 import VerifyEmail from "@/pages/verify-email";
 import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
+import SalesPage from "@/pages/sales-page";
+import SalesPageEditor from "@/pages/sales-page-editor";
 
 function Router() {
   return (
@@ -33,12 +35,14 @@ function Router() {
        <Route path="/verify-email" component={VerifyEmail} />
        <Route path="/forgot-password" component={ForgotPassword} />
        <Route path="/reset-password" component={ResetPassword} />
+       <Route path="/sales/:slug" component={SalesPage} />
       
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />
       <Route path="/admin/dashboard" component={AdminDashboard} />
       <Route path="/admin/webinar/:id" component={AdminWebinarDetail} />
       <Route path="/admin/webinar/:id/control" component={AdminControl} />
+       <Route path="/admin/webinar/:id/sales/:pageId" component={SalesPageEditor} />
       <Route path="/super-admin" component={SuperAdmin} />
       
       {/* Landing Page */}

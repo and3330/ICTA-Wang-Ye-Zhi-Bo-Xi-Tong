@@ -29,6 +29,7 @@ import {
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
+  offerSalesPages, type OfferSalesPage, type InsertOfferSalesPage,
 } from "@shared/schema";
 
 export function allocateAiCreditLots(
@@ -132,6 +133,28 @@ export interface IStorage {
   getWebinarOffers(webinarId: string): Promise<WebinarOffer[]>;
   getWebinarOffer(id: string): Promise<WebinarOffer | undefined>;
   deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined>;
+  listOfferSalesPages(webinarId: string): Promise<OfferSalesPage[]>;
+  getOfferSalesPage(webinarId: string, pageId: string): Promise<OfferSalesPage | undefined>;
+  createOfferSalesPage(data: InsertOfferSalesPage): Promise<OfferSalesPage>;
+  updateOfferSalesPage(
+    webinarId: string,
+    pageId: string,
+    version: number,
+    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks">>,
+  ): Promise<OfferSalesPage | undefined>;
+  setOfferSalesPageStatus(
+    webinarId: string,
+    pageId: string,
+    version: number,
+    status: "draft" | "published",
+  ): Promise<OfferSalesPage | undefined>;
+  deleteOfferSalesPage(webinarId: string, pageId: string): Promise<boolean>;
+  getPublicOfferSalesPage(slug: string): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined>;
+  getPublishedSalesPageCheckoutContext(
+    webinarId: string,
+    offerId: string,
+    salesPageId: string,
+  ): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined>;
   createCtaButton(data: InsertCtaButton): Promise<CtaButton>;
   getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]>;
   deleteCtaButton(id: string): Promise<void>;
@@ -757,6 +780,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(questions).where(eq(questions.webinarId, id));
     await db.delete(webinarFunnelEvents).where(eq(webinarFunnelEvents.webinarId, id));
     await db.delete(webinarPayments).where(eq(webinarPayments.webinarId, id));
+    await db.delete(offerSalesPages).where(eq(offerSalesPages.webinarId, id));
     // Now delete registrations
     await db.delete(registrations).where(eq(registrations.webinarId, id));
     // Delete other direct children
@@ -892,6 +916,119 @@ export class DatabaseStorage implements IStorage {
   async deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined> {
     const result = await db.update(webinarOffers).set({ active: false })
       .where(and(eq(webinarOffers.id, id), eq(webinarOffers.webinarId, webinarId))).returning();
+    return result[0];
+  }
+
+  async listOfferSalesPages(webinarId: string): Promise<OfferSalesPage[]> {
+    return db.select().from(offerSalesPages)
+      .where(eq(offerSalesPages.webinarId, webinarId))
+      .orderBy(desc(offerSalesPages.updatedAt));
+  }
+
+  async getOfferSalesPage(webinarId: string, pageId: string): Promise<OfferSalesPage | undefined> {
+    const result = await db.select().from(offerSalesPages).where(and(
+      eq(offerSalesPages.id, pageId),
+      eq(offerSalesPages.webinarId, webinarId),
+    )).limit(1);
+    return result[0];
+  }
+
+  async createOfferSalesPage(data: InsertOfferSalesPage): Promise<OfferSalesPage> {
+    const result = await db.insert(offerSalesPages).values(data).returning();
+    return result[0];
+  }
+
+  async updateOfferSalesPage(
+    webinarId: string,
+    pageId: string,
+    version: number,
+    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks">>,
+  ): Promise<OfferSalesPage | undefined> {
+    const result = await db.update(offerSalesPages).set({
+      ...data,
+      version: sql`${offerSalesPages.version} + 1`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(offerSalesPages.id, pageId),
+      eq(offerSalesPages.webinarId, webinarId),
+      eq(offerSalesPages.version, version),
+    )).returning();
+    return result[0];
+  }
+
+  async setOfferSalesPageStatus(
+    webinarId: string,
+    pageId: string,
+    version: number,
+    status: "draft" | "published",
+  ): Promise<OfferSalesPage | undefined> {
+    const publicationGuard = status === "published"
+      ? sql`EXISTS (
+          SELECT 1 FROM ${webinars}
+          JOIN ${webinarOffers} ON ${webinarOffers.webinarId} = ${webinars.id}
+          WHERE ${webinars.id} = ${offerSalesPages.webinarId}
+            AND ${webinarOffers.id} = ${offerSalesPages.offerId}
+            AND ${webinars.publishStatus} = 'published'
+            AND ${webinarOffers.active} = true
+        )`
+      : sql`true`;
+    const result = await db.update(offerSalesPages).set({
+      status,
+      publishedAt: status === "published" ? new Date() : null,
+      version: sql`${offerSalesPages.version} + 1`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(offerSalesPages.id, pageId),
+      eq(offerSalesPages.webinarId, webinarId),
+      eq(offerSalesPages.version, version),
+      publicationGuard,
+    )).returning();
+    return result[0];
+  }
+
+  async deleteOfferSalesPage(webinarId: string, pageId: string): Promise<boolean> {
+    const result = await db.delete(offerSalesPages).where(and(
+      eq(offerSalesPages.id, pageId),
+      eq(offerSalesPages.webinarId, webinarId),
+    )).returning({ id: offerSalesPages.id });
+    return result.length > 0;
+  }
+
+  async getPublicOfferSalesPage(slug: string): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined> {
+    const result = await db.select({ page: offerSalesPages, offer: webinarOffers })
+      .from(offerSalesPages)
+      .innerJoin(webinars, eq(offerSalesPages.webinarId, webinars.id))
+      .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+      .where(and(
+        eq(offerSalesPages.slug, slug),
+        eq(offerSalesPages.status, "published"),
+        eq(webinars.publishStatus, "published"),
+        eq(webinarOffers.active, true),
+      )).limit(1);
+    return result[0];
+  }
+
+  async getPublishedSalesPageCheckoutContext(
+    webinarId: string,
+    offerId: string,
+    salesPageId: string,
+  ): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined> {
+    // One query binds all public identifiers and availability state immediately
+    // before checkout work. Direct sales-page checkout must not inherit CTA trust.
+    const result = await db.select({ page: offerSalesPages, offer: webinarOffers })
+      .from(offerSalesPages)
+      .innerJoin(webinars, eq(offerSalesPages.webinarId, webinars.id))
+      .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+      .where(and(
+        eq(offerSalesPages.id, salesPageId),
+        eq(offerSalesPages.webinarId, webinarId),
+        eq(offerSalesPages.offerId, offerId),
+        eq(offerSalesPages.status, "published"),
+        eq(webinars.publishStatus, "published"),
+        eq(webinarOffers.id, offerId),
+        eq(webinarOffers.webinarId, webinarId),
+        eq(webinarOffers.active, true),
+      )).limit(1);
     return result[0];
   }
 

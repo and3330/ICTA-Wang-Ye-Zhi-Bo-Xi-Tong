@@ -18,15 +18,17 @@ const metadataId = (value: string | undefined) =>
 export function assertOfferAttribution(input: {
   webinarId: string;
   offer: { webinarId: string; stripePriceId: string | null };
-  cta: { webinarId: string; offerId: string | null };
+  cta?: { webinarId: string; offerId: string | null };
   offerId: string;
   stripePriceId: string | undefined;
   registrationWebinarId?: string;
 }) {
   if (
     input.offer.webinarId !== input.webinarId ||
-    input.cta.webinarId !== input.webinarId ||
-    input.cta.offerId !== input.offerId ||
+    (input.cta !== undefined && (
+      input.cta.webinarId !== input.webinarId ||
+      input.cta.offerId !== input.offerId
+    )) ||
     input.offer.stripePriceId !== input.stripePriceId ||
     (input.registrationWebinarId !== undefined && input.registrationWebinarId !== input.webinarId)
   ) {
@@ -128,16 +130,18 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
       const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
       const amountMinor = session.amount_total;
       const currency = session.currency?.toUpperCase();
-      if (!webinarId || !offerId || !ctaId || !paymentIntentId || !Number.isInteger(amountMinor) || amountMinor! < 0 || !currency) {
+      if (!webinarId || !offerId || !paymentIntentId || !Number.isInteger(amountMinor) || amountMinor! < 0 || !currency) {
         throw new Error("Invalid webinar offer checkout attribution");
       }
       await lockPaymentIntent(tx, paymentIntentId);
 
       const [offer] = await tx.select().from(webinarOffers)
         .where(and(eq(webinarOffers.id, offerId), eq(webinarOffers.webinarId, webinarId)));
-      const [cta] = await tx.select().from(ctaButtons)
-        .where(and(eq(ctaButtons.id, ctaId), eq(ctaButtons.webinarId, webinarId), eq(ctaButtons.offerId, offerId)));
-      if (!offer || !cta) throw new Error("Cross-webinar or mismatched offer attribution");
+      const [cta] = ctaId
+        ? await tx.select().from(ctaButtons)
+          .where(and(eq(ctaButtons.id, ctaId), eq(ctaButtons.webinarId, webinarId), eq(ctaButtons.offerId, offerId)))
+        : [undefined];
+      if (!offer || (ctaId && !cta)) throw new Error("Cross-webinar or mismatched offer attribution");
       let registrationWebinarId: string | undefined;
       if (registrationId) {
         const [registration] = await tx.select({ id: registrations.id, webinarId: registrations.webinarId }).from(registrations)
@@ -172,7 +176,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
           eventType: "purchase",
           registrationId,
           ctaId,
-          ctaKey: cta.ctaKey,
+          ctaKey: cta?.ctaKey,
           offerId,
           visitorTokenHash,
           amountMinor: amountMinor!,
@@ -218,12 +222,18 @@ export async function processVerifiedEcpayPayment(providerOrderId: string): Prom
     if (!payment) throw new Error("ECPay order not found");
     if (payment.status === "paid") return { duplicate: true };
     if (payment.status !== "pending") throw new Error("ECPay order is not payable");
-    const [cta] = await tx.select().from(ctaButtons).where(and(
-      eq(ctaButtons.id, payment.ctaId),
-      eq(ctaButtons.webinarId, payment.webinarId),
-      eq(ctaButtons.offerId, payment.offerId),
+    const [cta] = payment.ctaId
+      ? await tx.select().from(ctaButtons).where(and(
+        eq(ctaButtons.id, payment.ctaId),
+        eq(ctaButtons.webinarId, payment.webinarId),
+        eq(ctaButtons.offerId, payment.offerId),
+      ))
+      : [undefined];
+    const [offer] = await tx.select({ id: webinarOffers.id }).from(webinarOffers).where(and(
+      eq(webinarOffers.id, payment.offerId),
+      eq(webinarOffers.webinarId, payment.webinarId),
     ));
-    if (!cta) throw new Error("Invalid persisted ECPay attribution");
+    if (!offer || (payment.ctaId && !cta)) throw new Error("Invalid persisted ECPay attribution");
     const changed = await tx.update(webinarPayments).set({
       status: "paid",
       purchasedAt: new Date(),
@@ -236,7 +246,7 @@ export async function processVerifiedEcpayPayment(providerOrderId: string): Prom
       eventType: "purchase",
       registrationId: payment.registrationId,
       ctaId: payment.ctaId,
-      ctaKey: cta.ctaKey,
+      ctaKey: cta?.ctaKey,
       offerId: payment.offerId,
       visitorTokenHash: payment.visitorTokenHash,
       amountMinor: payment.amountMinor,

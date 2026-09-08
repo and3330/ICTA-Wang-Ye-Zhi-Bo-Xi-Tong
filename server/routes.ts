@@ -81,6 +81,14 @@ import {
   validateEcpayCallback,
 } from "./ecpay";
 import { processVerifiedEcpayPayment } from "./offerPayments";
+import {
+  createSalesPageSchema,
+  salesPageCanPublish,
+  salesPageSlugSchema,
+  salesPageVersionSchema,
+  updateSalesPageSchema,
+  validatePublishableBlocks,
+} from "./salesPages";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -90,6 +98,7 @@ const POINTS_PER_TWD = 1; // 1 元 = 1 點
 const RECHARGE_MIN_TWD = 100; // 自訂金額最低消費
 const RECHARGE_PACKAGES: Record<string, number> = { p300: 300, p1000: 1000, p3000: 3000 }; // 固定儲值包（元）
 const OUT_OF_POINTS_DEFAULT = "感謝您的提問！目前線上客服忙線中，主辦團隊將盡快親自回覆您 🙏";
+export const OFFER_CHECKOUT_RATE_LIMIT = { namespace: "offer-checkout", limit: 20, windowSeconds: 60 } as const;
 
 declare module "express-session" {
   interface SessionData {
@@ -190,7 +199,7 @@ export async function registerRoutes(
     }
     const isPublicGetRoute =
       (req.method === 'GET' || req.method === 'OPTIONS') &&
-      (req.path.match(/^\/api\/webinars\/[^/]+$/) || req.path === '/api/webinars') &&
+      (req.path.match(/^\/api\/webinars\/[^/]+$/) || /^\/api\/sales-pages\/[^/]+$/.test(req.path) || req.path === '/api/webinars') &&
       !req.path.includes('/stats/');
     const isPublicPostRoute =
       (req.method === 'POST' || req.method === 'OPTIONS') &&
@@ -211,6 +220,7 @@ export async function registerRoutes(
   const aiLimit = postgresRateLimit({ namespace: "ai", limit: 30, windowSeconds: 60 });
   const stripeLimit = postgresRateLimit({ namespace: "stripe-mutation", limit: 15, windowSeconds: 60 });
   const publicRegistrationLimit = postgresRateLimit({ namespace: "public-registration", limit: 10, windowSeconds: 60 });
+  const offerCheckoutLimit = postgresRateLimit(OFFER_CHECKOUT_RATE_LIMIT);
   const supportLimit = postgresRateLimit({ namespace: "support", limit: 5, windowSeconds: 10 * 60 });
   const funnelEventLimit = postgresRateLimit({ namespace: "funnel-event", limit: 120, windowSeconds: 60 });
   app.use("/api/admin/login", authLimit);
@@ -224,6 +234,8 @@ export async function registerRoutes(
   app.use("/api/support", supportLimit);
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && /^\/[^/]+\/funnel-events$/.test(req.path) ? funnelEventLimit(req, res, next) : next());
+  app.use("/api/webinars", (req, res, next) =>
+    req.method === "POST" && /^\/[^/]+\/offer-checkout$/.test(req.path) ? offerCheckoutLimit(req, res, next) : next());
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
@@ -2097,6 +2109,149 @@ export async function registerRoutes(
 
   // Stripe owns Stripe offer product/price details. ECPay details are immutable
   // server-side offer snapshots so checkout never trusts browser amounts.
+  app.get("/api/webinars/:id/sales-pages", requireWebinarOwner, async (req, res) => {
+    res.json(await storage.listOfferSalesPages(req.params.id as string));
+  });
+
+  app.get("/api/webinars/:id/sales-pages/:pageId", requireWebinarOwner, async (req, res) => {
+    const page = await storage.getOfferSalesPage(req.params.id as string, req.params.pageId as string);
+    if (!page) return res.status(404).json({ message: "Sales page not found" });
+    res.json(page);
+  });
+
+  app.post("/api/webinars/:id/sales-pages", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const input = createSalesPageSchema.parse(req.body);
+      const offer = await storage.getWebinarOffer(input.offerId);
+      if (!offer || !offer.active || offer.webinarId !== webinarId) {
+        return res.status(400).json({ message: "Offer must be active and belong to this webinar" });
+      }
+      const page = await storage.createOfferSalesPage({
+        webinarId,
+        offerId: offer.id,
+        slug: input.slug,
+        title: input.title,
+        orderedBlocks: input.blocks,
+      });
+      res.status(201).json(page);
+    } catch (error: any) {
+      if (error?.code === "23505") {
+        return res.status(409).json({ message: "Slug or offer already has a sales page" });
+      }
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.patch("/api/webinars/:id/sales-pages/:pageId", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const pageId = req.params.pageId as string;
+      const input = updateSalesPageSchema.parse(req.body);
+      const existing = await storage.getOfferSalesPage(webinarId, pageId);
+      if (!existing) return res.status(404).json({ message: "Sales page not found" });
+      if (existing.status === "published" && input.blocks !== undefined) {
+        validatePublishableBlocks(input.blocks);
+      }
+      const page = await storage.updateOfferSalesPage(webinarId, pageId, input.version, {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.slug !== undefined ? { slug: input.slug } : {}),
+        ...(input.blocks !== undefined ? { orderedBlocks: input.blocks } : {}),
+      });
+      if (!page) return res.status(409).json({ message: "Version conflict", code: "VERSION_CONFLICT" });
+      res.json(page);
+    } catch (error: any) {
+      if (error?.code === "23505") return res.status(409).json({ message: "Slug is already in use" });
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/webinars/:id/sales-pages/:pageId/publish", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const pageId = req.params.pageId as string;
+      const input = salesPageVersionSchema.parse(req.body);
+      const [page, webinar] = await Promise.all([
+        storage.getOfferSalesPage(webinarId, pageId),
+        storage.getWebinar(webinarId),
+      ]);
+      if (!page || !webinar) return res.status(404).json({ message: "Sales page not found" });
+      const offer = await storage.getWebinarOffer(page.offerId);
+      if (!offer || offer.webinarId !== webinarId) {
+        return res.status(409).json({ message: "Linked offer is unavailable" });
+      }
+      const allowed = salesPageCanPublish(webinar, offer, page.orderedBlocks);
+      if (!allowed.ok) return res.status(409).json({ message: allowed.message });
+      const published = await storage.setOfferSalesPageStatus(webinarId, pageId, input.version, "published");
+      if (!published) return res.status(409).json({ message: "Version conflict or publication requirements changed", code: "VERSION_CONFLICT" });
+      res.json(published);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/webinars/:id/sales-pages/:pageId/unpublish", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const pageId = req.params.pageId as string;
+      const input = salesPageVersionSchema.parse(req.body);
+      const existing = await storage.getOfferSalesPage(webinarId, pageId);
+      if (!existing) return res.status(404).json({ message: "Sales page not found" });
+      const page = await storage.setOfferSalesPageStatus(webinarId, pageId, input.version, "draft");
+      if (!page) return res.status(409).json({ message: "Version conflict", code: "VERSION_CONFLICT" });
+      res.json(page);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.delete("/api/webinars/:id/sales-pages/:pageId", requireWebinarOwner, async (req, res) => {
+    const deleted = await storage.deleteOfferSalesPage(req.params.id as string, req.params.pageId as string);
+    if (!deleted) return res.status(404).json({ message: "Sales page not found" });
+    res.json({ success: true });
+  });
+
+  app.get("/api/sales-pages/:slug", async (req, res) => {
+    try {
+      const slug = salesPageSlugSchema.parse(req.params.slug);
+      const result = await storage.getPublicOfferSalesPage(slug);
+      if (!result) return res.status(404).json({ message: "Sales page not found" });
+      const { page, offer } = result;
+      let display: { name: string; amountMinor: number | null; currency: string };
+      if (offer.paymentProvider === "ecpay") {
+        display = { name: offer.ecpayItemName!, amountMinor: offer.ecpayAmountTwd, currency: "TWD" };
+      } else {
+        const stripe = await getUncachableStripeClient();
+        const [product, price] = await Promise.all([
+          stripe.products.retrieve(offer.stripeProductId!),
+          stripe.prices.retrieve(offer.stripePriceId!),
+        ]);
+        display = {
+          name: "deleted" in product ? "Unavailable product" : product.name,
+          amountMinor: price.unit_amount,
+          currency: price.currency.toUpperCase(),
+        };
+      }
+      res.json({
+        id: page.id,
+        webinarId: page.webinarId,
+        offerId: page.offerId,
+        slug: page.slug,
+        title: page.title,
+        blocks: page.orderedBlocks,
+        publishedAt: page.publishedAt,
+        offer: {
+          paymentProvider: offer.paymentProvider,
+          checkoutMode: offer.checkoutMode,
+          ...display,
+        },
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ message: error.message });
+      res.status(502).json({ message: "Offer display is temporarily unavailable" });
+    }
+  });
+
   app.get("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
     try {
       const webinarId = req.params.id as string;
@@ -2167,26 +2322,49 @@ export async function registerRoutes(
   });
 
   const offerCheckoutSchema = z.object({
-    ctaId: z.string().uuid(),
+    ctaId: z.string().uuid().optional(),
+    offerId: z.string().uuid().optional(),
+    salesPageId: z.string().uuid().optional(),
     registrationId: z.string().uuid().optional(),
     visitorToken: analyticsVisitorTokenSchema.optional(),
     sessionId: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
-  }).strict().refine(value => value.registrationId || value.visitorToken || value.sessionId, {
-    message: "A visitor identity is required",
-  });
+  }).strict()
+    .refine(value =>
+      (Boolean(value.ctaId) && !value.offerId && !value.salesPageId) ||
+      (!value.ctaId && Boolean(value.offerId) && Boolean(value.salesPageId)),
+    {
+      message: "CTA checkout requires only ctaId; direct sales-page checkout requires offerId and salesPageId",
+    })
+    .refine(value => value.registrationId || value.visitorToken || value.sessionId, {
+      message: "A visitor identity is required",
+    });
 
   app.post("/api/webinars/:id/offer-checkout", async (req, res) => {
     try {
       const webinarId = req.params.id;
+      const input = offerCheckoutSchema.parse(req.body);
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar || webinar.publishStatus !== "published") return res.status(404).json({ message: "Webinar not found" });
-      const input = offerCheckoutSchema.parse(req.body);
-      const ctas = await storage.getCtaButtonsByWebinar(webinarId);
-      const cta = ctas.find(item => item.id === input.ctaId);
-      if (!cta?.offerId) return res.status(400).json({ message: "CTA is not linked to an offer" });
-      const offer = await storage.getWebinarOffer(cta.offerId);
-      if (!offer || !offer.active || offer.webinarId !== webinarId) {
-        return res.status(400).json({ message: "Offer is unavailable" });
+      let cta: Awaited<ReturnType<typeof storage.getCtaButtonsByWebinar>>[number] | undefined;
+      let offer: Awaited<ReturnType<typeof storage.getWebinarOffer>> | undefined;
+      if (input.ctaId) {
+        // A persisted CTA is the established webinar-room attribution flow.
+        cta = (await storage.getCtaButtonsByWebinar(webinarId)).find(item => item.id === input.ctaId);
+        if (!cta?.offerId) return res.status(400).json({ message: "CTA is not linked to an offer" });
+        offer = await storage.getWebinarOffer(cta.offerId);
+        if (!offer || !offer.active || offer.webinarId !== webinarId) {
+          return res.status(400).json({ message: "Offer is unavailable" });
+        }
+      } else {
+        // Public page IDs are untrusted: bind page, offer, and current publication
+        // state in one storage query immediately before any provider/DB work.
+        const context = await storage.getPublishedSalesPageCheckoutContext(
+          webinarId,
+          input.offerId!,
+          input.salesPageId!,
+        );
+        if (!context) return res.status(404).json({ message: "Sales page or offer is unavailable" });
+        offer = context.offer;
       }
       if (input.registrationId) {
         const registration = await storage.getRegistration(input.registrationId);
@@ -2210,7 +2388,7 @@ export async function registerRoutes(
         const [payment] = await db.insert(webinarPayments).values({
           webinarId,
           offerId: offer.id,
-          ctaId: cta.id,
+          ctaId: cta?.id,
           registrationId: input.registrationId,
           visitorTokenHash: visitorTokenHash || null,
           paymentProvider: "ecpay",
@@ -2243,7 +2421,7 @@ export async function registerRoutes(
         );
         await storage.createFunnelEvent({
           webinarId, eventType: "checkout_start", registrationId: input.registrationId,
-          sessionId: input.sessionId, ctaId: cta.id, ctaKey: cta.ctaKey, offerId: offer.id,
+          sessionId: input.sessionId, ctaId: cta?.id, ctaKey: cta?.ctaKey, offerId: offer.id,
           visitorTokenHash: visitorTokenHash || undefined, dedupeKey: sha256(`checkout:ecpay:${tradeNo}`),
           metadata: { serverRecorded: true },
         });
@@ -2260,7 +2438,7 @@ export async function registerRoutes(
         kind: "webinar_offer",
         webinarId,
         offerId: offer.id,
-        ctaId: cta.id,
+        ...(cta ? { ctaId: cta.id } : {}),
         stripePriceId: offer.stripePriceId,
         ...(input.registrationId ? { registrationId: input.registrationId } : {}),
         ...(visitorTokenHash ? { visitorTokenHash } : {}),
@@ -2280,8 +2458,8 @@ export async function registerRoutes(
         eventType: "checkout_start",
         registrationId: input.registrationId,
         sessionId: input.sessionId,
-        ctaId: cta.id,
-        ctaKey: cta.ctaKey,
+        ctaId: cta?.id,
+        ctaKey: cta?.ctaKey,
         offerId: offer.id,
         visitorTokenHash: visitorTokenHash || undefined,
         dedupeKey: sha256(`checkout:${session.id}`),
