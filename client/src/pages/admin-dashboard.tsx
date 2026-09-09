@@ -350,6 +350,8 @@ export default function AdminDashboard() {
   const [isAiWizardOpen, setIsAiWizardOpen] = useState(false);
   const [isProductPagePromptOpen, setIsProductPagePromptOpen] = useState(false);
   const [createdWizardWebinar, setCreatedWizardWebinar] = useState<Webinar | null>(null);
+  const [isUploadingCreateCover, setIsUploadingCreateCover] = useState(false);
+  const createCoverFileRef = useRef<HTMLInputElement>(null);
   const [isUploadingWizardBanner, setIsUploadingWizardBanner] = useState(false);
   const wizardBannerFileRef = useRef<HTMLInputElement>(null);
   const [aiWizardStep, setAiWizardStep] = useState(1);
@@ -505,6 +507,7 @@ export default function AdminDashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars"] });
       setIsCreateOpen(false);
       form.reset();
+      if (createCoverFileRef.current) createCoverFileRef.current.value = "";
       toast({
         title: s.toastCreateSuccess,
         description: s.toastCreateSuccessDesc,
@@ -1564,10 +1567,65 @@ export default function AdminDashboard() {
                     name="coverImage"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>{s.labelCoverImage}</FormLabel>
-                        <FormControl>
-                          <Input placeholder="https://..." {...field} data-testid="input-cover-image" />
-                        </FormControl>
+                        <FormLabel>報名頁 Banner（選填）</FormLabel>
+                        {field.value ? (
+                          <div className="relative overflow-hidden rounded-lg border bg-muted">
+                            <img src={field.value} alt="Banner 預覽" className="h-40 w-full object-cover" />
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="absolute right-2 top-2"
+                              onClick={() => field.onChange("")}
+                              aria-label="移除 Banner"
+                              data-testid="button-remove-create-cover"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="w-full rounded-lg border-2 border-dashed p-5 text-center transition-colors hover:border-primary hover:bg-primary/5"
+                            onClick={() => createCoverFileRef.current?.click()}
+                            disabled={isUploadingCreateCover}
+                            data-testid="button-upload-create-cover"
+                          >
+                            {isUploadingCreateCover ? <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /> : <ImagePlus className="mx-auto h-7 w-7 text-muted-foreground" />}
+                            <span className="mt-2 block text-sm font-medium">{isUploadingCreateCover ? "Banner 上傳中…" : "點此上傳 Banner"}</span>
+                            <span className="mt-1 block text-xs text-muted-foreground">支援 JPG、PNG、WebP、AVIF</span>
+                          </button>
+                        )}
+                        <input
+                          ref={createCoverFileRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/avif"
+                          className="hidden"
+                          data-testid="input-create-cover"
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) return;
+                            setIsUploadingCreateCover(true);
+                            try {
+                              const body = new FormData();
+                              body.append("file", file);
+                              const response = await fetch("/api/upload", { method: "POST", body });
+                              const result = await response.json();
+                              if (!response.ok) throw new Error(result.message || "Banner 上傳失敗");
+                              field.onChange(result.url);
+                            } catch (error) {
+                              toast({ title: "Banner 上傳失敗", description: error instanceof Error ? error.message : "請稍後再試", variant: "destructive" });
+                            } finally {
+                              setIsUploadingCreateCover(false);
+                              if (createCoverFileRef.current) createCoverFileRef.current.value = "";
+                            }
+                          }}
+                        />
+                        {field.value && (
+                          <Button type="button" variant="outline" size="sm" onClick={() => createCoverFileRef.current?.click()} disabled={isUploadingCreateCover}>
+                            <Upload className="mr-2 h-4 w-4" />更換 Banner
+                          </Button>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
