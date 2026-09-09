@@ -113,6 +113,13 @@
       "when": 1788956000000,
       "tag": "0016_archive_historical_ctas",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788957000000,
+      "tag": "0017_operations_hardening",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useParams, Link } from "wouter";
+import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,10 +13,12 @@ import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Clock, Play } from "lucide-react";
+import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Play } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
+import { isPlaybackPermitted, resolveViewerAccessState } from "@/lib/watch-access-state";
+import { ViewerAccessState } from "@/components/viewer-access-state";
 import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
@@ -92,15 +94,23 @@ export default function WebinarRoom() {
     enabled: !!id,
   });
   const watchToken = getWatchToken(id);
-  const { data: watchState, isLoading: watchStateLoading } = useQuery<WatchState>({
+  const { data: watchState, isLoading: watchStateLoading, isError: watchStateError, refetch: refetchWatchState } = useQuery<WatchState>({
     queryKey: ["/api/webinars", id, "watch-state", watchToken],
     queryFn: () => fetchWatchState(id!, watchToken!),
     enabled: !!id && !!watchToken,
     refetchInterval: isJoined ? 30_000 : 5_000,
     retry: false,
   });
-  const effectiveVimeoUrl = watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl;
-  const canWatch = watchToken ? !!watchState?.canWatch : !!webinar?.vimeoUrl;
+  const accessKind = resolveViewerAccessState({
+    hasToken: !!watchToken,
+    watchState,
+    isInitialLoading: watchStateLoading,
+    verificationFailed: watchStateError,
+    fallbackVideoUrl: webinar?.vimeoUrl,
+    scheduledStart: webinar?.startTime,
+  });
+  const canWatch = isPlaybackPermitted(accessKind);
+  const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -201,6 +211,13 @@ export default function WebinarRoom() {
     const interval = setInterval(checkTime, 1000);
     return () => clearInterval(interval);
   }, [webinar, isJoined, watchToken, watchState, canWatch]);
+
+  useEffect(() => {
+    if (canWatch) return;
+    setIsPlaying(false);
+    const player = playerRef.current;
+    if (player) player.pause().catch(() => {});
+  }, [canWatch]);
 
   useEffect(() => {
     if (!effectiveVimeoUrl || !isJoined || waitingForStart || !canWatch || watchStateLoading) return;
@@ -611,11 +628,14 @@ export default function WebinarRoom() {
       return (
         <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || {}}>
           {trackingProvider}
-          <Card className="max-w-md w-full"><CardContent className="pt-6 text-center space-y-4">
-            <h2 className="text-xl font-bold">{webinar.title}</h2>
-            <p className="text-muted-foreground">請先完成報名並選擇場次，再進入觀看。</p>
-            <Link href={`/register/${id}`} className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">前往報名</Link>
-          </CardContent></Card>
+          <ViewerAccessState
+            kind={accessKind}
+            title={webinar.title}
+            startsAt={watchState?.waitUntil || watchState?.selectedSession || webinar.startTime}
+            timezone={webinar.timezone}
+            onRetry={() => void refetchWatchState()}
+            onRegister={accessKind === "unavailable" ? () => window.location.assign(`/register/${id}`) : undefined}
+          />
         </div>
       );
     }
@@ -664,31 +684,18 @@ export default function WebinarRoom() {
     );
   }
 
-  if (waitingForStart || (watchToken && (watchStateLoading || !canWatch))) {
+  if (!canWatch || waitingForStart) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
         {trackingProvider}
-        <Card className="max-w-lg w-full">
-          <CardContent className="pt-8 pb-8 text-center">
-            {brandSettings?.logo && (
-              <div className="flex justify-center mb-4">
-                <img src={brandSettings.logo} alt="Logo" className="max-h-12 object-contain" />
-              </div>
-            )}
-            <div className="w-20 h-20 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-6">
-              <Clock className="h-10 w-10 text-primary" />
-            </div>
-            <h2 className="text-2xl font-bold mb-2">{webinar.title}</h2>
-            <p className="text-muted-foreground mb-6">直播即將開始，請稍候</p>
-            <div className="bg-muted rounded-lg p-6 mb-4">
-              <p className="text-sm text-muted-foreground mb-2">倒數計時</p>
-              <p className="text-3xl font-bold font-mono" data-testid="text-countdown">{countdown}</p>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              開始時間：{formatStartTime(watchState?.waitUntil || watchState?.selectedSession || webinar.startTime)}（{webinar.timezone || "Asia/Taipei"}）
-            </p>
-          </CardContent>
-        </Card>
+        <ViewerAccessState
+          kind={waitingForStart && accessKind === "verified" ? "upcoming" : accessKind}
+          title={webinar.title}
+          startsAt={watchState?.waitUntil || watchState?.selectedSession || webinar.startTime}
+          timezone={webinar.timezone}
+          onRetry={() => void refetchWatchState()}
+          onRegister={accessKind === "unavailable" ? () => window.location.assign(`/register/${id}`) : undefined}
+        />
       </div>
     );
   }

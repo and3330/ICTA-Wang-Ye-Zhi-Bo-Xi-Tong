@@ -1104,7 +1104,7 @@ export default function AdminWebinarDetail() {
         <button key={item.id} type="button" onClick={() => {
           setSelected(item.id);
           document.getElementById(`webinar-section-${item.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }} className={cn("admin-workspace-rail-item", selected === item.id && "admin-workspace-rail-item-active")}>
+        }} aria-current={selected === item.id ? "location" : undefined} className={cn("admin-workspace-rail-item", selected === item.id && "admin-workspace-rail-item-active")}>
           <item.icon className="h-4 w-4" />{item.label}
         </button>
       ))}
@@ -3376,7 +3376,7 @@ export default function AdminWebinarDetail() {
                   </div>
                 </CardContent>
               </Card>
-              <Card>
+              <Card id="webinar-section-cta" className="scroll-mt-28">
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base">{s.interCtaTitle}</CardTitle>
@@ -3531,7 +3531,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card id="webinar-section-polls" className="scroll-mt-28">
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base">{s.interPollTitle}</CardTitle>
@@ -3648,7 +3648,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card id="webinar-section-tips" className="scroll-mt-28">
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base">{s.interTipTitle}</CardTitle>
@@ -3762,7 +3762,7 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card id="webinar-section-survey" className="scroll-mt-28">
                 <CardHeader>
                   <CardTitle className="text-base">{s.interFeedbackTitle}</CardTitle>
                   <CardDescription>{s.interFeedbackDesc}</CardDescription>
@@ -3922,7 +3922,7 @@ export default function AdminWebinarDetail() {
                 </Card>
               )}
 
-              <Card>
+              <Card id="webinar-section-questions" className="scroll-mt-28">
                 <CardHeader>
                   <CardTitle className="text-base">{s.interQaTitle}</CardTitle>
                   <CardDescription>{s.interQaDesc}</CardDescription>

@@ -2,6 +2,14 @@ import type Stripe from "stripe";
 import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
 import { SUBSCRIPTION_PLANS, type SubscriptionPlanKey } from "./subscriptionEntitlements";
+import {
+  isAcceptingWork,
+  registerStopper,
+  schedulerAttempt,
+  schedulerFailure,
+  schedulerSuccess,
+  trackOperation,
+} from "./operationsRuntime";
 
 export function oneYearAfter(date: Date): Date {
   const expiresAt = new Date(date);
@@ -203,9 +211,28 @@ export async function grantDueAnnualSubscriptionCredits(now = new Date()): Promi
   }
 }
 
-export function startAnnualSubscriptionCreditScheduler(): void {
-  void grantDueAnnualSubscriptionCredits();
-  setInterval(() => void grantDueAnnualSubscriptionCredits(), 6 * 60 * 60 * 1000);
+export function startAnnualSubscriptionCreditScheduler(): { stop: () => Promise<void> } {
+  const active = new Set<Promise<unknown>>();
+  const run = () => {
+    if (!isAcceptingWork()) return;
+    schedulerAttempt("annual_subscription_credits");
+    const operation = trackOperation(grantDueAnnualSubscriptionCredits()
+      .then(() => schedulerSuccess("annual_subscription_credits"))
+      .catch((error) => {
+        schedulerFailure("annual_subscription_credits");
+        console.error("Annual subscription credit scheduler failed:", error);
+      }));
+    active.add(operation);
+    void operation.finally(() => active.delete(operation)).catch(() => undefined);
+  };
+  run();
+  const timer = setInterval(run, 6 * 60 * 60 * 1000);
+  const stop = async () => {
+    clearInterval(timer);
+    await Promise.allSettled(Array.from(active));
+  };
+  registerStopper(stop);
+  return { stop };
 }
 
 async function reconcileRefundedAnnualCharge(charge: Stripe.Charge): Promise<void> {

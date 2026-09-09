@@ -6,6 +6,11 @@ import path from "path";
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
+  max: Number(process.env.DB_POOL_MAX || 10),
+  connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5_000),
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30_000),
+  maxUses: Number(process.env.DB_CONNECTION_MAX_USES || 7_500),
+  allowExitOnIdle: false,
 });
 
 export const db = drizzle(pool, { schema });

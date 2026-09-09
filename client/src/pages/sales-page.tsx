@@ -32,7 +32,7 @@ export default function SalesPage() {
   const settings = data.checkoutSettings;
   const blocks = data.blocks.filter((block) => block.enabled);
   return <main className="sales-page">
-     <header><span>開賣啦 SELLCASE</span><span>安心付款・立即取得內容</span></header>
+     <header><span>開賣啦 SELLCASE</span><span>前往付款・查看商品內容</span></header>
     <div className="studio-frame">
       {blocks.map((block) => {
         if (block.type === "hero") return <section className="studio-preview-hero" key={block.id}><span className="studio-kicker" style={{ color: "#99ead7" }}>為正在前進的你準備</span><h1>{block.headline}</h1><p>{block.subheadline}</p>{block.imageUrl && <img src={block.imageUrl} alt="" />}<button className="sales-cta" onClick={checkout}>{block.ctaLabel}</button></section>;
@@ -45,6 +45,11 @@ export default function SalesPage() {
     </div>
      {checkoutBusy && <div className="studio-modal" role="dialog" aria-live="polite"><div className="studio-modal-card"><div className="sales-spinner" aria-hidden="true" /><b>{settings?.transitionTitle || "正在前往安全付款頁面"}</b><p>{settings?.transitionMessage || "請稍候，我們正在準備您的付款。"}</p></div></div>}
      {checkoutError && <div className="studio-modal" role="alert"><div className="studio-modal-card"><b>付款頁面尚未開啟</b><p>{checkoutError}</p><button className="sales-cta" onClick={checkout}>再試一次</button><button className="studio-icon-btn" onClick={() => setCheckoutError("")}>返回優惠頁</button></div></div>}
-     <footer className="sales-footer">由 開賣啦 SellCase 安全處理訂單</footer>
+      <footer className="sales-footer">
+        {data.offer.paymentProvider === "ecpay"
+          ? "本商品由主辦會員販售，並由其自有綠界 ECPay 商店收款；商品履約、發票及退款由主辦會員依其政策與適用法律負責。SellCase 提供頁面與技術串接。"
+          : "付款將由 Stripe 處理。商品內容、履約及退款條件請以本頁賣方揭露與適用法律為準。"}
+        {" "}<a href="/legal/refunds">退款與取消說明</a>
+      </footer>
   </main>;
 }

@@ -239,6 +239,7 @@ export interface IStorage {
   updateEmailReminder(id: string, data: Partial<EmailReminder>): Promise<void>;
   updateClaimedEmailReminder(id: string, leaseToken: string, data: Partial<EmailReminder>): Promise<boolean>;
   renewClaimedEmailReminder(id: string, leaseToken: string, leaseExpiresAt: Date): Promise<boolean>;
+  enqueueDueSequenceReminders(before: Date, limit?: number): Promise<number>;
   
   // Chat Messages
   createChatMessage(data: InsertChatMessage): Promise<ChatMessage>;
@@ -1719,6 +1720,59 @@ export class DatabaseStorage implements IStorage {
       gt(emailReminders.leaseExpiresAt, new Date()),
     )).returning({ id: emailReminders.id });
     return updated.length === 1;
+  }
+
+  async enqueueDueSequenceReminders(before: Date, limit = 1_000): Promise<number> {
+    const boundedLimit = Math.min(5_000, Math.max(1, limit));
+    const result = await db.execute(sql`
+      WITH candidates AS (
+        SELECT
+          ${webinars.id} AS webinar_id,
+          ${registrations.id} AS registration_id,
+          ${emailSequences.id} AS sequence_id,
+          ${registrations.selectedSession}
+            + make_interval(secs => COALESCE(NULLIF(${webinars.videoDuration}, 0), 3600))
+            + make_interval(mins => COALESCE(${emailSequences.delayMinutes}, 0)) AS scheduled_for
+        FROM ${registrations}
+        INNER JOIN ${webinars} ON ${webinars.id} = ${registrations.webinarId}
+        INNER JOIN ${emailSequences} ON ${emailSequences.webinarId} = ${webinars.id}
+        WHERE ${webinars.publishStatus} = 'published'
+          AND ${emailSequences.enabled} = true
+          AND ${registrations.selectedSession} IS NOT NULL
+          AND ${registrations.selectedSession}
+            + make_interval(secs => COALESCE(NULLIF(${webinars.videoDuration}, 0), 3600)) <= ${before}
+          AND (
+            ${emailSequences.segment} = 'all'
+            OR (${emailSequences.segment} = 'no_show' AND ${registrations.attended} IS NOT TRUE)
+            OR (
+              ${registrations.attended} IS TRUE
+              AND ${emailSequences.segment} = 'watched'
+              AND COALESCE(${registrations.watchDuration}, 0)::numeric
+                / GREATEST(COALESCE(NULLIF(${webinars.videoDuration}, 0), 3600), 1) >= 0.7
+            )
+            OR (
+              ${registrations.attended} IS TRUE
+              AND ${emailSequences.segment} = 'not_watched'
+              AND COALESCE(${registrations.watchDuration}, 0)::numeric
+                / GREATEST(COALESCE(NULLIF(${webinars.videoDuration}, 0), 3600), 1) < 0.7
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM ${emailReminders}
+            WHERE ${emailReminders.registrationId} = ${registrations.id}
+              AND ${emailReminders.sequenceId} = ${emailSequences.id}
+          )
+        ORDER BY ${registrations.selectedSession}, ${registrations.id}, ${emailSequences.sortOrder}
+        LIMIT ${boundedLimit}
+      )
+      INSERT INTO ${emailReminders}
+        (webinar_id, registration_id, reminder_type, sequence_id, scheduled_for, status)
+      SELECT webinar_id, registration_id, 'sequence', sequence_id, scheduled_for, 'pending'
+      FROM candidates
+      ON CONFLICT (registration_id, sequence_id) WHERE sequence_id IS NOT NULL DO NOTHING
+      RETURNING id
+    `);
+    return result.rows.length;
   }
 
   // Chat Messages

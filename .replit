@@ -4,6 +4,7 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_05"
+packages = ["glib", "nss", "nspr", "atk", "at-spi2-atk", "cups", "dbus", "expat", "libdrm", "mesa", "pango", "cairo", "alsa-lib", "xorg.libX11", "xorg.libxcb", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxkbfile", "libxkbcommon", "udev", "fontconfig", "freetype"]
 
 [[ports]]
 localPort = 5000
@@ -51,6 +52,9 @@ integrations = ["google-mail:1.0.0", "stripe:2.0.0", "javascript_anthropic_ai_in
 STRIPE_MONTHLY_PRICE_ID = "price_1Sy8bxIbl9Q8nuPzsLN1d2VC"
 ARK_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 ARK_MODEL = "ep-20260903145930-lmhk7"
+
+[userenv.production]
+APP_BASE_URL = "https://icta-webinar.com"
 
 [postMerge]
 path = "scripts/post-merge.sh"

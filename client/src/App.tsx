@@ -22,6 +22,7 @@ import SalesPage from "@/pages/sales-page";
 import SalesPageEditor from "@/pages/sales-page-editor";
 import PurchaseResult from "@/pages/purchase-result";
 import LandingPageEditor from "@/pages/landing-page-editor";
+import { MarketingConsentBanner } from "@/components/marketing-consent";
 
 function Router() {
   return (
@@ -64,6 +65,7 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        <MarketingConsentBanner />
       </TooltipProvider>
     </QueryClientProvider>
   );

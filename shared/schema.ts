@@ -2,6 +2,19 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, timestamp, integer, boolean, jsonb, real, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
+export {
+  canonicalLandingVideoSchema,
+  canonicalizeLandingVideoUrl,
+  landingVideoProviderSchema,
+  parseLandingVideoUrl,
+} from "./webinarLanding";
+export type {
+  CanonicalLandingVideo,
+  LandingVideoProvider,
+  WebinarLandingBlock,
+  WebinarLandingRichNode,
+} from "./webinarLanding";
 
 // Webinars (直播間) - 擴展版
 export const webinars = pgTable("webinars", {
@@ -288,12 +301,12 @@ export const webinarLandingPages = pgTable("webinar_landing_pages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }).unique(),
   title: text("title").notNull(),
-  blocks: jsonb("blocks").$type<unknown[]>().notNull().default([]),
+  blocks: jsonb("blocks").$type<WebinarLandingBlockType[]>().notNull().default([]),
   brandSettings: jsonb("brand_settings").$type<{ primaryColor: string; secondaryColor: string; backgroundColor: string }>().notNull().default({ primaryColor: "#0f766e", secondaryColor: "#f59e0b", backgroundColor: "#ffffff" }),
   // Public visitors read only this immutable-at-save snapshot. Draft edits never
   // change the live page until the owner explicitly publishes again.
   publishedTitle: text("published_title"),
-  publishedBlocks: jsonb("published_blocks").$type<unknown[]>(),
+  publishedBlocks: jsonb("published_blocks").$type<WebinarLandingBlockType[]>(),
   publishedBrandSettings: jsonb("published_brand_settings").$type<{ primaryColor: string; secondaryColor: string; backgroundColor: string }>(),
   status: text("status").$type<"draft" | "published">().notNull().default("draft"),
   version: integer("version").notNull().default(1),
@@ -575,6 +588,8 @@ export const emailReminders = pgTable("email_reminders", {
   regSeqUniq: uniqueIndex("email_reminders_reg_seq_uniq")
     .on(table.registrationId, table.sequenceId)
     .where(sql`sequence_id IS NOT NULL`),
+  dueIndex: index("email_reminders_due_idx").on(table.status, table.scheduledFor),
+  leaseIndex: index("email_reminders_lease_idx").on(table.status, table.leaseExpiresAt),
 }));
 
 export const insertEmailReminderSchema = createInsertSchema(emailReminders).omit({
@@ -821,6 +836,7 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
   eventKeyUnique: uniqueIndex("webhook_deliveries_event_key_uniq").on(table.webhookId, table.eventKey),
+  retryIndex: index("webhook_deliveries_retry_idx").on(table.status, table.nextAttemptAt),
 }));
 
 // Webinar Documents (AI 助教知識文檔)
@@ -848,7 +864,9 @@ export const emailSequences = pgTable("email_sequences", {
   enabled: boolean("enabled").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => ({
+  enabledWebinarIndex: index("email_sequences_enabled_webinar_idx").on(table.enabled, table.webinarId),
+}));
 
 export const insertEmailSequenceSchema = createInsertSchema(emailSequences).omit({ id: true, createdAt: true });
 export type InsertEmailSequence = z.infer<typeof insertEmailSequenceSchema>;

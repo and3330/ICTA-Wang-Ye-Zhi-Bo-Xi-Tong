@@ -12,6 +12,7 @@ import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSessi
 import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry } from "./watchTokens";
 import crypto from "crypto";
 import { safeUploadContentType, verifyImageUpload } from "./safeImageUpload";
+import { getUploadStorage, uploadObjectKey } from "./uploadStorage";
 import {
   insertWebinarSchema,
   insertRegistrationSchema,
@@ -106,6 +107,14 @@ import {
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
+import {
+  isAcceptingWork,
+  registerStopper,
+  schedulerAttempt,
+  schedulerFailure,
+  schedulerSuccess,
+  trackOperation,
+} from "./operationsRuntime";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -239,7 +248,7 @@ export async function registerRoutes(
   sessionMiddleware?: any,
   dependencies: {
     refreshEntitlement?: typeof refreshSubscriptionEntitlement;
-    startScheduler?: typeof startEmailScheduler;
+    startScheduler?: () => void | { stop: () => Promise<void> };
   } = {},
 ): Promise<Server> {
   const refreshEntitlement = dependencies.refreshEntitlement ?? refreshSubscriptionEntitlement;
@@ -298,10 +307,13 @@ export async function registerRoutes(
     req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
 
   // ============ Image Upload ============
-  const uploadsDir = path.join(process.cwd(), "client", "public", "uploads");
+  const uploadsDir = process.env.UPLOADS_DIR
+    ? path.resolve(process.env.UPLOADS_DIR)
+    : path.join(process.cwd(), "client", "public", "uploads");
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
+  const uploadStorage = getUploadStorage(uploadsDir);
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -314,7 +326,7 @@ export async function registerRoutes(
     }
     try {
       const verified = await verifyImageUpload(req.file.buffer);
-      fs.writeFileSync(path.join(uploadsDir, verified.filename), req.file.buffer, { flag: "wx" });
+      await uploadStorage.put(uploadObjectKey(verified.filename), req.file.buffer);
       const url = `/uploads/${verified.filename}`;
       try {
         await db.insert(uploadedAssets).values({
@@ -323,7 +335,7 @@ export async function registerRoutes(
           filename: verified.filename,
         });
       } catch (error) {
-        fs.rmSync(path.join(uploadsDir, verified.filename), { force: true });
+        await uploadStorage.delete(uploadObjectKey(verified.filename)).catch(() => undefined);
         throw error;
       }
       res.json({ url, filename: verified.filename });
@@ -337,20 +349,44 @@ export async function registerRoutes(
     if (url && url.startsWith("/uploads/")) {
       const filename = url.replace("/uploads/", "");
       if (filename && !filename.includes("/") && !filename.includes("..")) {
-        const [owned] = await db.delete(uploadedAssets).where(and(
+        const [owned] = await db.select({ id: uploadedAssets.id }).from(uploadedAssets).where(and(
           eq(uploadedAssets.userId, req.session.userId!),
           eq(uploadedAssets.url, url),
           eq(uploadedAssets.filename, filename),
-        )).returning({ id: uploadedAssets.id });
+        )).limit(1);
         // Legacy files have no trustworthy ownership metadata and are retained.
         if (!owned) return res.status(404).json({ message: "Upload not found" });
-        const filePath = path.join(uploadsDir, filename);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        await uploadStorage.delete(uploadObjectKey(filename));
+        // Keep deletion compatible with assets uploaded before App Storage migration.
+        fs.rmSync(path.join(uploadsDir, filename), { force: true });
+        await db.delete(uploadedAssets).where(and(
+          eq(uploadedAssets.id, owned.id),
+          eq(uploadedAssets.userId, req.session.userId!),
+        ));
       }
     }
     res.json({ success: true });
+  });
+
+  // Uploaded objects are private; all reads go through this route so storage
+  // credentials and provider URLs are never exposed to browsers.
+  app.get("/uploads/:filename", async (req: Request, res: Response, next: NextFunction) => {
+    const filename = req.params.filename;
+    if (typeof filename !== "string" || !filename || filename.includes("/") || filename.includes("..")) return res.status(404).end();
+    try {
+      const contents = await uploadStorage.get(uploadObjectKey(filename));
+      if (!contents) return next();
+      res.setHeader("Content-Type", safeUploadContentType(filename));
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+      return res.send(contents);
+    } catch {
+      // A legacy local asset may still exist even if App Storage cannot serve
+      // this key; let the static fallback handle that migration case.
+      return next();
+    }
   });
 
   const serveStatic = (await import("express")).default.static;
@@ -368,12 +404,27 @@ export async function registerRoutes(
   // WebSocket Server
   const wss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (request, socket, head) => {
+    if (!isAcceptingWork()) {
+      socket.destroy();
+      return;
+    }
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
     if (pathname !== "/ws") return;
     wss.handleUpgrade(request, socket, head, (client) => {
       wss.emit("connection", client, request);
     });
   });
+  registerStopper(() => new Promise<void>((resolve) => {
+    for (const client of Array.from(wss.clients)) client.close(1001, "Server shutting down");
+    const forceTimer = setTimeout(() => {
+      for (const client of Array.from(wss.clients)) client.terminate();
+    }, 2_000);
+    forceTimer.unref();
+    wss.close(() => {
+      clearTimeout(forceTimer);
+      resolve();
+    });
+  }));
 
   wss.on("connection", (ws, req) => {
     let currentWebinarId: string | null = null;
@@ -3546,6 +3597,7 @@ export async function registerRoutes(
 
   // ============ Webhooks ============
   async function dispatchWebhook(webinarId: string, eventType: string, payload: any) {
+    if (!isAcceptingWork()) return;
     try {
       const hooks = await storage.getWebhooksByEvent(webinarId, eventType);
       for (const hook of hooks) {
@@ -3566,7 +3618,7 @@ export async function registerRoutes(
           leaseToken,
           nextAttemptAt: new Date(Date.now() + WEBHOOK_LEASE_MS),
         }).returning({ id: webhookDeliveries.id });
-        void deliverWebhook(hook.targetUrl, { headers, body }).then(async () => {
+        void trackOperation(deliverWebhook(hook.targetUrl, { headers, body }).then(async () => {
           await db.update(webhookDeliveries).set({
             status: "delivered", deliveredAt: new Date(), lastError: null, leaseToken: null,
           }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
@@ -3577,7 +3629,7 @@ export async function registerRoutes(
             lastError: String(err?.message || err).slice(0, 2000),
           }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
           console.error(`Webhook delivery failed for ${hook.id}:`, err.message);
-        });
+        }));
       }
     } catch (err) {
       console.error("Webhook dispatch error:", err);
@@ -3585,6 +3637,8 @@ export async function registerRoutes(
   }
 
   async function retryWebhookDeliveries() {
+    if (!isAcceptingWork()) return;
+    schedulerAttempt("webhook_delivery");
     const claimNow = new Date();
     const due = await db.select().from(webhookDeliveries).where(and(
       lte(webhookDeliveries.nextAttemptAt, claimNow),
@@ -3595,6 +3649,7 @@ export async function registerRoutes(
       ),
     )).limit(50);
     for (const delivery of due) {
+      if (!isAcceptingWork()) return;
       const leaseToken = crypto.randomBytes(18).toString("base64url");
       const claimed = await db.update(webhookDeliveries).set({
         status: "processing",
@@ -3639,12 +3694,23 @@ export async function registerRoutes(
         }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
       }
     }
+    schedulerSuccess("webhook_delivery");
   }
 
+  let webhookRetryTimer: NodeJS.Timeout | undefined;
   if (process.env.NODE_ENV !== "test") {
-    void retryWebhookDeliveries().catch(error => console.error("Webhook retry sweep failed:", error));
-    setInterval(() => void retryWebhookDeliveries().catch(error =>
-      console.error("Webhook retry sweep failed:", error)), 60_000);
+    const runWebhookRetry = () => {
+      const operation = trackOperation(retryWebhookDeliveries());
+      void operation.catch(error => {
+        schedulerFailure("webhook_delivery");
+        console.error("Webhook retry sweep failed:", error);
+      });
+    };
+    runWebhookRetry();
+    webhookRetryTimer = setInterval(runWebhookRetry, 60_000);
+    registerStopper(() => {
+      if (webhookRetryTimer) clearInterval(webhookRetryTimer);
+    });
   }
 
   app.get("/api/webinars/:id/webhooks", requireWebinarOwner, async (req, res) => {

@@ -34,5 +34,10 @@ export default function PurchaseResult() {
       state === "pending" ? <><h1>正在確認付款</h1><p>我們正在等待付款服務通知，請不要關閉此頁面。</p><div className="sales-spinner" /></> :
       state === "canceled" ? <><h1>{settings?.cancelTitle || "付款尚未完成"}</h1><p>{settings?.cancelMessage || "您可以返回優惠頁，再試一次。"}</p><a className="sales-cta" href={returnUrl}>返回優惠頁</a></> :
       <><h1>付款狀態無法確認</h1><p>目前沒有足夠資訊確認訂單，請稍後再試；我們不會未確認就顯示付款成功。</p><a className="sales-cta" href={returnUrl}>返回優惠頁</a></>}
-  </div><footer className="sales-footer">由 開賣啦 SellCase 安全處理訂單</footer></main>;
+  </div><footer className="sales-footer">
+    {provider === "ecpay"
+      ? "款項由主辦會員的綠界 ECPay 商店收取；商品履約、發票及退款請洽主辦會員。SellCase 提供訂單狀態與技術串接。"
+      : "付款由 Stripe 處理；商品履約及退款條件請以賣方揭露與適用法律為準。"}
+    {" "}<a href="/legal/refunds">退款與取消說明</a>
+  </footer></main>;
 }

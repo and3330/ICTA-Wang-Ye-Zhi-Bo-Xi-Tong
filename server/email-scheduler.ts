@@ -6,6 +6,14 @@ import crypto from "node:crypto";
 import { appBaseUrl } from "./mail";
 import { scoreLeadInsight } from "./leadInsights";
 import {
+  isAcceptingWork,
+  registerStopper,
+  schedulerAttempt,
+  schedulerFailure,
+  schedulerSuccess,
+  trackOperation,
+} from "./operationsRuntime";
+import {
   EMAIL_CLAIM_BATCH_SIZE, EMAIL_MAX_BATCHES_PER_TICK, EMAIL_LEASE_MS,
 } from "./emailDeliveryPolicy";
 export {
@@ -281,65 +289,47 @@ function matchesSegment(segment: string, reg: Registration, durationSec: number)
 
 // 研討會結束後，為符合分眾的報名者排入追蹤序列郵件（idempotent）
 async function enqueueSequenceEmails() {
+  if (!isAcceptingWork()) return;
+  schedulerAttempt("email_sequence_enqueue");
   try {
-    const now = new Date();
-    const webinars = await storage.getAllWebinars();
-    for (const webinar of webinars) {
-      if (webinar.publishStatus !== "published") continue;
-      const sequences = await storage.getEnabledEmailSequences(webinar.id);
-      if (sequences.length === 0) continue;
-
-      const registrations = await storage.getRegistrationsByWebinar(webinar.id);
-      if (registrations.length === 0) continue;
-
-      for (const seq of sequences) {
-        for (const reg of registrations) {
-          // On-demand registrations have no event end and must never be
-          // swept into a time-based post-event sequence for the webinar's
-          // unrelated default start time.
-          if (!reg.selectedSession) continue;
-          const duration = webinar.videoDuration || 3600;
-          const endTime = new Date(new Date(reg.selectedSession).getTime() + duration * 1000);
-          if (endTime > now) continue;
-          const scheduledFor = new Date(endTime.getTime() + (seq.delayMinutes || 0) * 60 * 1000);
-          if (!matchesSegment(seq.segment, reg, duration)) continue;
-          const already = await storage.hasSequenceReminder(reg.id, seq.id);
-          if (already) continue;
-          try {
-            await storage.createEmailReminder({
-              webinarId: webinar.id,
-              registrationId: reg.id,
-              reminderType: "sequence",
-              sequenceId: seq.id,
-              scheduledFor,
-              status: "pending",
-            } as any);
-          } catch (err) {
-            console.error(`Failed to enqueue sequence ${seq.id} for reg ${reg.id}:`, err);
-          }
-        }
-      }
+    for (let batch = 0; batch < 5 && isAcceptingWork(); batch += 1) {
+      const inserted = await storage.enqueueDueSequenceReminders(new Date(), 1_000);
+      if (inserted < 1_000) break;
     }
+    schedulerSuccess("email_sequence_enqueue");
   } catch (err) {
+    schedulerFailure("email_sequence_enqueue");
     console.error("enqueueSequenceEmails error:", err);
   }
 }
 
-export function startEmailScheduler() {
+export function startEmailScheduler(): { stop: () => Promise<void> } {
   console.log("Email scheduler started - checking every 60 seconds");
+  const active = new Set<Promise<unknown>>();
+  const run = (operation: () => Promise<void>) => {
+    if (!isAcceptingWork()) return;
+    const promise = trackOperation(operation());
+    active.add(promise);
+    void promise.finally(() => active.delete(promise)).catch(() => undefined);
+  };
 
   // 每 5 分鐘掃描已結束研討會，排入追蹤序列郵件
-  enqueueSequenceEmails();
-  setInterval(enqueueSequenceEmails, 5 * 60 * 1000);
+  run(enqueueSequenceEmails);
+  const sequenceTimer = setInterval(() => run(enqueueSequenceEmails), 5 * 60 * 1000);
 
-  setInterval(async () => {
+  const deliveryTimer = setInterval(() => run(async () => {
+    schedulerAttempt("email_delivery");
     try {
       // Drain multiple bounded batches per tick. Each batch sends concurrently,
       // so 25 provider calls bounded at 15s remain safely inside the 45s lease.
       for (let batch = 0; batch < EMAIL_MAX_BATCHES_PER_TICK; batch += 1) {
+        if (!isAcceptingWork()) return;
         const leaseToken = crypto.randomBytes(18).toString("base64url");
         const pendingReminders = await storage.claimPendingEmailReminders(new Date(), leaseToken, EMAIL_CLAIM_BATCH_SIZE);
-        if (pendingReminders.length === 0) return;
+        if (pendingReminders.length === 0) {
+          schedulerSuccess("email_delivery");
+          return;
+        }
         console.log(`Processing ${pendingReminders.length} pending email reminders`);
 
         await Promise.all(pendingReminders.map(async (reminder) => {
@@ -414,10 +404,22 @@ export function startEmailScheduler() {
           });
         }
         }));
-        if (pendingReminders.length < EMAIL_CLAIM_BATCH_SIZE) return;
+        if (pendingReminders.length < EMAIL_CLAIM_BATCH_SIZE) {
+          schedulerSuccess("email_delivery");
+          return;
+        }
       }
+      schedulerSuccess("email_delivery");
     } catch (err) {
+      schedulerFailure("email_delivery");
       console.error("Email scheduler error:", err);
     }
-  }, 60 * 1000);
+  }), 60 * 1000);
+  const stop = async () => {
+    clearInterval(sequenceTimer);
+    clearInterval(deliveryTimer);
+    await Promise.allSettled(Array.from(active));
+  };
+  registerStopper(stop);
+  return { stop };
 }

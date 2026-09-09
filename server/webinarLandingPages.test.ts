@@ -9,11 +9,75 @@ import {
   webinarLandingBlocksSchema, webinarLandingBrandSchema, defaultWebinarLandingTemplate,
   landingImageUrlSchema, richTextBodySchema, webinarLandingPageCanPublish,
 } from "./webinarLandingPages";
+import { parseLandingVideoUrl } from "@shared/webinarLanding";
 
 test("預設模板包含完整落地頁區塊", () => {
   const blocks = defaultWebinarLandingTemplate({ title: "測試說明會", description: "介紹" });
-  assert.deepEqual(blocks.map(block => block.type), ["hero", "intro", "audience", "agenda", "instructor", "faq", "countdown", "richText", "cta"]);
+  assert.deepEqual(blocks.map(block => block.type), ["hero", "intro", "audience", "agenda", "instructor", "faq", "countdown", "richText", "cta", "stickyCta"]);
+  assert.equal(blocks.some(block => block.type === "stickyCta" && block.enabled), true);
   assert.equal(webinarLandingBlocksSchema.safeParse(blocks).success, true);
+});
+
+test("影片網址 parser 僅接受明確 allowlist 並輸出 canonical ID", () => {
+  const youtubeId = "dQw4w9WgXcQ";
+  const accepted = [
+    [`https://www.youtube.com/watch?v=${youtubeId}&t=12`, { provider: "youtube", videoId: youtubeId }],
+    [`https://youtu.be/${youtubeId}`, { provider: "youtube", videoId: youtubeId }],
+    [`https://youtube.com/shorts/${youtubeId}`, { provider: "youtube", videoId: youtubeId }],
+    [`https://youtube.com/embed/${youtubeId}`, { provider: "youtube", videoId: youtubeId }],
+    [`https://www.youtube-nocookie.com/embed/${youtubeId}`, { provider: "youtube", videoId: youtubeId }],
+    ["https://vimeo.com/123456789", { provider: "vimeo", videoId: "123456789" }],
+    ["https://player.vimeo.com/video/123456789", { provider: "vimeo", videoId: "123456789" }],
+  ] as const;
+  for (const [url, expected] of accepted) assert.deepEqual(parseLandingVideoUrl(url), expected);
+
+  for (const url of [
+    `http://youtube.com/watch?v=${youtubeId}`,
+    `https://user:pass@youtube.com/watch?v=${youtubeId}`,
+    `https://youtube.com:8443/watch?v=${youtubeId}`,
+    `https://youtube.com.evil.example/watch?v=${youtubeId}`,
+    `https://evil.example/youtube.com/watch?v=${youtubeId}`,
+    `https://youtu.be.evil.example/${youtubeId}`,
+    "https://vimeo.com.evil.example/123456789",
+    "https://player.vimeo.com.evil.example/video/123456789",
+    "javascript:alert(1)",
+  ]) {
+    assert.throws(() => parseLandingVideoUrl(url), Error);
+  }
+});
+
+test("sticky CTA 是 registration-only singleton 且固定倒數必須有 ISO 目標時間", () => {
+  const template = defaultWebinarLandingTemplate({ title: "測試" });
+  const sticky = template.find(block => block.type === "stickyCta")!;
+  assert.equal(webinarLandingBlocksSchema.safeParse([...template, { ...sticky, id: "sticky2" }]).success, false);
+  assert.equal(webinarLandingBlocksSchema.safeParse(template.map(block =>
+    block.type === "stickyCta" ? { ...block, countdownMode: "fixed", targetAt: undefined } : block
+  )).success, false);
+  assert.equal(webinarLandingBlocksSchema.safeParse(template.map(block =>
+    block.type === "stickyCta" ? { ...block, countdownMode: "fixed", targetAt: "2030-01-02T03:04:05Z" } : block
+  )).success, true);
+  assert.equal(webinarLandingBlocksSchema.safeParse(template.map(block =>
+    block.type === "stickyCta" ? { ...block, countdownMode: "webinarStart", targetAt: "2030-01-02T03:04:05Z" } : block
+  )).success, false);
+  assert.equal(webinarLandingBlocksSchema.safeParse(template.map(block =>
+    block.type === "stickyCta" ? { ...block, url: "https://example.com" } : block
+  )).success, false);
+});
+
+test("video blocks require canonical provider-specific IDs", () => {
+  const template = defaultWebinarLandingTemplate({ title: "測試" });
+  assert.equal(webinarLandingBlocksSchema.safeParse([
+    ...template,
+    { id: "video", type: "video", enabled: true, provider: "youtube", videoId: "dQw4w9WgXcQ", headline: "介紹" },
+  ]).success, true);
+  assert.equal(webinarLandingBlocksSchema.safeParse([
+    ...template,
+    { id: "video", type: "video", enabled: true, provider: "youtube", videoId: "https://youtu.be/dQw4w9WgXcQ" },
+  ]).success, false);
+  assert.equal(webinarLandingBlocksSchema.safeParse([
+    ...template,
+    { id: "video", type: "video", enabled: true, provider: "vimeo", videoId: "not-numeric" },
+  ]).success, false);
 });
 
 test("richText AST accepts safe content and rejects unsafe or oversized content", () => {
@@ -70,19 +134,31 @@ test("已發布頁面與後續草稿隔離，重新發布後才更新公開內�
       publishStatus: "published",
     });
     const original = defaultWebinarLandingTemplate({ title: "公開 A" });
+    const originalSticky = original.find(block => block.type === "stickyCta")!;
     let page = await storage.createWebinarLandingPage({ webinarId, title: "公開 A", blocks: original, brandSettings: brand });
     page = (await storage.setWebinarLandingPageStatus(webinarId, page.version, "published"))!;
     const changed = defaultWebinarLandingTemplate({ title: "草稿 B" });
-    page = (await storage.updateWebinarLandingPage(webinarId, page.version, { title: "草稿 B", blocks: changed }))!;
+    const changedWithSticky = changed.map(block => block.type === "stickyCta"
+      ? { ...block, headline: "草稿固定按鈕 B" }
+      : block);
+    page = (await storage.updateWebinarLandingPage(webinarId, page.version, { title: "草稿 B", blocks: changedWithSticky }))!;
 
     const stillPublicA = await storage.getPublicWebinarLandingPage(webinarId);
     assert.equal(stillPublicA?.title, "公開 A");
     assert.equal((stillPublicA?.blocks[0] as { headline: string }).headline, "公開 A");
+    assert.equal(
+      (stillPublicA?.blocks.find(block => block.type === "stickyCta") as { headline: string }).headline,
+      originalSticky.headline,
+    );
 
     await storage.setWebinarLandingPageStatus(webinarId, page.version, "published");
     const nowPublicB = await storage.getPublicWebinarLandingPage(webinarId);
     assert.equal(nowPublicB?.title, "草稿 B");
     assert.equal((nowPublicB?.blocks[0] as { headline: string }).headline, "草稿 B");
+    assert.equal(
+      (nowPublicB?.blocks.find(block => block.type === "stickyCta") as { headline: string }).headline,
+      "草稿固定按鈕 B",
+    );
   } finally {
     await db.delete(webinars).where(eq(webinars.id, webinarId));
   }

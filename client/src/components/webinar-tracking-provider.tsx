@@ -4,6 +4,7 @@ import {
   type WebinarEventType,
   type WebinarEventData,
 } from "@/lib/webinar-tracking";
+import { useMarketingConsent } from "@/components/marketing-consent";
 
 export type TrackingWebinar = {
   metaPixelId?: string | null;
@@ -72,6 +73,18 @@ function loadGtm(id: string) {
   document.head.appendChild(script);
 }
 
+function revokeMarketingTracking() {
+  window.fbq?.("consent", "revoke");
+  window.dataLayer?.push({
+    event: "sellcase_consent_update",
+    ad_storage: "denied",
+    analytics_storage: "denied",
+  });
+  document.querySelectorAll<HTMLScriptElement>("script[data-livecast-tracking]").forEach((script) => script.remove());
+  loadedPixels.clear();
+  loadedGtmContainers.clear();
+}
+
 export function WebinarTrackingProvider({
   webinarId,
   metaPixelId,
@@ -79,11 +92,17 @@ export function WebinarTrackingProvider({
 }: TrackingWebinar & { webinarId?: string }) {
   const safePixelId = metaPixelId?.trim() || "";
   const safeGtmId = gtmContainerId?.trim().toUpperCase() || "";
+  const marketingConsent = useMarketingConsent();
 
   useEffect(() => {
+    if (marketingConsent !== "granted") {
+      revokeMarketingTracking();
+      return;
+    }
     if (isValidMetaPixelId(safePixelId)) loadMetaPixel(safePixelId);
     if (isValidGtmContainerId(safeGtmId)) loadGtm(safeGtmId);
-  }, [safePixelId, safeGtmId]);
+    window.fbq?.("consent", "grant");
+  }, [safePixelId, safeGtmId, marketingConsent]);
 
   useEffect(() => {
     const forward = (event: Event) => {
@@ -100,14 +119,16 @@ export function WebinarTrackingProvider({
         ...(detail.data.positionSeconds === undefined ? {} : { position_seconds: detail.data.positionSeconds }),
         ...detail.data.metadata,
       };
-      if (isValidMetaPixelId(safePixelId)) window.fbq?.("track", metaEventMap[detail.eventType], payload);
-      if (isValidGtmContainerId(safeGtmId)) {
+      if (marketingConsent === "granted" && isValidMetaPixelId(safePixelId)) {
+        window.fbq?.("track", metaEventMap[detail.eventType], payload);
+      }
+      if (marketingConsent === "granted" && isValidGtmContainerId(safeGtmId)) {
         window.dataLayer?.push({ event: `webinar_${detail.eventType}`, ...payload });
       }
     };
     window.addEventListener(WEBINAR_TRACKING_EVENT, forward);
     return () => window.removeEventListener(WEBINAR_TRACKING_EVENT, forward);
-  }, [webinarId, safePixelId, safeGtmId]);
+  }, [webinarId, safePixelId, safeGtmId, marketingConsent]);
 
   return null;
 }

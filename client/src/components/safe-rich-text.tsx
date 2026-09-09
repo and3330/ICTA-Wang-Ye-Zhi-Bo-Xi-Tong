@@ -32,19 +32,19 @@ function Inline({ node }: { node: RichTextNode }) {
     const src = safeImageSrc(node.attrs?.src);
     return src ? <img src={src} alt={node.attrs?.alt || ""} title={node.attrs?.title} loading="lazy" /> : null;
   }
-  return <>{(node.content || []).map((child, i) => <Inline key={i} node={child} />)}</>;
+  return (node.content || []).map((child, i) => <Inline key={i} node={child} />);
 }
 
 export function SafeRichText({ value, className }: { value: RichTextNode; className?: string }) {
   const render = (node: RichTextNode, key: React.Key): React.ReactNode => {
     const children = (node.content || []).map((child, i) => render(child, i));
-    if (node.type === "doc") return <React.Fragment key={key}>{children}</React.Fragment>;
-    if (node.type === "paragraph") return <p key={key}><>{children}</></p>;
-    if (node.type === "heading") return node.attrs?.level === 3 ? <h3 key={key}><>{children}</></h3> : <h2 key={key}><>{children}</></h2>;
+    if (node.type === "doc") return children;
+    if (node.type === "paragraph") return <p key={key}>{children}</p>;
+    if (node.type === "heading") return node.attrs?.level === 3 ? <h3 key={key}>{children}</h3> : <h2 key={key}>{children}</h2>;
     if (node.type === "bulletList") return <ul key={key}>{children}</ul>;
     if (node.type === "orderedList") return <ol key={key}>{children}</ol>;
     if (node.type === "listItem") return <li key={key}>{children}</li>;
-    if (node.type === "text" || node.type === "hardBreak" || node.type === "image") return <React.Fragment key={key}><Inline node={node} /></React.Fragment>;
+    if (node.type === "text" || node.type === "hardBreak" || node.type === "image") return <Inline key={key} node={node} />;
     return null;
   };
   return <div className={className}>{render(value, "root")}</div>;
