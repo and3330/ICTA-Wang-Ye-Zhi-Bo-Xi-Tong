@@ -12,3 +12,4 @@
 - [AI credit and trial rules](ai-credit-expiry.md) — free/trial users receive no AI points; paid monthly gifts expire after one year; purchases remain permanent.
 - [Member-owned ECPay checkout](member-owned-ecpay.md) — webinar商品優先用會員自有綠界帳號直收；平台代收是管理員核准的後續模式，SaaS訂閱仍由Stripe負責。
 - [Offer sales-page editor](offer-sales-page-editor.md) — 每個商品採區塊式成交頁；頁面只呈現商品，售價與金流以伺服器端商品資料為準。
+- [Closed-loop sales insights](closed-loop-sales-insights.md) — 成交分數先用可解釋事件規則；退款依可信付款淨額；自動外聯必須由會員明確啟用。

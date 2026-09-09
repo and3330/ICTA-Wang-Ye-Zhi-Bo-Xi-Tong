@@ -89,6 +89,7 @@ import {
   updateSalesPageSchema,
   validatePublishableBlocks,
 } from "./salesPages";
+import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -1867,6 +1868,55 @@ export async function registerRoutes(
   app.get("/api/webinars/:id/registrations", requireWebinarOwner, async (req, res) => {
     const registrations = await storage.getRegistrationsByWebinar(req.params.id as string);
     res.json(registrations);
+  });
+
+  // Owner-only, read-only deterministic sales insights.
+  app.get("/api/webinars/:id/lead-insights", requireWebinarOwner, async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+    const rawLimit = Number(req.query.limit ?? 50);
+    const rawOffset = Number(req.query.offset ?? 0);
+    const limit = Number.isInteger(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 50;
+    const offset = Number.isInteger(rawOffset) ? Math.max(0, rawOffset) : 0;
+    const page = await storage.getRegistrationsByWebinarPage(req.params.id as string, limit, offset);
+    const events = await storage.getFunnelEventsByRegistrations(
+      req.params.id as string,
+      page.registrations.map(registration => registration.id),
+    );
+    const result = buildLeadInsights(page.registrations, events, webinar);
+    res.json({
+      webinarId: req.params.id,
+      summary: result.summary,
+      pagination: { total: page.total, limit, offset, hasMore: offset + result.insights.length < page.total },
+      leads: result.insights.map(({ registrationId, score, stage, temperature, lastActivityAt, recommendation, evidenceCount }) =>
+        ({ registrationId, score, stage, temperature, lastActivityAt, recommendation, evidenceCount })),
+    });
+  });
+
+  app.get("/api/webinars/:id/registrations/:registrationId/insights", requireWebinarOwner, async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+    const registration = await storage.getRegistration(req.params.registrationId as string);
+    if (!registration || registration.webinarId !== req.params.id) {
+      return res.status(404).json({ message: "Registration not found" });
+    }
+    const events = await storage.getFunnelEventsByRegistration(req.params.id as string, registration.id);
+    const insight = scoreLeadInsight(
+      registration,
+      events,
+      webinar.videoDuration ?? 0,
+    );
+    res.json({
+      registrationId: insight.registrationId,
+      score: insight.score,
+      stage: insight.stage,
+      temperature: insight.temperature,
+      lastActivityAt: insight.lastActivityAt,
+      recommendation: insight.recommendation,
+      evidenceCount: insight.evidenceCount,
+      evidence: insight.evidence,
+      timeline: insight.timeline,
+    });
   });
 
   // ============ Attendance Tracking ============

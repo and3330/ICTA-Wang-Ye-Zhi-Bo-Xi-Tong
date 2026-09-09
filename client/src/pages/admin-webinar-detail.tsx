@@ -25,6 +25,7 @@ import {
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
   Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit
+  , Flame, Snowflake, ChevronRight, Target, AlertCircle
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -92,6 +93,36 @@ interface SalesPageView {
   offerId: string;
   slug: string;
   status: "draft" | "published";
+}
+
+interface LeadInsight {
+  registrationId: string;
+  score: number;
+  stage: string;
+  temperature: string;
+  lastActivityAt: string | null;
+  recommendation: { title: string; description: string; action: string };
+  evidenceCount: number;
+}
+
+interface LeadInsightsResponse {
+  summary: { total: number; cold: number; warm: number; hot: number; customers: number; refunded: number };
+  pagination: { total: number; limit: number; offset: number; hasMore: boolean };
+  leads: LeadInsight[];
+}
+
+interface LeadInsightDetail extends LeadInsight {
+  evidence: Array<{ type: string; label: string; points: number; occurredAt: string }>;
+  timeline: Array<{
+    id: string;
+    eventType: string;
+    label: string;
+    occurredAt: string;
+    positionSeconds: number | null;
+    amountMinor: number | null;
+    currency: string | null;
+    ctaKey: string | null;
+  }>;
 }
 const funnelStageLabels: Record<string, string> = {
   landing_view: "落地頁",
@@ -1178,6 +1209,10 @@ export default function AdminWebinarDetail() {
   const [editTagsRegId, setEditTagsRegId] = useState<string | null>(null);
   const [editTagsValue, setEditTagsValue] = useState("");
   const [tagFilter, setTagFilter] = useState("__all__");
+  const [leadTemperature, setLeadTemperature] = useState("all");
+  const [leadStage, setLeadStage] = useState("all");
+  const [leadPage, setLeadPage] = useState(0);
+  const [selectedLead, setSelectedLead] = useState<LeadInsight | null>(null);
   const [activeTab, setActiveTab] = useState("analytics");
   const [selectedChatRegistrantId, setSelectedChatRegistrantId] = useState<string | null>(null);
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string>("__all__");
@@ -1243,9 +1278,18 @@ export default function AdminWebinarDetail() {
     enabled: !!id,
   });
 
-  const { data: registrations } = useQuery<Registration[]>({
+  const { data: registrations, isLoading: registrationsLoading, isError: registrationsError } = useQuery<Registration[]>({
     queryKey: ["/api/webinars", id, "registrations"],
     enabled: !!id,
+  });
+
+  const leadInsightsQuery = useQuery<LeadInsightsResponse>({
+    queryKey: [`/api/webinars/${id}/lead-insights?limit=50&offset=${leadPage * 50}`],
+    enabled: !!id,
+  });
+  const leadDetailQuery = useQuery<LeadInsightDetail>({
+    queryKey: ["/api/webinars", id, "registrations", selectedLead?.registrationId, "insights"],
+    enabled: !!id && !!selectedLead?.registrationId,
   });
 
   const { data: tips } = useQuery<Tip[]>({
@@ -1982,6 +2026,30 @@ export default function AdminWebinarDetail() {
 
   const registrationUrl = `${window.location.origin}/register/${id}`;
   const webinarUrl = `${window.location.origin}/webinar/${id}`;
+  const leadData = leadInsightsQuery.data;
+  const visibleLeads = (leadData?.leads || []).filter((lead) =>
+    (leadTemperature === "all" || lead.temperature === leadTemperature) &&
+    (leadStage === "all" || lead.stage === leadStage)
+  );
+  const selectedRegistration = registrations?.find((registration) =>
+    String(registration.id) === String(selectedLead?.registrationId)
+  );
+  const formatLeadDate = (value: string | null | undefined) => value
+    ? new Date(value).toLocaleString(lang, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "尚無活動";
+  const temperatureLabel = (temperature: string) => ({
+    hot: "高意圖", warm: "觀望中", cold: "低意圖", customer: "已成交客戶",
+  }[temperature] || temperature);
+  const stageLabel = (stage: string) => ({
+    registered: "已報名", engaged: "已互動", considering: "考慮中",
+    checkout: "結帳中", converted: "已成交", refunded: "已退款",
+  }[stage] || stage);
+  const temperatureClass = (temperature: string) => ({
+    hot: "border-rose-200 bg-rose-50 text-rose-700",
+    warm: "border-amber-200 bg-amber-50 text-amber-700",
+    cold: "border-slate-200 bg-slate-50 text-slate-600",
+    customer: "border-teal-200 bg-teal-50 text-teal-700",
+  }[temperature] || "border-border bg-muted text-muted-foreground");
 
   return (
     <div className="admin-shell admin-webinar-detail">
@@ -4238,6 +4306,121 @@ export default function AdminWebinarDetail() {
           <TabsContent value="registrations">
             <div className="admin-workspace-grid">
               {contextualRail([{ id: "registrants", label: s.regTitle, icon: Users }], registrationsSection, setRegistrationsSection)}
+              <div className="space-y-4">
+              <Card className="overflow-hidden border-teal-200/70 bg-gradient-to-br from-card via-card to-teal-50/70">
+                <CardHeader className="border-b border-teal-100/80 pb-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-teal-700">
+                        <Target className="h-4 w-4" /> SellCase 成交洞察
+                      </div>
+                      <CardTitle className="text-xl tracking-tight">成交中心</CardTitle>
+                      <CardDescription className="mt-1">依據觀看、互動與付款事件，整理下一個可執行的成交動作。</CardDescription>
+                    </div>
+                    <Badge variant="outline" className="border-teal-200 bg-teal-50 text-teal-700">
+                      僅限擁有者
+                    </Badge>
+                  </div>
+                  {leadInsightsQuery.isLoading ? (
+                    <div className="grid grid-cols-2 gap-2 pt-3 md:grid-cols-6">
+                      {Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-20 animate-pulse rounded-lg bg-muted" />)}
+                    </div>
+                  ) : leadInsightsQuery.isError ? (
+                    <div className="mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                      <AlertCircle className="h-4 w-4 shrink-0" /> 成交洞察暫時無法載入，請重新整理後再試。
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2 pt-3 md:grid-cols-6">
+                      {[
+                        { label: "本頁潛客", value: leadData?.summary.total || 0, tone: "text-foreground" },
+                        { label: "高意圖", value: leadData?.summary.hot || 0, tone: "text-rose-600" },
+                        { label: "觀望中", value: leadData?.summary.warm || 0, tone: "text-amber-600" },
+                        { label: "低意圖", value: leadData?.summary.cold || 0, tone: "text-slate-500" },
+                        { label: "已成交", value: leadData?.summary.customers || 0, tone: "text-teal-700" },
+                        { label: "已退款", value: leadData?.summary.refunded || 0, tone: "text-violet-600" },
+                      ].map((tile) => (
+                        <div key={tile.label} className="rounded-lg border border-border/70 bg-background/70 px-3 py-2.5">
+                          <div className="text-[11px] font-semibold text-muted-foreground">{tile.label}</div>
+                          <div className={cn("mt-1 text-2xl font-bold tracking-tight", tile.tone)}>{tile.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-3">
+                    <span className="mr-1 text-xs font-semibold text-muted-foreground">篩選：</span>
+                    {[
+                      { value: "all", label: "全部" },
+                      { value: "hot", label: "高意圖" },
+                      { value: "warm", label: "觀望中" },
+                      { value: "cold", label: "低意圖" },
+                    ].map((option) => (
+                      <Button key={option.value} variant={leadTemperature === option.value ? "default" : "outline"} size="sm"
+                        className="h-8 rounded-full px-3 text-xs" onClick={() => setLeadTemperature(option.value)}>
+                        {option.label}
+                      </Button>
+                    ))}
+                    <Select value={leadStage} onValueChange={setLeadStage}>
+                      <SelectTrigger className="ml-auto h-8 w-[130px] bg-background text-xs"><SelectValue placeholder="依階段" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">所有階段</SelectItem>
+                        {Array.from(new Set((leadData?.leads || []).map((lead) => lead.stage))).map((stage) => (
+                          <SelectItem key={stage} value={stage}>{stageLabel(stage)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {leadInsightsQuery.isLoading ? (
+                    <div className="space-y-2 p-4">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-14 animate-pulse rounded bg-muted" />)}</div>
+                  ) : leadInsightsQuery.isError ? null : visibleLeads.length ? (
+                    <div className="divide-y">
+                      <div className="hidden grid-cols-[minmax(180px,1.2fr)_90px_110px_minmax(220px,1fr)_28px] gap-4 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground md:grid">
+                        <span>潛客</span><span>意圖分數</span><span>階段</span><span>下一步</span><span />
+                      </div>
+                      {visibleLeads.map((lead) => {
+                        const registration = registrations?.find((item) => String(item.id) === String(lead.registrationId));
+                        return (
+                          <button key={lead.registrationId} type="button" onClick={() => setSelectedLead(lead)}
+                            className="grid w-full grid-cols-1 gap-2 px-4 py-3 text-left transition-colors hover:bg-teal-50/60 md:grid-cols-[minmax(180px,1.2fr)_90px_110px_minmax(220px,1fr)_28px] md:items-center md:gap-4">
+                            <span className="min-w-0">
+                              <span className="flex items-center gap-2 font-semibold">{registration?.name || `報名者 ${lead.registrationId.slice(0, 8)}`}
+                                <Badge className={cn("border text-[10px]", temperatureClass(lead.temperature))} variant="outline">
+                                  {lead.temperature === "hot" && <Flame className="mr-1 h-3 w-3" />}
+                                  {lead.temperature === "cold" && <Snowflake className="mr-1 h-3 w-3" />}
+                                  {temperatureLabel(lead.temperature)}
+                                </Badge>
+                              </span>
+                              <span className="mt-1 block truncate text-xs text-muted-foreground">{registration?.email || "聯絡資料載入中"} · 最近 {formatLeadDate(lead.lastActivityAt)}</span>
+                            </span>
+                            <span className="flex items-baseline gap-1"><strong className="text-xl">{lead.score}</strong><span className="text-[10px] text-muted-foreground">/100</span></span>
+                            <Badge variant="secondary" className="w-fit text-xs">{stageLabel(lead.stage)}</Badge>
+                            <span className="min-w-0"><span className="block truncate text-sm font-medium">{lead.recommendation.title}</span><span className="block truncate text-xs text-muted-foreground">{lead.evidenceCount} 個訊號 · {lead.recommendation.action}</span></span>
+                            <ChevronRight className="hidden h-4 w-4 text-muted-foreground md:block" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-10 text-center">
+                      <Target className="mx-auto mb-2 h-7 w-7 text-muted-foreground/50" />
+                      <p className="text-sm font-medium">目前篩選沒有符合的潛客</p>
+                      <p className="mt-1 text-xs text-muted-foreground">調整條件後，這裡會顯示事件規則找出的成交機會。</p>
+                    </div>
+                  )}
+                  {!leadInsightsQuery.isLoading && !leadInsightsQuery.isError && (leadData?.pagination.total || 0) > 50 && (
+                    <div className="flex items-center justify-between border-t px-4 py-3">
+                      <p className="text-xs text-muted-foreground">
+                        第 {leadData!.pagination.offset + 1}–{Math.min(leadData!.pagination.offset + leadData!.leads.length, leadData!.pagination.total)} 位，共 {leadData!.pagination.total} 位
+                      </p>
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" disabled={leadPage === 0} onClick={() => setLeadPage(page => Math.max(0, page - 1))}>上一頁</Button>
+                        <Button variant="outline" size="sm" disabled={!leadData?.pagination.hasMore} onClick={() => setLeadPage(page => page + 1)}>下一頁</Button>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
               <Card id="webinar-section-registrants">
               <CardHeader className="flex flex-row items-center justify-between gap-2">
                 <div>
@@ -4263,7 +4446,11 @@ export default function AdminWebinarDetail() {
                 </div>
               </CardHeader>
               <CardContent className="px-0 pb-0">
-                {registrations && registrations.length > 0 ? (
+                {registrationsLoading ? (
+                  <div className="space-y-2 p-5">{Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded bg-muted" />)}</div>
+                ) : registrationsError ? (
+                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-rose-700"><AlertCircle className="h-4 w-4" />報名名單載入失敗，請重新整理後再試。</div>
+                ) : registrations && registrations.length > 0 ? (
                   <div className="max-h-[560px] overflow-auto border-t">
                     <Table className="min-w-[1120px]">
                       <TableHeader className="sticky top-0 z-10 bg-slate-800">
@@ -4393,6 +4580,71 @@ export default function AdminWebinarDetail() {
               </CardContent>
               </Card>
             </div>
+             </div>
+             <Dialog open={!!selectedLead} onOpenChange={(open) => !open && setSelectedLead(null)}>
+               <DialogContent className="max-h-[90dvh] max-w-3xl overflow-y-auto">
+                 <DialogHeader>
+                   <DialogTitle className="flex items-center gap-2"><BrainCircuit className="h-5 w-5 text-teal-700" />潛客成交診斷</DialogTitle>
+                   <DialogDescription>查看這位潛客的事件訊號、評分依據，以及現在最值得採取的動作。</DialogDescription>
+                 </DialogHeader>
+                 {leadDetailQuery.isLoading ? (
+                   <div className="space-y-3 py-5"><div className="h-20 animate-pulse rounded-lg bg-muted" /><div className="h-36 animate-pulse rounded-lg bg-muted" /></div>
+                 ) : leadDetailQuery.isError || !leadDetailQuery.data ? (
+                   <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">無法取得這位潛客的詳細洞察，請稍後再試。</div>
+                 ) : (() => {
+                   const detail = leadDetailQuery.data;
+                   return (
+                     <div className="space-y-5">
+                       <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                         <div className="rounded-xl border bg-muted/20 p-4">
+                           <div className="flex items-start justify-between gap-3">
+                             <div className="min-w-0">
+                               <p className="text-lg font-bold">{selectedRegistration?.name || `報名者 ${detail.registrationId.slice(0, 8)}`}</p>
+                               <p className="mt-1 truncate text-sm text-muted-foreground">{selectedRegistration?.email || "尚無 Email"} {selectedRegistration?.phone ? ` · ${selectedRegistration.phone}` : ""}</p>
+                             </div>
+                             <Badge className={cn("border", temperatureClass(detail.temperature))} variant="outline">{temperatureLabel(detail.temperature)}</Badge>
+                           </div>
+                           <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                             <Badge variant="secondary">{stageLabel(detail.stage)}</Badge>
+                             <span className="rounded-md border px-2 py-1">最近活動 {formatLeadDate(detail.lastActivityAt)}</span>
+                             {selectedRegistration?.attended && <span className="rounded-md border px-2 py-1">已出席</span>}
+                           </div>
+                         </div>
+                         <div className="flex min-w-[130px] flex-col justify-center rounded-xl border border-teal-200 bg-teal-50 p-4 text-center">
+                           <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700">Intent score</span>
+                           <strong className="mt-1 text-4xl tracking-tight text-teal-800">{detail.score}</strong>
+                           <span className="text-xs text-teal-700/70">滿分 100 · {detail.evidenceCount} 個訊號</span>
+                         </div>
+                       </div>
+                       <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                         <div className="flex items-start gap-3"><Target className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" /><div><p className="font-bold text-amber-950">{detail.recommendation.title}</p><p className="mt-1 text-sm leading-6 text-amber-900/80">{detail.recommendation.description}</p><p className="mt-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">建議動作：{detail.recommendation.action}</p></div></div>
+                       </div>
+                       <div className="grid gap-5 md:grid-cols-[1fr_1.15fr]">
+                         <section>
+                            <div className="mb-3 flex items-center justify-between"><h3 className="font-bold">可解釋的評分依據</h3><span className="text-xs text-muted-foreground">事件證據</span></div>
+                           <div className="space-y-2">
+                             {detail.evidence.length ? detail.evidence.map((item) => (
+                               <div key={`${item.type}-${item.occurredAt}`} className="flex items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2.5">
+                                 <div className="min-w-0"><p className="truncate text-sm font-medium">{item.label}</p><p className="text-[11px] text-muted-foreground">{formatLeadDate(item.occurredAt)}</p></div>
+                                 <span className={cn("shrink-0 text-sm font-bold", item.points >= 0 ? "text-teal-700" : "text-rose-600")}>{item.points > 0 ? "+" : ""}{item.points}</span>
+                               </div>
+                             )) : <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">目前沒有可展示的評分依據。</p>}
+                           </div>
+                         </section>
+                         <section>
+                           <div className="mb-3 flex items-center justify-between"><h3 className="font-bold">銷售時間軸</h3><span className="text-xs text-muted-foreground">由新到舊</span></div>
+                           <div className="relative space-y-0 border-l-2 border-teal-100 pl-4">
+                             {detail.timeline.length ? [...detail.timeline].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()).map((event) => (
+                               <div key={event.id} className="relative pb-4 last:pb-0"><span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-card bg-teal-600" /><p className="text-sm font-semibold">{event.label}</p><p className="mt-0.5 text-xs text-muted-foreground">{formatLeadDate(event.occurredAt)}{event.positionSeconds != null ? ` · 影片 ${formatTime(event.positionSeconds)}` : ""}{event.amountMinor != null && event.currency ? ` · ${formatMinorCurrency(event.currency, event.amountMinor)}` : ""}</p></div>
+                             )) : <p className="text-sm text-muted-foreground">尚無時間軸事件。</p>}
+                           </div>
+                         </section>
+                       </div>
+                     </div>
+                   );
+                 })()}
+               </DialogContent>
+             </Dialog>
           </TabsContent>
 
           {/* ===== Analytics Tab ===== */}

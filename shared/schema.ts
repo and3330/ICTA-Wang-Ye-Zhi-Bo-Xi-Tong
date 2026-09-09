@@ -499,6 +499,7 @@ export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
   webinarOccurredIndex: index("webinar_funnel_events_webinar_occurred_idx").on(table.webinarId, table.occurredAt),
   webinarTypeIndex: index("webinar_funnel_events_webinar_type_idx").on(table.webinarId, table.eventType),
   webinarCtaKeyIndex: index("webinar_funnel_events_webinar_cta_key_idx").on(table.webinarId, table.ctaKey),
+  webinarRegistrationIndex: index("webinar_funnel_events_webinar_registration_idx").on(table.webinarId, table.registrationId),
 }));
 
 export type WebinarFunnelEvent = typeof webinarFunnelEvents.$inferSelect;

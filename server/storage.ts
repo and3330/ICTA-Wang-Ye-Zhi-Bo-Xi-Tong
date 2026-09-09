@@ -1,7 +1,7 @@
 import { db } from "./db";
 import crypto from "node:crypto";
 import { authoritativeRegistrationFunnelEvent } from "./funnelAnalytics";
-import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like } from "drizzle-orm";
+import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like, inArray } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
   registrations, type InsertRegistration, type Registration,
@@ -115,6 +115,9 @@ export interface IStorage {
   ): Promise<Registration | null>;
   getRegistration(id: string): Promise<Registration | undefined>;
   getRegistrationsByWebinar(webinarId: string): Promise<Registration[]>;
+  getRegistrationsByWebinarPage(webinarId: string, limit: number, offset: number): Promise<{ registrations: Registration[]; total: number }>;
+  getFunnelEventsByRegistration(webinarId: string, registrationId: string): Promise<WebinarFunnelEvent[]>;
+  getFunnelEventsByRegistrations(webinarId: string, registrationIds: string[]): Promise<WebinarFunnelEvent[]>;
   getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined>;
   updateRegistration(id: string, data: Partial<Registration>): Promise<Registration | undefined>;
   
@@ -855,6 +858,18 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(registrations).where(eq(registrations.webinarId, webinarId));
   }
 
+  async getRegistrationsByWebinarPage(webinarId: string, limit: number, offset: number): Promise<{ registrations: Registration[]; total: number }> {
+    const [rows, totals] = await Promise.all([
+      db.select().from(registrations)
+        .where(eq(registrations.webinarId, webinarId))
+        .orderBy(desc(registrations.registeredAt), desc(registrations.id))
+        .limit(limit)
+        .offset(offset),
+      db.select({ value: count() }).from(registrations).where(eq(registrations.webinarId, webinarId)),
+    ]);
+    return { registrations: rows, total: Number(totals[0]?.value || 0) };
+  }
+
   async getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined> {
     const result = await db.select().from(registrations)
       .where(and(eq(registrations.webinarId, webinarId), eq(registrations.email, email)));
@@ -1209,6 +1224,25 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(webinarFunnelEvents)
       .where(and(...conditions))
       .orderBy(asc(webinarFunnelEvents.occurredAt));
+  }
+
+  async getFunnelEventsByRegistration(webinarId: string, registrationId: string): Promise<WebinarFunnelEvent[]> {
+    return db.select().from(webinarFunnelEvents)
+      .where(and(
+        eq(webinarFunnelEvents.webinarId, webinarId),
+        eq(webinarFunnelEvents.registrationId, registrationId),
+      ))
+      .orderBy(asc(webinarFunnelEvents.occurredAt), asc(webinarFunnelEvents.id));
+  }
+
+  async getFunnelEventsByRegistrations(webinarId: string, registrationIds: string[]): Promise<WebinarFunnelEvent[]> {
+    if (!registrationIds.length) return [];
+    return db.select().from(webinarFunnelEvents)
+      .where(and(
+        eq(webinarFunnelEvents.webinarId, webinarId),
+        inArray(webinarFunnelEvents.registrationId, registrationIds),
+      ))
+      .orderBy(asc(webinarFunnelEvents.occurredAt), asc(webinarFunnelEvents.id));
   }
 
   // Email Reminders
