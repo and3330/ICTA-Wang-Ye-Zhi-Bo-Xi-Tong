@@ -25,7 +25,7 @@ import {
   Lightbulb, HelpCircle, Star, TrendingUp, Settings, Code,
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
-  Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit
+  Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit, ShoppingBag
   , Flame, Snowflake, ChevronRight, Target, AlertCircle
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -1234,8 +1234,7 @@ export default function AdminWebinarDetail() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("setupProduct") !== "1") return;
-    setActiveTab("notifications");
-    setNotificationsSection("notifications");
+    setActiveTab("commerce");
     setOfferName(params.get("productName")?.trim().slice(0, 200) || "");
     setIsOfferOpen(true);
     window.history.replaceState({}, "", window.location.pathname);
@@ -2297,7 +2296,7 @@ export default function AdminWebinarDetail() {
             .admin-workspace-rail{position:relative;top:auto;display:flex;gap:4px;overflow-x:auto;margin:0 -1rem 16px;padding:8px 1rem;border-width:1px 0;border-radius:0;box-shadow:none}
             .admin-workspace-rail>div{display:none}
             .admin-workspace-rail-item{width:auto;flex:none;white-space:nowrap}
-            .admin-webinar-detail .admin-detail-tabs{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr));gap:.35rem;overflow:visible;width:100%;margin-left:0;padding:.45rem!important;border-radius:.8rem;border-width:1px}
+            .admin-webinar-detail .admin-detail-tabs{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:.35rem;overflow:visible;width:100%;margin-left:0;padding:.45rem!important;border-radius:.8rem;border-width:1px}
             .admin-webinar-detail .admin-detail-tabs [role=tab]{min-width:0;min-height:3.25rem;padding:.4rem .2rem;display:flex;flex-direction:column;justify-content:center;gap:.15rem;font-size:.66rem;line-height:1.05;white-space:normal;text-align:center}
             .admin-webinar-detail .admin-detail-tabs [role=tab] svg{margin:0}
           }
@@ -2311,6 +2310,10 @@ export default function AdminWebinarDetail() {
             <TabsTrigger value="schedule" data-testid="tab-schedule">
               <Calendar className="h-4 w-4 mr-1" />
               {s.tabSchedule}
+            </TabsTrigger>
+            <TabsTrigger value="commerce" data-testid="tab-commerce">
+              <ShoppingBag className="h-4 w-4 mr-1" />
+              商品與成交頁
             </TabsTrigger>
             <TabsTrigger value="notifications" data-testid="tab-notifications">
               <Bell className="h-4 w-4 mr-1" />
@@ -2967,50 +2970,6 @@ export default function AdminWebinarDetail() {
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader className="flex flex-row items-center justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-base">銷售優惠</CardTitle>
-                    <CardDescription>可使用既有 Stripe 結帳，或由你的綠界商店直接收款。</CardDescription>
-                  </div>
-                  <Dialog open={isOfferOpen} onOpenChange={setIsOfferOpen}>
-                    <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-offer"><Plus className="h-4 w-4 mr-1" />新增優惠</Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>新增銷售優惠</DialogTitle>
-                        <DialogDescription>{offerProvider === "ecpay" ? "綠界金額為新台幣整數元，需先在管理首頁啟用綠界。" : "Stripe 金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。"}</DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="space-y-2"><Label>收款方式</Label><Input value="綠界 ECPay（會員自有商店）" disabled data-testid="input-offer-provider" /></div>
-                        <div className="space-y-2"><Label>商品名稱</Label><Input value={offerName} onChange={(e) => setOfferName(e.target.value)} data-testid="input-offer-name" /></div>
-                        <div className="space-y-2"><Label>售價（新台幣整數元）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
-                        <Button onClick={() => createOffer.mutate()} disabled={createOffer.isPending} data-testid="button-create-offer">
-                          {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立優惠
-                        </Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-                </CardHeader>
-                <CardContent>
-                  {offers?.length ? <div className="space-y-2">{offers.map((offer) => {
-                    const salesPage = salesPages?.find((page) => page.offerId === offer.id);
-                    const publicUrl = salesPage ? `${window.location.origin}/sales/${salesPage.slug}` : "";
-                    return <div key={offer.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted p-3">
-                      <span className="font-medium">{offer.name} <Badge variant="secondary">{offer.paymentProvider === "ecpay" ? "綠界" : "Stripe"}</Badge></span>
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline">{formatMinorCurrency(offer.currency, offer.amountMinor)}</Badge>
-                        {salesPage ? <>
-                          <Badge variant={salesPage.status === "published" ? "default" : "secondary"}>{salesPage.status === "published" ? "已發布" : "草稿"}</Badge>
-                          <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/sales/${salesPage.id}`)}><Edit className="h-3.5 w-3.5 mr-1" />編輯銷售頁</Button>
-                          {salesPage.status === "published" && <><Button size="icon" variant="ghost" onClick={() => navigator.clipboard.writeText(publicUrl)} title="複製公開網址"><Copy className="h-4 w-4" /></Button><Button size="icon" variant="ghost" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")} title="開啟公開頁"><ExternalLink className="h-4 w-4" /></Button></>}
-                        </> : <Button size="sm" variant="outline" onClick={() => createSalesPage.mutate(offer)} disabled={createSalesPage.isPending}><FileText className="h-3.5 w-3.5 mr-1" />建立銷售頁</Button>}
-                      </div>
-                    </div>
-                  })}</div> : <p className="text-center text-muted-foreground py-5">尚未設定優惠</p>}
-                </CardContent>
-              </Card>
-              <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <Mail className="h-4 w-4" />
@@ -3353,6 +3312,79 @@ export default function AdminWebinarDetail() {
               </Card>
               </>}
               </div>
+            </div>
+          </TabsContent>
+
+          {/* ===== Commerce Tab ===== */}
+          <TabsContent value="commerce">
+            <div className="space-y-6">
+              <Card className="border-primary/30">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ShoppingBag className="h-5 w-5 text-primary" />
+                    商品與成交頁
+                  </CardTitle>
+                  <CardDescription>
+                    管理這場 Webinar 專屬的商品、售價、成交頁與公開下單網址。
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">銷售商品</CardTitle>
+                    <CardDescription>商品款由你的綠界商店直接收取；每個商品都能建立自己的成交頁。</CardDescription>
+                  </div>
+                  <Dialog open={isOfferOpen} onOpenChange={setIsOfferOpen}>
+                    <DialogTrigger asChild>
+                      <Button size="sm" data-testid="button-add-offer"><Plus className="h-4 w-4 mr-1" />新增商品</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>新增銷售商品</DialogTitle>
+                        <DialogDescription>{offerProvider === "ecpay" ? "商品款由你的綠界商店直接收取，售價請輸入新台幣整數元。" : "Stripe 金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。"}</DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-2"><Label>收款方式</Label><Input value="綠界 ECPay（會員自有商店）" disabled data-testid="input-offer-provider" /></div>
+                        <div className="space-y-2"><Label>商品名稱</Label><Input value={offerName} onChange={(e) => setOfferName(e.target.value)} data-testid="input-offer-name" /></div>
+                        <div className="space-y-2"><Label>售價（新台幣整數元）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
+                        <Button onClick={() => createOffer.mutate()} disabled={createOffer.isPending} data-testid="button-create-offer">
+                          {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立商品
+                        </Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </CardHeader>
+                <CardContent>
+                  {offers?.length ? <div className="space-y-3">{offers.map((offer) => {
+                    const salesPage = salesPages?.find((page) => page.offerId === offer.id);
+                    const publicUrl = salesPage ? `${window.location.origin}/sales/${salesPage.slug}` : "";
+                    return <div key={offer.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 p-4">
+                      <div>
+                        <div className="font-medium">{offer.name}</div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <Badge variant="secondary">{offer.paymentProvider === "ecpay" ? "綠界收款" : "Stripe"}</Badge>
+                          <Badge variant="outline">{formatMinorCurrency(offer.currency, offer.amountMinor)}</Badge>
+                          {salesPage && <Badge variant={salesPage.status === "published" ? "default" : "secondary"}>{salesPage.status === "published" ? "成交頁已發布" : "成交頁草稿"}</Badge>}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {salesPage ? <>
+                          <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/sales/${salesPage.id}`)}><Edit className="h-3.5 w-3.5 mr-1" />編輯成交頁</Button>
+                          {salesPage.status === "published" && <>
+                            <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(publicUrl)}><Copy className="h-3.5 w-3.5 mr-1" />複製下單網址</Button>
+                            <Button size="sm" variant="ghost" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3.5 w-3.5 mr-1" />開啟商品頁</Button>
+                          </>}
+                        </> : <Button size="sm" variant="outline" onClick={() => createSalesPage.mutate(offer)} disabled={createSalesPage.isPending}><FileText className="h-3.5 w-3.5 mr-1" />建立成交頁</Button>}
+                      </div>
+                    </div>
+                  })}</div> : <div className="rounded-lg border border-dashed py-12 text-center">
+                    <ShoppingBag className="mx-auto h-8 w-8 text-muted-foreground/60" />
+                    <p className="mt-3 font-medium">這場 Webinar 還沒有商品</p>
+                    <p className="mt-1 text-sm text-muted-foreground">先新增商品與售價，再建立可分享給客戶的成交頁。</p>
+                  </div>}
+                </CardContent>
+              </Card>
             </div>
           </TabsContent>
 
