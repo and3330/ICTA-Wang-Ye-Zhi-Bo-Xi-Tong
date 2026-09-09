@@ -53,7 +53,7 @@ const t: Record<LangFull, Record<string, string>> = {
     regSuccess: "註冊成功！",
     regFailed: "註冊失敗",
     regRetry: "請重試",
-    powered: "Powered by ICTA-WEBINAR",
+     powered: "Powered by 開賣啦 SellCase",
     usernameReq: "請輸入使用者名稱",
     passwordReq: "請輸入密碼",
     usernameMin: "使用者名稱至少 3 個字元",
@@ -91,7 +91,7 @@ const t: Record<LangFull, Record<string, string>> = {
     regSuccess: "注册成功！",
     regFailed: "注册失败",
     regRetry: "请重试",
-    powered: "Powered by ICTA-WEBINAR",
+     powered: "Powered by 開賣啦 SellCase",
     usernameReq: "请输入用户名",
     passwordReq: "请输入密码",
     usernameMin: "用户名至少 3 个字符",
@@ -129,7 +129,7 @@ const t: Record<LangFull, Record<string, string>> = {
     regSuccess: "Registration successful!",
     regFailed: "Registration failed",
     regRetry: "Please try again",
-    powered: "Powered by ICTA-WEBINAR",
+     powered: "Powered by 開賣啦 SellCase",
     usernameReq: "Please enter username",
     passwordReq: "Please enter password",
     usernameMin: "Username must be at least 3 characters",
@@ -283,7 +283,7 @@ export default function AdminLogin() {
           <div className="grid h-11 w-11 place-items-center rounded-xl border border-teal-200/30 bg-teal-200/10 p-1">
             <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
           </div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">ICTA-WEBINAR 亞洲教育自動化行銷研討會系統</h1>
+           <h1 className="text-2xl font-bold text-white tracking-tight">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
         </div>
         <p className="text-slate-400 text-sm">{s.subtitle}</p>
       </div>

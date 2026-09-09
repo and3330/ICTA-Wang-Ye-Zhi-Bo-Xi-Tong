@@ -28,7 +28,7 @@ export default function SalesPage() {
   const checkout = async () => { setCheckoutError(""); try { await openSalesPageOfferCheckout(data.webinarId, data.id, data.offerId); } catch (e) { setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。"); } };
   const blocks = data.blocks.filter((block) => block.enabled);
   return <main className="sales-page">
-    <header><span>ICTA WEBINAR</span><span>安心付款・立即取得課程</span></header>
+     <header><span>開賣啦 SELLCASE</span><span>安心付款・立即取得內容</span></header>
     <div className="studio-frame">
       {blocks.map((block) => {
         if (block.type === "hero") return <section className="studio-preview-hero" key={block.id}><span className="studio-kicker" style={{ color: "#99ead7" }}>為正在前進的你準備</span><h1>{block.headline}</h1><p>{block.subheadline}</p>{block.imageUrl && <img src={block.imageUrl} alt="" />}<button className="sales-cta" onClick={checkout}>{block.ctaLabel}</button></section>;
@@ -40,6 +40,6 @@ export default function SalesPage() {
       })}
     </div>
     {checkoutError && <div className="studio-modal"><div className="studio-modal-card"><b>付款頁面尚未開啟</b><p>{checkoutError}</p><button className="sales-cta" onClick={checkout}>再試一次</button></div></div>}
-    <footer className="sales-footer">由 ICTA Webinar 安全處理訂單</footer>
+     <footer className="sales-footer">由 開賣啦 SellCase 安全處理訂單</footer>
   </main>;
 }

@@ -1,4 +1,4 @@
-# ICTA Webinar 正式營運手冊
+# 開賣啦 SellCase 正式營運手冊
 
 ## 每日監控
 

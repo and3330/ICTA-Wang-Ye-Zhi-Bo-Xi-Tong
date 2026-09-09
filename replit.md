@@ -1,10 +1,12 @@
-# ICTA-WEBINAR - Automated Webinar SaaS Platform
+# 開賣啦 SellCase - AI 自動銷講成交系統
 
 ## 專案概述
 一個多租戶 SaaS「模擬直播」研討會平台，使用預錄的 Vimeo 影片營造直播體驗。用戶可註冊帳號獨立管理自己的直播間，完整的租戶資料隔離。
 
 ## 品牌
-- 品牌名稱：ICTA-WEBINAR（前身 LiveCast）
+- 品牌名稱：開賣啦 SellCase（前身 ICTA-WEBINAR／LiveCast）
+- 品牌標語：一開講，就開賣。
+- 核心引擎名稱：開賣機
 - Widget JS 同時支援 `window.ICTA_WEBINAR` 和 `window.LiveCast`（向下相容）
 
 ## 多語系 (i18n)

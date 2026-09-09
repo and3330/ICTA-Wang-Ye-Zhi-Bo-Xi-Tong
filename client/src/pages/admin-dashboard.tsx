@@ -556,7 +556,7 @@ export default function AdminDashboard() {
         videoDurationMinutes: "",
       });
       toast({
-        title: "AI Webinar 草稿已建立",
+        title: "開賣場草稿已建立",
         description: `已產生 ${result.counts.messages} 則訊息、${result.counts.polls} 個投票、${result.counts.ctas} 個 CTA 與 ${result.counts.emails} 封 Email。`,
       });
       setLocation(`/admin/webinars/${result.webinar.id}`);
@@ -811,7 +811,7 @@ export default function AdminDashboard() {
           <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
-            <h1 className="text-xl font-bold tracking-tight">ICTA-WEBINAR 亞洲教育自動化行銷研討會系統</h1>
+            <h1 className="text-xl font-bold tracking-tight">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1140,13 +1140,13 @@ export default function AdminDashboard() {
               }}
             >
               <Sparkles className="h-4 w-4 mr-2" />
-              AI Webinar 建立精靈
+              開賣場建立精靈
             </Button>
             <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-primary" />
-                  AI Webinar 建立精靈
+                  開賣場建立精靈
                 </DialogTitle>
                 <DialogDescription>
                   AI 會建立可編輯的草稿，不會自動發布或寄信。

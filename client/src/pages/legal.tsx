@@ -6,7 +6,7 @@ const sections = {
     title: "服務條款",
     updated: "最後更新：2026 年 9 月 3 日",
     content: [
-      ["服務內容", "ICTA Webinar 提供自動化直播研討會建立、報名、影片播放、AI 互動、資料分析及相關管理工具。實際可用功能與發布額度依使用者目前的方案及訂閱狀態而定。"],
+       ["服務內容", "開賣啦 SellCase 提供 AI 自動銷講成交、報名、影片播放、AI 互動、資料分析及相關管理工具。實際可用功能與發布額度依使用者目前的方案及訂閱狀態而定。"],
       ["帳號責任", "您應提供正確的註冊資料、妥善保管帳號密碼，並對帳號下建立及發布的內容負責。若發現未經授權的使用，請立即通知我們。"],
       ["可接受使用方式", "不得使用本服務進行詐欺、侵權、散播惡意程式、未經同意的垃圾訊息，或任何違反適用法律的活動。我們得限制或停止明顯危害平台或第三方的使用行為。"],
       ["內容與授權", "您保留所上傳內容的權利，並授予我們為提供、維護及改善服務所必要的有限處理權限。您必須確保擁有影片、圖片、文件及其他素材的合法使用權。"],
@@ -55,7 +55,7 @@ export default function Legal() {
         <div className="mx-auto flex max-w-4xl items-center justify-between px-5 py-4">
           <Link href="/" className="flex items-center gap-2 font-bold">
             <ShieldCheck className="h-5 w-5 text-[#0c8f92]" />
-            ICTA WEBINAR
+            開賣啦 SellCase
           </Link>
           <Link href="/" className="flex items-center gap-2 text-sm font-semibold text-[#39707a] hover:text-[#0c8f92]">
             <ArrowLeft className="h-4 w-4" />
@@ -65,7 +65,7 @@ export default function Legal() {
       </header>
 
       <article className="mx-auto max-w-4xl px-5 py-12 sm:py-16">
-        <p className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-[#0c8f92]">ICTA Webinar Legal</p>
+         <p className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-[#0c8f92]">SellCase Legal</p>
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">{page.title}</h1>
         <p className="mt-3 text-sm text-[#64858c]">{page.updated}</p>
 
@@ -85,7 +85,7 @@ export default function Legal() {
         </div>
 
         <aside className="mt-12 rounded-2xl border border-[#c8dfdf] bg-white p-5 text-sm leading-7 text-[#64858c]">
-          本頁為 ICTA Webinar 的一般服務政策說明。若適用法律提供更高的消費者或資料保護權利，仍以該法律規定為準。
+           本頁為開賣啦 SellCase 的一般服務政策說明。若適用法律提供更高的消費者或資料保護權利，仍以該法律規定為準。
         </aside>
       </article>
     </main>
