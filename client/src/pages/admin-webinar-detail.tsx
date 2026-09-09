@@ -1231,6 +1231,16 @@ export default function AdminWebinarDetail() {
   const [settingsSection, setSettingsSection] = useState("tracking");
   const [aiSection, setAiSection] = useState("assistant");
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("setupProduct") !== "1") return;
+    setActiveTab("notifications");
+    setNotificationsSection("notifications");
+    setOfferName(params.get("productName")?.trim().slice(0, 200) || "");
+    setIsOfferOpen(true);
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
   const { data: webinar, isLoading: webinarLoading } = useQuery<Webinar & TrackingWebinar>({
     queryKey: ["/api/webinars", id],
     enabled: !!id,
@@ -1692,7 +1702,7 @@ export default function AdminWebinarDetail() {
       const safe = offer.name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
       const slug = `${safe.slice(0, 58)}-${Date.now().toString(36)}`;
       const blocks = [
-        { id: "hero_main", enabled: true, type: "hero", headline: `讓「${offer.name}」帶你走得更遠`, subheadline: "一套專為實作設計的方法，現在就開始建立你的下一步。", ctaLabel: "立即加入" },
+        { id: "hero_main", enabled: true, type: "hero", headline: `讓「${offer.name}」帶你走得更遠`, subheadline: webinar?.description || "一套專為實作設計的方法，現在就開始建立你的下一步。", imageUrl: webinar?.coverImage || undefined, ctaLabel: "立即加入" },
         { id: "benefits_main", enabled: true, type: "benefits", headline: "這次，你會帶走什麼", items: ["清楚的行動框架", "可以立即套用的方法", "更篤定的下一步"] },
         { id: "offer_main", enabled: true, type: "offer", headline: "現在加入完整方案", priceLabel: "", buttonLabel: "立即取得課程" },
         { id: "faq_main", enabled: true, type: "faq", items: [{ question: "我適合參加嗎？", answer: "如果你正在尋找更清楚、更能落地的方法，這個方案很適合你。" }] },

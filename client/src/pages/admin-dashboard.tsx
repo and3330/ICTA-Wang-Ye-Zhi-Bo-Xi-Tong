@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
@@ -24,7 +24,7 @@ import {
   Plus, Video, Calendar, Crown,
   ExternalLink, Loader2, LogOut, Radio, Copy,
   BarChart3, Users, Pencil, Share2, MessageCircle,
-  Eye, Code, Trash2, MoreVertical, Languages, Sparkles
+  Eye, Code, Trash2, MoreVertical, Languages, Sparkles, ImagePlus, Upload, X, ShoppingBag
 } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 
@@ -348,13 +348,17 @@ export default function AdminDashboard() {
   const { toast } = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isAiWizardOpen, setIsAiWizardOpen] = useState(false);
+  const [isProductPagePromptOpen, setIsProductPagePromptOpen] = useState(false);
+  const [createdWizardWebinar, setCreatedWizardWebinar] = useState<Webinar | null>(null);
+  const [isUploadingWizardBanner, setIsUploadingWizardBanner] = useState(false);
+  const wizardBannerFileRef = useRef<HTMLInputElement>(null);
   const [aiWizardStep, setAiWizardStep] = useState(1);
   const [aiWizard, setAiWizard] = useState({
     title: "",
     audience: "",
     goal: "",
     ctaText: "",
-    ctaUrl: "",
+    coverImage: "",
     sourceContent: "",
     vimeoUrl: "",
     startTime: "",
@@ -526,7 +530,7 @@ export default function AdminDashboard() {
         audience: aiWizard.audience,
         goal: aiWizard.goal,
         ctaText: aiWizard.ctaText,
-        ctaUrl: aiWizard.ctaUrl,
+        coverImage: aiWizard.coverImage,
         sourceContent: aiWizard.sourceContent,
         vimeoUrl: aiWizard.vimeoUrl,
         startTime: new Date(aiWizard.startTime).toISOString(),
@@ -544,13 +548,15 @@ export default function AdminDashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars"] });
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
       setIsAiWizardOpen(false);
+      setCreatedWizardWebinar(result.webinar);
+      setIsProductPagePromptOpen(true);
       setAiWizardStep(1);
       setAiWizard({
         title: "",
         audience: "",
         goal: "",
         ctaText: "",
-        ctaUrl: "",
+        coverImage: "",
         sourceContent: "",
         vimeoUrl: "",
         startTime: "",
@@ -560,7 +566,6 @@ export default function AdminDashboard() {
         title: "開賣場草稿已建立",
         description: `已產生 ${result.counts.messages} 則訊息、${result.counts.polls} 個投票、${result.counts.ctas} 個 CTA 與 ${result.counts.emails} 封 Email。`,
       });
-      setLocation(`/admin/webinars/${result.webinar.id}`);
     },
     onError: (error: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
@@ -1188,6 +1193,66 @@ export default function AdminDashboard() {
                     />
                   </div>
                   <div className="space-y-2">
+                    <Label>報名頁 Banner（選填）</Label>
+                    {aiWizard.coverImage ? (
+                      <div className="relative overflow-hidden rounded-lg border bg-muted">
+                        <img src={aiWizard.coverImage} alt="Banner 預覽" className="h-40 w-full object-cover" />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="secondary"
+                          className="absolute right-2 top-2"
+                          onClick={() => setAiWizard((current) => ({ ...current, coverImage: "" }))}
+                          aria-label="移除 Banner"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="w-full rounded-lg border-2 border-dashed p-5 text-center transition-colors hover:border-primary hover:bg-primary/5"
+                        onClick={() => wizardBannerFileRef.current?.click()}
+                        disabled={isUploadingWizardBanner}
+                        data-testid="button-ai-wizard-upload-banner"
+                      >
+                        {isUploadingWizardBanner ? <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /> : <ImagePlus className="mx-auto h-7 w-7 text-muted-foreground" />}
+                        <span className="mt-2 block text-sm font-medium">{isUploadingWizardBanner ? "Banner 上傳中…" : "點此上傳 Banner"}</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">支援 JPG、PNG、WebP、AVIF</span>
+                      </button>
+                    )}
+                    <input
+                      ref={wizardBannerFileRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/avif"
+                      className="hidden"
+                      data-testid="input-ai-wizard-banner"
+                      onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        setIsUploadingWizardBanner(true);
+                        try {
+                          const body = new FormData();
+                          body.append("file", file);
+                          const response = await fetch("/api/upload", { method: "POST", body });
+                          const result = await response.json();
+                          if (!response.ok) throw new Error(result.message || "Banner 上傳失敗");
+                          setAiWizard((current) => ({ ...current, coverImage: result.url }));
+                        } catch (error) {
+                          toast({ title: "Banner 上傳失敗", description: error instanceof Error ? error.message : "請稍後再試", variant: "destructive" });
+                        } finally {
+                          setIsUploadingWizardBanner(false);
+                          if (wizardBannerFileRef.current) wizardBannerFileRef.current.value = "";
+                        }
+                      }}
+                    />
+                    {aiWizard.coverImage && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => wizardBannerFileRef.current?.click()} disabled={isUploadingWizardBanner}>
+                        <Upload className="mr-2 h-4 w-4" />更換 Banner
+                      </Button>
+                    )}
+                  </div>
+                  <div className="space-y-2">
                     <Label htmlFor="ai-wizard-audience">目標受眾 *</Label>
                     <Textarea
                       id="ai-wizard-audience"
@@ -1209,25 +1274,15 @@ export default function AdminDashboard() {
                       data-testid="input-ai-wizard-goal"
                     />
                   </div>
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="ai-wizard-cta">主要 CTA</Label>
-                      <Input
-                        id="ai-wizard-cta"
-                        value={aiWizard.ctaText}
-                        onChange={(event) => setAiWizard((current) => ({ ...current, ctaText: event.target.value }))}
-                        placeholder="預約諮詢"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="ai-wizard-cta-url">CTA 網址</Label>
-                      <Input
-                        id="ai-wizard-cta-url"
-                        value={aiWizard.ctaUrl}
-                        onChange={(event) => setAiWizard((current) => ({ ...current, ctaUrl: event.target.value }))}
-                        placeholder="https://..."
-                      />
-                    </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-wizard-cta">直播中的主要行動（選填）</Label>
+                    <Input
+                      id="ai-wizard-cta"
+                      value={aiWizard.ctaText}
+                      onChange={(event) => setAiWizard((current) => ({ ...current, ctaText: event.target.value }))}
+                      placeholder="例如：了解完整課程；網址可在建立商品頁後設定"
+                    />
+                    <p className="text-xs text-muted-foreground">報名頁按鈕會直接開啟報名表，不需要先填 CTA 網址。</p>
                   </div>
                 </div>
               )}
@@ -1388,6 +1443,50 @@ export default function AdminDashboard() {
                     )}
                   </Button>
                 )}
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={isProductPagePromptOpen} onOpenChange={setIsProductPagePromptOpen}>
+            <DialogContent className="sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <ShoppingBag className="h-5 w-5 text-primary" />
+                  要接著建立商品下單頁嗎？
+                </DialogTitle>
+                <DialogDescription>
+                  AI 已完成直播間與內容草稿。商品頁會參考「{createdWizardWebinar?.title || "這場直播"}」的內容建立，你只需要先補上商品名稱與售價。
+                </DialogDescription>
+              </DialogHeader>
+              <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+                商品頁仍只會建立為草稿，不會自動發布；商品款會由你自己的綠界帳號收取。
+              </div>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const webinarId = createdWizardWebinar?.id;
+                    setIsProductPagePromptOpen(false);
+                    if (webinarId) setLocation(`/admin/webinar/${webinarId}`);
+                  }}
+                >
+                  先編輯直播間
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    const webinar = createdWizardWebinar;
+                    setIsProductPagePromptOpen(false);
+                    if (webinar) {
+                      setLocation(`/admin/webinar/${webinar.id}?setupProduct=1&productName=${encodeURIComponent(webinar.title)}`);
+                    }
+                  }}
+                  data-testid="button-ai-wizard-create-product-page"
+                >
+                  <ShoppingBag className="mr-2 h-4 w-4" />
+                  建立商品頁
+                </Button>
               </div>
             </DialogContent>
           </Dialog>

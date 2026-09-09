@@ -492,3 +492,6 @@ body footer b{color:inherit;font-weight:inherit}.icta-home footer b{color:var(--
 .video-frame-empty{display:grid;place-items:center;padding:24px;text-align:center;color:#91ead3;font:600 13px Manrope,sans-serif}
 .landing-blocks{position:relative}
 @media(max-width:800px){.landing-block button.icon-action{display:inline-flex;flex:0 0 auto}}
+
+/* Mega-menu items without a leading icon use a two-column content/arrow grid. */
+.sc-site .sc-mega-list a.sc-mega-item-plain{grid-template-columns:minmax(0,1fr) 15px}
