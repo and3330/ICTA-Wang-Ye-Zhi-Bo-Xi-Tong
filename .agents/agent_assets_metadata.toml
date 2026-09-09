@@ -5,14 +5,14 @@ generated = []
 id = "wut9YZ1cqhMvY8M6VB26Y"
 uri = "file://reports/ICTA-Webinar-Competitive-Analysis-2026-09.pdf"
 type = "pdf"
-title = "ICTA Webinar × Bombmy 綜合競品分析"
-description = "8 頁正式書面報告：完成度評估、功能矩陣、定位地圖、180 天路線與 GitHub 專案判讀。"
+title = "ICTA Webinar 商業市場與競品分析"
+description = "包含市場定位、Bombmy 競品差距、護城河、產品優先級與銷售切角。"
 logical_id = "6bbc4ff6-79f2-49c2-834c-be32dca86fd1"
 content_hash = "sha256:002ab0270769965c61ab6f5866a827a1c361457da7f2cf13e4f70fc065e1b04e"
 size = 7408919
 mtime_ms = 1788377690009
-storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/6bbc4ff6-79f2-49c2-834c-be32dca86fd1/1d7e81dd-2077-4b2f-ad80-8d01024e7142"
-storage_version_token = "1788377743899448"
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:9fdababe-8652-4086-97a8-8c9b80d2191b/6bbc4ff6-79f2-49c2-834c-be32dca86fd1/676c060d-fd4b-42dc-9a92-613675e7f20c"
+storage_version_token = "1788938578405915"
 content_type = "application/pdf"
 
 [[outputs]]
