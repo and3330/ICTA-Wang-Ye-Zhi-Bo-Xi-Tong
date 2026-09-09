@@ -24,6 +24,7 @@ import {
 
 const app = express();
 const httpServer = createServer(app);
+let applicationReady = false;
 
 app.set("trust proxy", 1);
 
@@ -55,6 +56,18 @@ const sessionMiddleware = session({
     sameSite: "lax" as const,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
+});
+
+// Open the HTTP port before database and provider initialization. Replit's
+// startup probe checks GET / and otherwise times out while migrations or a
+// Stripe backfill are still running.
+app.use((req, res, next) => {
+  if (applicationReady) return next();
+  if (req.method === "GET" && req.path === "/") {
+    res.setHeader("Retry-After", "5");
+    return res.status(200).type("text/plain").send("SellCase is starting");
+  }
+  return res.status(503).setHeader("Retry-After", "5").json({ message: "Service is starting" });
 });
 
 app.use((req, res, next) => {
@@ -169,6 +182,27 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
 }
 
 (async () => {
+  // ALWAYS serve the app on the port specified in the environment variable PORT.
+  // Listen before migrations and Stripe initialization so publishing can observe
+  // a healthy process while provider setup completes behind the startup gate.
+  const port = parseInt(process.env.PORT || "5000", 10);
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    httpServer.once("error", onError);
+    httpServer.listen(
+      {
+        port,
+        host: "0.0.0.0",
+        reusePort: true,
+      },
+      () => {
+        httpServer.off("error", onError);
+        log(`serving startup probe on port ${port}`);
+        resolve();
+      },
+    );
+  });
+
   const databaseUrl = process.env.DATABASE_URL;
   if (databaseUrl) {
     log('Running application migrations...', 'db');
@@ -244,19 +278,10 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     await setupVite(httpServer, app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
-})();
+  applicationReady = true;
+  log(`application ready on port ${port}`);
+})().catch(async (error) => {
+  console.error("Fatal application startup error:", safeErrorText(error));
+  await shutdown("startup failure");
+  process.exit(1);
+});
