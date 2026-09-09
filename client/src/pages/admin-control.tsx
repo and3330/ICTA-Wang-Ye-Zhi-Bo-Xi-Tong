@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import { 
@@ -78,6 +79,14 @@ const t: Record<LangAdmin, Record<string, string>> = {
     toastTipPushed: "小提示卡已顯示給所有觀眾",
     toastChatPushed: "假人訊息已發送",
     fillRequired: "請填寫必填欄位",
+    commandCenter: "直播指揮中心",
+    commandHint: "掌握觀眾動態、回覆訊息，並在直播中推送成交內容。",
+    audienceHint: "選擇觀眾即可查看並單獨回覆",
+    chatHint: "點選觀眾即可切換為私人對話",
+    actionsHint: "推送後會立即出現在觀眾畫面",
+    broadcastMode: "發送給所有觀眾",
+    privateMode: "只回覆",
+    emptyMessages: "尚無聊天訊息",
   },
   "zh-CN": {
     defaultHostName: "主办人",
@@ -142,6 +151,14 @@ const t: Record<LangAdmin, Record<string, string>> = {
     toastTipPushed: "小提示卡已显示给所有观众",
     toastChatPushed: "假人消息已发送",
     fillRequired: "请填写必填栏位",
+    commandCenter: "直播指挥中心",
+    commandHint: "掌握观众动态、回复消息，并在直播中推送成交内容。",
+    audienceHint: "选择观众即可查看并单独回复",
+    chatHint: "点击观众即可切换为私人对话",
+    actionsHint: "推送后会立即出现在观众画面",
+    broadcastMode: "发送给所有观众",
+    privateMode: "只回复",
+    emptyMessages: "尚无聊天消息",
   },
 };
 
@@ -510,12 +527,12 @@ export default function AdminControl() {
 
   return (
     <div className="admin-shell admin-control">
-      <header className="border-b bg-card sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
+      <header className="control-header border-b bg-card/95 backdrop-blur sticky top-0 z-20">
+        <div className="container mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => setLocation(`/admin/webinar/${id}`)} data-testid="button-back">
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div className="flex-1">
+          <div className="control-header-title flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-bold">{webinar.title}</h1>
               <Badge variant={isConnected ? "default" : "secondary"}>
@@ -524,15 +541,7 @@ export default function AdminControl() {
             </div>
             <p className="text-sm text-muted-foreground">{s.headerSubtitle}</p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <Users className="h-4 w-4" />
-              <span>{viewerCount} {s.viewerCount}</span>
-            </div>
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <Heart className="h-4 w-4" />
-              <span>{likeCount}</span>
-            </div>
+          <div className="control-header-actions flex items-center gap-3">
             <Button
               variant="ghost"
               size="sm"
@@ -546,17 +555,32 @@ export default function AdminControl() {
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-6">
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="lg:col-span-1">
+      <main className="control-main container mx-auto px-4 py-6">
+        <section className="control-intro">
+          <div>
+            <p className="control-eyebrow"><Radio className="h-3.5 w-3.5" /> {s.liveStatus}</p>
+            <h2>{s.commandCenter}</h2>
+            <p>{s.commandHint}</p>
+          </div>
+          <div className="control-stats" aria-label={s.liveStatus}>
+            <div className="control-stat control-stat-live"><span><Users className="h-4 w-4" />{s.onlineCount}</span><strong>{viewerCount}</strong></div>
+            <div className="control-stat"><span><MessageCircle className="h-4 w-4" />{s.interactiveViewers}</span><strong>{viewerSessions.size}</strong></div>
+            <div className="control-stat"><span><Heart className="h-4 w-4" />{s.likeCount}</span><strong>{likeCount}</strong></div>
+            <div className="control-stat"><span><MessageSquare className="h-4 w-4" />{s.messageTotal}</span><strong>{allMessages.length}</strong></div>
+          </div>
+        </section>
+
+        <div className="control-grid">
+          <Card className="control-audience-card">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <Users className="h-4 w-4" />
                 {s.viewerList} ({totalViewers})
               </CardTitle>
+              <p className="text-xs text-muted-foreground">{s.audienceHint}</p>
             </CardHeader>
             <CardContent>
-              <ScrollArea className="h-[500px]">
+              <ScrollArea className="control-audience-scroll">
                 <div className="space-y-2">
                   <Button
                     variant={selectedSession === null ? "default" : "ghost"}
@@ -646,8 +670,10 @@ export default function AdminControl() {
             </CardContent>
           </Card>
 
-          <Card className="lg:col-span-1">
+          <Card className="control-chat-card">
             <CardHeader className="pb-3">
+              <div className="control-card-heading">
+                <div>
               <CardTitle className="text-base flex items-center gap-2">
                 <MessageSquare className="h-4 w-4" />
                 {selectedSession 
@@ -655,10 +681,19 @@ export default function AdminControl() {
                   : s.allChat
                 }
               </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">{s.chatHint}</p>
+                </div>
+                <Badge variant={selectedSession ? "default" : "secondary"}>
+                  {selectedSession ? `${s.privateMode} ${getSessionNickname(selectedSession)}` : s.broadcastMode}
+                </Badge>
+              </div>
             </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[350px] mb-4 pr-4">
+            <CardContent className="control-chat-content">
+              <ScrollArea className="control-chat-scroll mb-4 pr-4">
                 <div className="space-y-3">
+                  {(selectedSession ? getSessionMessages() : allMessages).length === 0 && (
+                    <div className="control-empty-chat"><MessageSquare className="h-7 w-7" /><p>{s.emptyMessages}</p></div>
+                  )}
                   {(selectedSession ? getSessionMessages() : allMessages).map((msg, index) => {
                     const chatMsg = msg as ChatMessage & { sessionId?: string };
                     return (
@@ -702,13 +737,13 @@ export default function AdminControl() {
                 </div>
               </ScrollArea>
 
-              <div className="space-y-3 border-t pt-3">
-                <div className="flex gap-2">
+              <div className="control-composer space-y-3 border-t pt-3">
+                <div className="control-compose-meta">
                   <Input
                     placeholder={s.displayName}
                     value={hostName}
                     onChange={(e) => { setHostName(e.target.value); setHostNameEdited(true); }}
-                    className="max-w-[120px]"
+                    className="max-w-[150px]"
                     data-testid="input-host-name"
                   />
                 </div>
@@ -726,14 +761,15 @@ export default function AdminControl() {
                     }}
                     data-testid="input-host-message"
                   />
-                  <Button 
+                  <Button
                     onClick={selectedSession ? sendReplyToSession : sendBroadcastMessage} 
-                    size="icon"
+                    className="control-send-button"
                     variant={selectedSession ? "default" : "secondary"}
                     disabled={!!selectedSession && !onlineSessions.has(selectedSession)}
                     data-testid="button-send-host-message"
                   >
                     <Send className="h-4 w-4" />
+                    <span>{selectedSession ? s.toastReply : s.toastBroadcast}</span>
                   </Button>
                 </div>
                 
@@ -752,16 +788,17 @@ export default function AdminControl() {
             </CardContent>
           </Card>
 
-          <Card className="lg:col-span-1">
+          <Card className="control-actions-card">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <Radio className="h-4 w-4" />
                 {s.controlPanel}
               </CardTitle>
+              <p className="text-xs text-muted-foreground">{s.actionsHint}</p>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="border rounded-md p-3 bg-muted/40">
+                <div className="control-studio border rounded-lg p-3 bg-muted/30">
                   <h4 className="font-medium mb-1">{s.studio}</h4>
                   <p className="text-xs text-muted-foreground mb-3">{s.studioHint}</p>
 
@@ -780,7 +817,13 @@ export default function AdminControl() {
                     </div>
                   )}
 
-                  <div className="space-y-2 mb-4">
+                  <Tabs defaultValue="cta" className="control-action-tabs">
+                    <TabsList className="grid w-full grid-cols-3">
+                      <TabsTrigger value="cta">CTA</TabsTrigger>
+                      <TabsTrigger value="tip">{s.quickTip}</TabsTrigger>
+                      <TabsTrigger value="chat">{s.quickChat}</TabsTrigger>
+                    </TabsList>
+                  <TabsContent value="cta" className="space-y-2 mt-3">
                     <p className="text-sm font-medium">{s.quickCta}</p>
                     <Input
                       placeholder={s.ctaText}
@@ -818,9 +861,9 @@ export default function AdminControl() {
                       <Send className="h-4 w-4 mr-1" />
                       {s.pushNow}
                     </Button>
-                  </div>
+                  </TabsContent>
 
-                  <div className="space-y-2 mb-4 border-t pt-3">
+                  <TabsContent value="tip" className="space-y-2 mt-3">
                     <p className="text-sm font-medium">{s.quickTip}</p>
                     <Input
                       placeholder={s.tipTitle}
@@ -845,9 +888,9 @@ export default function AdminControl() {
                       <Send className="h-4 w-4 mr-1" />
                       {s.pushNow}
                     </Button>
-                  </div>
+                  </TabsContent>
 
-                  <div className="space-y-2 border-t pt-3">
+                  <TabsContent value="chat" className="space-y-2 mt-3">
                     <p className="text-sm font-medium">{s.quickChat}</p>
                     <div className="flex gap-2">
                       <Input
@@ -881,7 +924,8 @@ export default function AdminControl() {
                       <MessageCircle className="h-4 w-4 mr-1" />
                       {s.sendChat}
                     </Button>
-                  </div>
+                  </TabsContent>
+                  </Tabs>
                 </div>
 
                 <div>
@@ -913,27 +957,6 @@ export default function AdminControl() {
                   )}
                 </div>
 
-                <div className="border-t pt-4">
-                  <h4 className="font-medium mb-2">{s.liveStatus}</h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Card className="p-3 text-center">
-                      <div className="text-xl font-bold">{viewerCount}</div>
-                      <div className="text-xs text-muted-foreground">{s.onlineCount}</div>
-                    </Card>
-                    <Card className="p-3 text-center">
-                      <div className="text-xl font-bold">{viewerSessions.size}</div>
-                      <div className="text-xs text-muted-foreground">{s.interactiveViewers}</div>
-                    </Card>
-                    <Card className="p-3 text-center">
-                      <div className="text-xl font-bold">{likeCount}</div>
-                      <div className="text-xs text-muted-foreground">{s.likeCount}</div>
-                    </Card>
-                    <Card className="p-3 text-center">
-                      <div className="text-xl font-bold">{allMessages.length}</div>
-                      <div className="text-xs text-muted-foreground">{s.messageTotal}</div>
-                    </Card>
-                  </div>
-                </div>
               </div>
             </CardContent>
           </Card>
