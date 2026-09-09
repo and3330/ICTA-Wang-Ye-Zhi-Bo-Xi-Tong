@@ -36,6 +36,7 @@ import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip
 import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost, ChatMessage } from "@shared/schema";
 import type { FeedbackResponse } from "@shared/schema";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 import {
   isValidGtmContainerId,
   isValidMetaPixelId,
@@ -2216,6 +2217,7 @@ export default function AdminWebinarDetail() {
               </div>
             ) : (
               <div className="flex items-center gap-3">
+                <SellCaseLogo className="admin-detail-brand-logo" />
                 {webinar.coverImage && (
                   <img
                     src={webinar.coverImage}
@@ -2268,7 +2270,27 @@ export default function AdminWebinarDetail() {
           .admin-workspace-rail-item-active{background:hsl(var(--primary)/.11);color:hsl(var(--primary));font-weight:650}
           .admin-webinar-detail [role=tabpanel]{margin-top:0}
           .admin-webinar-detail .shadcn-card{box-shadow:0 8px 24px hsl(202 35% 25%/.045)}
-          @media(max-width:767px){.admin-workspace-grid{display:block}.admin-workspace-rail{position:relative;top:auto;display:flex;gap:4px;overflow-x:auto;margin:0 -1rem 16px;padding:8px 1rem;border-width:1px 0;border-radius:0;box-shadow:none}.admin-workspace-rail>div{display:none}.admin-workspace-rail-item{width:auto;flex:none;white-space:nowrap}.admin-webinar-detail .admin-detail-tabs{border-radius:0;border-width:0 0 1px;margin-left:-1rem;width:calc(100% + 2rem)}}
+          .admin-detail-brand-logo{display:none}
+          @media(max-width:767px){
+            .admin-webinar-detail header .container{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center}
+            .admin-webinar-detail header .container>.flex-1{min-width:0}
+            .admin-webinar-detail header .container>.flex-1>div{gap:.55rem}
+            .admin-webinar-detail header .container>.flex-1 img:not(.admin-detail-brand-logo){display:none}
+            .admin-detail-brand-logo{display:block;width:112px;height:auto;flex:none}
+            .admin-webinar-detail header h1{max-width:132px;font-size:.7rem;margin-top:.15rem}
+            .admin-webinar-detail header p{display:none}
+            .admin-webinar-detail header .container>div:last-child{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto auto;width:100%;gap:.4rem}
+            .admin-webinar-detail header [data-testid=button-edit-landing-page]{width:100%;min-width:0}
+            .admin-webinar-detail header [data-testid=button-detail-lang-toggle]{min-width:2.75rem;padding:.5rem;font-size:0}
+            .admin-webinar-detail header [data-testid=button-detail-lang-toggle] svg{margin:0}
+            .admin-workspace-grid{display:block}
+            .admin-workspace-rail{position:relative;top:auto;display:flex;gap:4px;overflow-x:auto;margin:0 -1rem 16px;padding:8px 1rem;border-width:1px 0;border-radius:0;box-shadow:none}
+            .admin-workspace-rail>div{display:none}
+            .admin-workspace-rail-item{width:auto;flex:none;white-space:nowrap}
+            .admin-webinar-detail .admin-detail-tabs{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr));gap:.35rem;overflow:visible;width:100%;margin-left:0;padding:.45rem!important;border-radius:.8rem;border-width:1px}
+            .admin-webinar-detail .admin-detail-tabs [role=tab]{min-width:0;min-height:3.25rem;padding:.4rem .2rem;display:flex;flex-direction:column;justify-content:center;gap:.15rem;font-size:.66rem;line-height:1.05;white-space:normal;text-align:center}
+            .admin-webinar-detail .admin-detail-tabs [role=tab] svg{margin:0}
+          }
         `}</style>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="admin-detail-tabs mb-5 flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/70 bg-card/80 p-1.5 shadow-sm">
