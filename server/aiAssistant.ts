@@ -41,6 +41,7 @@ export async function answerViewerQuestion(
   teacherName: string,
   question: string,
   fallbackMessage?: string,
+  knowledgeOnly = false,
 ): Promise<string | null> {
   try {
     const docs = await storage.getWebinarDocuments(webinarId);
@@ -61,11 +62,15 @@ export async function answerViewerQuestion(
       `回覆要精簡（盡量 2-4 句、120 字內），直接給答案，不要冗長開場白。`,
       `使用與觀眾相同的語言回覆（觀眾用繁體中文就用繁體中文）。`,
       hasKnowledge
-        ? `以下是本研討會的相關資料，請優先根據這些資料回答：\n\n${knowledge}`
+        ? knowledgeOnly
+          ? `以下是本研討會唯一可使用的知識來源。只能根據這些內容回答，不可使用外部知識、常識或自行推測：\n\n${knowledge}`
+          : `以下是本研討會的相關資料，請優先根據這些資料回答：\n\n${knowledge}`
         : `目前沒有提供額外資料，請依你的專業常識友善回答；若超出研討會主題範圍，可禮貌引導觀眾稍後私訊或聯繫主辦團隊。`,
       fallbackMessage && fallbackMessage.trim()
         ? `若你無法根據以上資料或專業常識確定答案，請「只」輸出這個標記：${NO_ANSWER_TOKEN}（不要加任何其他文字）。`
-        : `若資料中找不到答案，不要編造，誠實說明你會請團隊後續補充，或建議觀眾留下聯絡方式。`,
+        : knowledgeOnly
+          ? `若知識來源中找不到答案，不要編造，請直接說明目前提供的內容不足以回答這個問題。`
+          : `若資料中找不到答案，不要編造，誠實說明你會請團隊後續補充，或建議觀眾留下聯絡方式。`,
       `絕對不要提到「資料」「文檔」「AI」「系統提示」這類字眼，要表現得像老師本人在回答。`,
     ].join("\n\n");
 

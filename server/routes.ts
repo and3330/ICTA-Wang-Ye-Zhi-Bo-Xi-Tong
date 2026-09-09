@@ -3120,6 +3120,68 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // 後台 AI 試問：不建立聊天室訊息，也不向任何 WebSocket 廣播。
+  app.post("/api/webinars/:id/ai/test-question", requireWebinarOwner, async (req, res) => {
+    const webinarId = req.params.id as string;
+    const parsed = z.object({
+      question: z.string().trim().min(1, "請輸入測試問題").max(2000, "測試問題不可超過 2000 字"),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: parsed.error.issues[0]?.message || "測試問題格式不正確" });
+    }
+
+    const webinar = await storage.getWebinar(webinarId);
+    if (!webinar) return res.status(404).json({ message: "找不到直播間" });
+    const documents = await storage.getWebinarDocuments(webinarId);
+    if (!documents.some(document => document.content.trim())) {
+      return res.status(400).json({ message: "尚未加入知識文檔，請先新增內容再試問" });
+    }
+
+    const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
+    const unlimited = !!owner && (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise");
+    let reservationId: string | null = null;
+    if (!unlimited) {
+      const reservation = webinar.userId
+        ? await storage.reserveAiCredits(webinar.userId, AI_POINTS_PER_REPLY)
+        : null;
+      if (!reservation) {
+        return res.status(402).json({
+          message: `AI 點數不足，本次試問需要 ${AI_POINTS_PER_REPLY} 點，請先儲值`,
+        });
+      }
+      reservationId = reservation.reservationId;
+    }
+
+    try {
+      const ai = webinar.aiSettings;
+      const teacherName = (ai?.teacherName || "").trim() || "老師";
+      const answer = await answerViewerQuestion(
+        webinarId,
+        webinar.title,
+        teacherName,
+        parsed.data.question,
+        ai?.fallbackMessage,
+        true,
+      );
+      if (!answer) {
+        if (reservationId) await storage.refundAiCreditReservation(reservationId);
+        return res.status(502).json({ message: "AI 暫時無法完成回答，點數已退回，請稍後再試" });
+      }
+      if (reservationId) await storage.finalizeAiCreditReservation(reservationId);
+      return res.json({ answer, pointsCharged: unlimited ? 0 : AI_POINTS_PER_REPLY, unlimited });
+    } catch (error) {
+      if (reservationId) {
+        try {
+          await storage.refundAiCreditReservation(reservationId);
+        } catch (refundError) {
+          console.error("Failed to refund AI test-question reservation:", refundError);
+        }
+      }
+      console.error("AI test question failed:", error);
+      return res.status(502).json({ message: "AI 暫時無法完成回答，點數已退回，請稍後再試" });
+    }
+  });
+
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }
   async function reserveGenerationPoints(webinarId: string): Promise<{ ok: true; reservationId: string | null } | { ok: false; status: number; message: string }> {

@@ -182,6 +182,13 @@ const t: Record<LangAdmin, Record<string, string>> = {
     aiTrainingUnlimited: "無限",
     aiTrainingAddKnowledge: "管理知識文檔",
     aiTrainingConfigure: "調整回覆設定",
+    aiTestTitle: "試問 AI",
+    aiTestDesc: "使用目前知識文檔與回覆設定預覽答案；內容不會出現在聊天室或觀眾端。",
+    aiTestPlaceholder: "輸入觀眾可能會問的問題...",
+    aiTestSubmit: "送出試問",
+    aiTestCost: "每次試問消耗 1 點 AI 點數；模型失敗會自動退回。",
+    aiTestNoDocs: "請先新增知識文檔後再試問。",
+    aiTestAnswer: "AI 預覽回答",
     aiTitle: "AI 自動回覆設定",
     aiDesc: "啟用後，當觀眾在聊天室提問，AI 會根據你提供的資料，以老師名義自動回覆該觀眾。",
     aiEnabledLabel: "啟用 AI 自動回覆",
@@ -624,6 +631,13 @@ const t: Record<LangAdmin, Record<string, string>> = {
     aiTrainingUnlimited: "无限",
     aiTrainingAddKnowledge: "管理知识文档",
     aiTrainingConfigure: "调整回复设置",
+    aiTestTitle: "试问 AI",
+    aiTestDesc: "使用当前知识文档与回复设置预览答案；内容不会出现在聊天室或观众端。",
+    aiTestPlaceholder: "输入观众可能会问的问题...",
+    aiTestSubmit: "发送试问",
+    aiTestCost: "每次试问消耗 1 点 AI 点数；模型失败会自动退回。",
+    aiTestNoDocs: "请先新增知识文档后再试问。",
+    aiTestAnswer: "AI 预览回答",
     aiTitle: "AI 自动回复设置",
     aiDesc: "启用后，当观众在聊天室提问，AI 会根据你提供的资料，以老师名义自动回复该观众。",
     aiEnabledLabel: "启用 AI 自动回复",
@@ -1131,6 +1145,8 @@ export default function AdminWebinarDetail() {
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiTeacherName, setAiTeacherName] = useState("");
   const [aiFallback, setAiFallback] = useState("");
+  const [aiTestQuestion, setAiTestQuestion] = useState("");
+  const [aiTestAnswer, setAiTestAnswer] = useState("");
   const [isDocOpen, setIsDocOpen] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("");
   const [newDocContent, setNewDocContent] = useState("");
@@ -1312,6 +1328,23 @@ export default function AdminWebinarDetail() {
     }
     toast({ title: s.aiGenFail, description: String(err?.message || ""), variant: "destructive" });
   };
+
+  const testAiQuestion = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/webinars/${id}/ai/test-question`, {
+        question: aiTestQuestion,
+      });
+      return await response.json() as { answer: string; pointsCharged: number; unlimited: boolean };
+    },
+    onSuccess: (result) => {
+      setAiTestAnswer(result.answer);
+      queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+    },
+    onError: (error: any) => {
+      setAiTestAnswer("");
+      handleAiError(error);
+    },
+  });
 
   const generateInteractions = useMutation({
     mutationFn: async () => {
@@ -5526,6 +5559,44 @@ export default function AdminWebinarDetail() {
                         <Settings className="mr-1.5 h-4 w-4" />{s.aiTrainingConfigure}
                       </Button>
                     </div>
+                  </div>
+                  <div className="space-y-4 rounded-xl border bg-muted/20 p-4">
+                    <div>
+                      <p className="text-sm font-semibold">{s.aiTestTitle}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{s.aiTestDesc}</p>
+                    </div>
+                    <Textarea
+                      value={aiTestQuestion}
+                      onChange={(event) => setAiTestQuestion(event.target.value)}
+                      placeholder={s.aiTestPlaceholder}
+                      rows={3}
+                      maxLength={2000}
+                      disabled={!aiTrainingReady || testAiQuestion.isPending}
+                      data-testid="input-ai-test-question"
+                    />
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        {aiTrainingReady ? s.aiTestCost : s.aiTestNoDocs}
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => testAiQuestion.mutate()}
+                        disabled={!aiTrainingReady || !aiTestQuestion.trim() || testAiQuestion.isPending}
+                        data-testid="button-ai-test-question"
+                      >
+                        {testAiQuestion.isPending
+                          ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                          : <Send className="mr-1.5 h-4 w-4" />}
+                        {s.aiTestSubmit}
+                      </Button>
+                    </div>
+                    {aiTestAnswer && (
+                      <div className="rounded-lg border bg-background p-4" data-testid="ai-test-answer">
+                        <p className="mb-2 text-xs font-semibold text-muted-foreground">{s.aiTestAnswer}</p>
+                        <p className="whitespace-pre-wrap text-sm leading-6">{aiTestAnswer}</p>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
