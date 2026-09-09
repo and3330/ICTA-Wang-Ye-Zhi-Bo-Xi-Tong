@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sendTransactionalMail } from "./mail";
+import { emailVerificationMail, sendTransactionalMail } from "./mail";
 import { sendEmail } from "./gmail";
 
 test("transactional mail requires configuration without exposing values", async () => {
@@ -52,4 +52,14 @@ test("webinar email uses the shared Resend transport", async () => {
     if (oldFrom === undefined) delete process.env.EMAIL_FROM_ADDRESS;
     else process.env.EMAIL_FROM_ADDRESS = oldFrom;
   }
+});
+
+test("email verification mail has branded HTML and a plain-text code", () => {
+  const mail = emailVerificationMail("042731");
+  assert.match(mail.subject, /SellCase/);
+  assert.match(mail.html, /lang="zh-Hant"/);
+  assert.match(mail.html, /042731/);
+  assert.match(mail.html, /10 分鐘/);
+  assert.match(mail.text, /042731/);
+  assert.doesNotMatch(mail.html, /verify-email\?token|https?:\/\//);
 });

@@ -74,8 +74,8 @@ import {
 } from "./subscriptionEntitlements";
 import { isPaidBillableSubscriptionInvoice, reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
 import { canRetainViewerWsAccess, canViewWebinar, webinarWatchEligibility } from "./webinarAccess";
-import { appBaseUrl, sendTransactionalMail } from "./mail";
-import { createRawToken, hashToken } from "./security";
+import { appBaseUrl, emailVerificationMail, sendTransactionalMail } from "./mail";
+import { createNumericVerificationCode, createRawToken, hashEmailVerificationCode, hashToken } from "./security";
 import { postgresRateLimit } from "./rateLimit";
 import { persistProductionError } from "./errorReporter";
 import { createLiveCtaKey, verifyLiveCtaKey } from "./liveCtaKeys";
@@ -1073,13 +1073,11 @@ export async function registerRoutes(
         companyName: typeof companyName === "string" ? companyName.slice(0, 200) : "",
         emailVerificationRequired: true,
       });
-      const rawToken = createRawToken();
-      await storage.createAuthToken(user.id, "email_verification", hashToken(rawToken), new Date(Date.now() + 30 * 60 * 1000));
-      const verificationUrl = `${appBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}`;
+      const verificationCode = createNumericVerificationCode();
+      await storage.createAuthToken(user.id, "email_verification", hashEmailVerificationCode(user.id, verificationCode), new Date(Date.now() + 10 * 60 * 1000));
       await sendTransactionalMail({
         to: user.email,
-        subject: "Verify your email",
-        html: `<p>Please verify your account. This link expires in 30 minutes.</p><p><a href="${verificationUrl}">Verify email</a></p>`,
+        ...emailVerificationMail(verificationCode),
       });
       res.status(201).json({ success: true, verificationRequired: true });
     } catch (error: any) {
@@ -1115,10 +1113,17 @@ export async function registerRoutes(
   });
 
   app.post("/api/admin/verify-email", async (req, res) => {
-    const token = typeof req.body?.token === "string" ? req.body.token : "";
-    if (!token || token.length > 256) return res.status(400).json({ message: "Invalid or expired token" });
-    const consumed = await storage.consumeEmailVerificationToken(hashToken(token));
-    if (!consumed) return res.status(400).json({ message: "Invalid or expired token" });
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: "驗證碼錯誤或已過期" });
+    }
+    const user = await storage.getUserByEmail(email);
+    if (!user || !user.emailVerificationRequired || user.emailVerifiedAt) {
+      return res.status(400).json({ message: "驗證碼錯誤或已過期" });
+    }
+    const consumed = await storage.consumeEmailVerificationCode(user.id, hashEmailVerificationCode(user.id, code));
+    if (!consumed) return res.status(400).json({ message: "驗證碼錯誤或已過期" });
     res.json({ success: true });
   });
 
@@ -1130,12 +1135,11 @@ export async function registerRoutes(
       if (!user || !user.emailVerificationRequired || user.emailVerifiedAt) return res.json(generic);
       const latest = await storage.getLatestAuthTokenCreatedAt(user.id, "email_verification");
       if (latest && Date.now() - latest.getTime() < 60_000) return res.json(generic);
-      const rawToken = createRawToken();
-      await storage.createAuthToken(user.id, "email_verification", hashToken(rawToken), new Date(Date.now() + 30 * 60 * 1000));
+      const verificationCode = createNumericVerificationCode();
+      await storage.createAuthToken(user.id, "email_verification", hashEmailVerificationCode(user.id, verificationCode), new Date(Date.now() + 10 * 60 * 1000));
       await sendTransactionalMail({
         to: user.email,
-        subject: "Verify your email",
-        html: `<p><a href="${appBaseUrl()}/verify-email?token=${encodeURIComponent(rawToken)}">Verify email</a>. This link expires in 30 minutes.</p>`,
+        ...emailVerificationMail(verificationCode),
       });
     } catch (error) {
       // Deliberately return the identical response to prevent account enumeration.

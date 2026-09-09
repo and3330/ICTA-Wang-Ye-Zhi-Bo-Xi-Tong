@@ -12,6 +12,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 const langLabels: Record<LangFull, string> = {
   "zh-TW": "繁體中文",
@@ -150,7 +151,9 @@ export default function AdminLogin() {
   const [verificationRequired, setVerificationRequired] = useState(false);
   const [verificationUsername, setVerificationUsername] = useState("");
   const [verificationEmail, setVerificationEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const [isResending, setIsResending] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
   const { lang, setLang } = useLang();
   const [langOpen, setLangOpen] = useState(false);
 
@@ -220,7 +223,7 @@ export default function AdminLogin() {
       setVerificationUsername(data.username);
       setVerificationEmail(data.email);
       setMode("login");
-      toast({ title: s.regSuccess, description: lang === "en" ? "Check your email to verify your account before signing in." : "請查看電子郵件並完成驗證後再登入。" });
+      toast({ title: s.regSuccess, description: lang === "en" ? "Enter the six-digit code sent to your email." : "請輸入寄到信箱的六位數驗證碼。" });
     } catch (error: any) {
       toast({
         title: s.regFailed,
@@ -237,10 +240,36 @@ export default function AdminLogin() {
     setIsResending(true);
     try {
       await apiRequest("POST", "/api/admin/resend-verification", { email: verificationEmail });
-      toast({ title: lang === "en" ? "Verification email sent" : "驗證信已寄出", description: lang === "en" ? "Please check your inbox." : "請查看收件匣。" });
+      setVerificationCode("");
+      toast({ title: lang === "en" ? "Verification code sent" : "驗證碼已寄出", description: lang === "en" ? "Please check your inbox." : "請查看收件匣。" });
     } catch (error: any) {
-      toast({ title: lang === "en" ? "Unable to resend email" : "無法重新寄送驗證信", description: error.message, variant: "destructive" });
+      toast({ title: lang === "en" ? "Unable to resend code" : "無法重新寄送驗證碼", description: error.message, variant: "destructive" });
     } finally { setIsResending(false); }
+  };
+
+  const verifyEmailCode = async () => {
+    if (!verificationEmail || verificationCode.length !== 6) return;
+    setIsVerifying(true);
+    try {
+      await apiRequest("POST", "/api/admin/verify-email", {
+        email: verificationEmail,
+        code: verificationCode,
+      });
+      setVerificationRequired(false);
+      setVerificationCode("");
+      toast({
+        title: lang === "en" ? "Email verified" : "電子郵件驗證完成",
+        description: lang === "en" ? "You can now sign in." : "現在可以使用帳號密碼登入。",
+      });
+    } catch (error: any) {
+      toast({
+        title: lang === "en" ? "Invalid verification code" : "驗證碼錯誤或已過期",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsVerifying(false);
+    }
   };
 
   useEffect(() => {
@@ -304,13 +333,29 @@ export default function AdminLogin() {
                   <div className="flex gap-2">
                     <MailCheck className="h-5 w-5 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold">{lang === "en" ? "Verify your email to continue" : "請先驗證電子郵件"}</p>
-                      <p>{lang === "en" ? `The account “${verificationUsername}” needs email verification.` : `帳號「${verificationUsername}」需要完成電子郵件驗證。`}</p>
+                      <p className="font-semibold">{lang === "en" ? "Enter your verification code" : "輸入電子郵件驗證碼"}</p>
+                      <p>{lang === "en" ? `Enter the six-digit code sent for “${verificationUsername}”.` : `請輸入寄給帳號「${verificationUsername}」的六位數驗證碼。`}</p>
                     </div>
                   </div>
                   <Input type="email" value={verificationEmail} onChange={(e) => setVerificationEmail(e.target.value)} placeholder={lang === "en" ? "Account email address" : "帳號電子郵件"} autoComplete="email" />
+                  <InputOTP
+                    maxLength={6}
+                    value={verificationCode}
+                    onChange={(value) => setVerificationCode(value.replace(/\D/g, ""))}
+                    inputMode="numeric"
+                    containerClassName="justify-center"
+                  >
+                    <InputOTPGroup>
+                      {Array.from({ length: 6 }, (_, index) => (
+                        <InputOTPSlot key={index} index={index} className="h-11 w-11 bg-white text-base" />
+                      ))}
+                    </InputOTPGroup>
+                  </InputOTP>
+                  <Button type="button" size="sm" className="w-full" disabled={!verificationEmail || verificationCode.length !== 6 || isVerifying} onClick={verifyEmailCode} data-testid="button-verify-email">
+                    {isVerifying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "en" ? "Verify email" : "驗證電子郵件"}
+                  </Button>
                   <Button type="button" size="sm" variant="outline" className="w-full" disabled={!verificationEmail || isResending} onClick={resendVerification} data-testid="button-resend-verification">
-                    {isResending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "en" ? "Resend verification email" : "重新寄送驗證信"}
+                    {isResending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{lang === "en" ? "Resend verification code" : "重新寄送驗證碼"}
                   </Button>
                 </div>
               )}

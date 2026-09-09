@@ -79,7 +79,7 @@ export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   createAuthToken(userId: string, purpose: string, tokenHash: string, expiresAt: Date): Promise<void>;
   getLatestAuthTokenCreatedAt(userId: string, purpose: string): Promise<Date | null>;
-  consumeEmailVerificationToken(tokenHash: string): Promise<boolean>;
+  consumeEmailVerificationCode(userId: string, tokenHash: string): Promise<boolean>;
   resetPasswordWithToken(tokenHash: string, passwordHash: string): Promise<boolean>;
   createSupportFeedback(userId: string, data: InsertSupportFeedback): Promise<SupportFeedback>;
   listSupportFeedback(): Promise<SupportFeedback[]>;
@@ -411,17 +411,18 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.createdAt ?? null;
   }
 
-  async consumeEmailVerificationToken(tokenHash: string): Promise<boolean> {
+  async consumeEmailVerificationCode(userId: string, tokenHash: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       const token = await tx.update(authTokens).set({ consumedAt: new Date() })
         .where(and(
+          eq(authTokens.userId, userId),
           eq(authTokens.tokenHash, tokenHash),
           eq(authTokens.purpose, "email_verification"),
           isNull(authTokens.consumedAt),
           gt(authTokens.expiresAt, new Date()),
         )).returning({ userId: authTokens.userId });
       if (!token[0]) return false;
-      await tx.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, token[0].userId));
+      await tx.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, userId));
       return true;
     });
   }

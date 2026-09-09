@@ -4,8 +4,16 @@ export function createRawToken(): string {
   return crypto.randomBytes(32).toString("base64url");
 }
 
+export function createNumericVerificationCode(): string {
+  return crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
 export function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+export function hashEmailVerificationCode(userId: string, code: string): string {
+  return hashToken(`${userId}:${code}`);
 }
 
 /** Inclusive expiry boundary: a token is unusable at its expiry timestamp. */

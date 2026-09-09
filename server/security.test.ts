@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRawToken, hashToken, safeErrorText } from "./security";
+import {
+  createNumericVerificationCode,
+  createRawToken,
+  hashEmailVerificationCode,
+  hashToken,
+  safeErrorText,
+} from "./security";
 
 test("authentication tokens are random and only deterministically hash", () => {
   const first = createRawToken();
@@ -10,6 +16,20 @@ test("authentication tokens are random and only deterministically hash", () => {
   assert.match(hashToken(first), /^[a-f0-9]{64}$/);
   assert.equal(hashToken(first), hashToken(first));
   assert.notEqual(hashToken(first), first);
+});
+
+test("email verification codes are six digits and scoped to one account", () => {
+  const code = createNumericVerificationCode();
+  assert.match(code, /^\d{6}$/);
+  assert.equal(
+    hashEmailVerificationCode("user-a", code),
+    hashEmailVerificationCode("user-a", code),
+  );
+  assert.notEqual(
+    hashEmailVerificationCode("user-a", code),
+    hashEmailVerificationCode("user-b", code),
+  );
+  assert.doesNotMatch(hashEmailVerificationCode("user-a", code), new RegExp(code));
 });
 
 test("error sanitization removes credentials and token query values", () => {
