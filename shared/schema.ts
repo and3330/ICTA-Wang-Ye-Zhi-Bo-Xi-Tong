@@ -118,6 +118,7 @@ export const webinars = pgTable("webinars", {
   gtmContainerId: varchar("gtm_container_id", { length: 24 }),
   
   createdAt: timestamp("created_at").defaultNow(),
+  deletedAt: timestamp("deleted_at"),
 });
 
 const emptyTrackingIdToNull = (value: unknown) =>
@@ -136,7 +137,7 @@ export const webinarTrackingSettingsSchema = z.object({
   gtmContainerId: gtmContainerIdSchema.optional(),
 }).strict();
 
-export const insertWebinarSchema = createInsertSchema(webinars).omit({ id: true, createdAt: true }).extend({
+export const insertWebinarSchema = createInsertSchema(webinars).omit({ id: true, createdAt: true, deletedAt: true }).extend({
   startTime: z.coerce.date(),
   metaPixelId: metaPixelIdSchema.optional(),
   gtmContainerId: gtmContainerIdSchema.optional(),
@@ -181,6 +182,15 @@ export const registrations = pgTable("registrations", {
   // 報名者標籤 / 分群
   tags: text("tags").array().default(sql`'{}'::text[]`),
 });
+
+export const registrationIdentityKeys = pgTable("registration_identity_keys", {
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
+  normalizedEmail: text("normalized_email").notNull(),
+  registrationId: varchar("registration_id").references(() => registrations.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  identityUnique: uniqueIndex("registration_identity_keys_uniq").on(table.webinarId, table.normalizedEmail),
+}));
 
 export const insertRegistrationSchema = createInsertSchema(registrations).omit({ 
   id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true 
@@ -306,6 +316,7 @@ export const ctaButtons = pgTable("cta_buttons", {
   endTime: integer("end_time"), // seconds when to hide (null = until end)
   style: text("style").default("primary"), // primary, secondary, danger
   ctaKey: varchar("cta_key", { length: 64 }).notNull().unique(), // server-generated stable tracking key
+  archivedAt: timestamp("archived_at"),
 });
 
 export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
@@ -317,7 +328,7 @@ export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value
   }
 }, "CTA URL must be an absolute HTTP or HTTPS URL");
 export const insertCtaButtonSchema = createInsertSchema(ctaButtons)
-  .omit({ id: true, ctaKey: true })
+  .omit({ id: true, ctaKey: true, archivedAt: true })
   .extend({ url: safeCtaUrlSchema.nullish(), offerId: z.string().uuid().nullish() })
   .superRefine((value, context) => {
     if (!value.offerId && !value.url) {
@@ -557,14 +568,17 @@ export const emailReminders = pgTable("email_reminders", {
   sentAt: timestamp("sent_at"),
   status: text("status").notNull().default("pending"), // pending, sent, failed
   errorMessage: text("error_message"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  leaseToken: varchar("lease_token", { length: 64 }),
+  leaseExpiresAt: timestamp("lease_expires_at"),
 }, (table) => ({
   regSeqUniq: uniqueIndex("email_reminders_reg_seq_uniq")
     .on(table.registrationId, table.sequenceId)
     .where(sql`sequence_id IS NOT NULL`),
 }));
 
-export const insertEmailReminderSchema = createInsertSchema(emailReminders).omit({ 
-  id: true, sentAt: true, errorMessage: true 
+export const insertEmailReminderSchema = createInsertSchema(emailReminders).omit({
+  id: true, sentAt: true, errorMessage: true, attemptCount: true, leaseToken: true, leaseExpiresAt: true
 });
 export type InsertEmailReminder = z.infer<typeof insertEmailReminderSchema>;
 export type EmailReminder = typeof emailReminders.$inferSelect;
@@ -734,6 +748,31 @@ export const aiCreditReservations = pgTable("ai_credit_reservations", {
   userCreatedIndex: index("ai_credit_reservations_user_created_idx").on(table.userId, table.createdAt),
 }));
 
+export const aiCreditRevocations = pgTable("ai_credit_revocations", {
+  idempotencyKey: text("idempotency_key").primaryKey(),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const aiResponseArtifacts = pgTable("ai_response_artifacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  reservationId: varchar("reservation_id").references(() => aiCreditReservations.id).unique(),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  webinarId: varchar("webinar_id").references(() => webinars.id),
+  kind: text("kind").notNull(),
+  requestText: text("request_text").notNull(),
+  responseText: text("response_text").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const uploadedAssets = pgTable("uploaded_assets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  url: text("url").notNull().unique(),
+  filename: text("filename").notNull().unique(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Webinar Sessions (用於循環排程的場次)
 export const webinarSessions = pgTable("webinar_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -759,9 +798,30 @@ export const webhooks = pgTable("webhooks", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertWebhookSchema = createInsertSchema(webhooks).omit({ id: true, createdAt: true });
+export const insertWebhookSchema = createInsertSchema(webhooks).omit({ id: true, createdAt: true }).extend({
+  eventType: z.enum(["registration", "completion", "attendance"]),
+  targetUrl: z.string().trim().url().max(2048),
+  secret: z.string().max(512).nullish(),
+});
 export type InsertWebhook = z.infer<typeof insertWebhookSchema>;
 export type Webhook = typeof webhooks.$inferSelect;
+
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webhookId: varchar("webhook_id").notNull().references(() => webhooks.id, { onDelete: "cascade" }),
+  eventType: text("event_type").notNull(),
+  eventKey: text("event_key"),
+  payload: jsonb("payload").notNull(),
+  status: text("status").notNull().default("pending"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  leaseToken: varchar("lease_token", { length: 64 }),
+  nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
+  lastError: text("last_error"),
+  deliveredAt: timestamp("delivered_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  eventKeyUnique: uniqueIndex("webhook_deliveries_event_key_uniq").on(table.webhookId, table.eventKey),
+}));
 
 // Webinar Documents (AI 助教知識文檔)
 export const webinarDocuments = pgTable("webinar_documents", {
@@ -848,14 +908,17 @@ export const currencyCodeSchema = z.string().trim().regex(/^[A-Za-z]{3}$/)
   .transform(value => value.toUpperCase());
 
 export const createWebinarOfferSchema = z.object({
-  paymentProvider: z.enum(["stripe", "ecpay"]).default("stripe"),
+  paymentProvider: z.literal("ecpay").default("ecpay"),
   name: z.string().trim().min(1).max(200),
   amountMinor: z.number().int().min(1).max(999999999),
   currency: currencyCodeSchema,
   checkoutMode: z.literal("payment").default("payment"),
 }).strict().superRefine((value, context) => {
-  if (value.paymentProvider === "ecpay" && value.currency !== "TWD") {
+  if (value.currency !== "TWD") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["currency"], message: "ECPay offers must use TWD" });
+  }
+  if (value.amountMinor % 100 !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["amountMinor"], message: "ECPay TWD offers must use whole-dollar amounts" });
   }
 });
 

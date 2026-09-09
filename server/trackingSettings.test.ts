@@ -47,10 +47,19 @@ test("webinar PATCH validates tracking IDs and public reads suppress unsafe lega
   } as Webinar;
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     updateWebinar: storage.updateWebinar,
   };
   let updateData: Record<string, unknown> | undefined;
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
+  storage.getUser = async id => id === ownerId ? ({
+    id: ownerId,
+    isActive: true,
+    isSuperAdmin: false,
+    subscriptionPlan: "starter",
+    subscriptionStatus: "active",
+    planExpiresAt: new Date(Date.now() + 86_400_000),
+  } as any) : undefined;
   storage.updateWebinar = async (_id, data) => {
     updateData = data as Record<string, unknown>;
     return { ...webinar, ...data } as Webinar;
@@ -71,6 +80,7 @@ test("webinar PATCH validates tracking IDs and public reads suppress unsafe lega
   const baseUrl = `http://127.0.0.1:${address.port}`;
   t.after(async () => {
     storage.getWebinar = originals.getWebinar;
+    storage.getUser = originals.getUser;
     storage.updateWebinar = originals.updateWebinar;
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   });

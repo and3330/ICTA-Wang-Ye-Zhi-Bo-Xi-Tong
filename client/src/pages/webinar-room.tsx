@@ -16,7 +16,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Clock, Play } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { getWatchToken } from "@/lib/watch-access";
+import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
+import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 interface WebSocketMessage {
@@ -83,20 +84,20 @@ export default function WebinarRoom() {
   const [countdown, setCountdown] = useState("");
 
   const progressSaveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentTimeRef = useRef(0);
+  const saveProgressMutationRef = useRef<(data: { viewerSessionId: string; lastPosition: number; totalWatched: number }) => void>(() => {});
 
   const { data: webinar, isLoading } = useQuery<Webinar>({
     queryKey: ["/api/webinars", id],
     enabled: !!id,
   });
   const watchToken = getWatchToken(id);
-  const { data: watchState, isLoading: watchStateLoading } = useQuery<{ selectedSession?: string | null; waitUntil?: string | null; vimeoUrl?: string | null; canWatch: boolean }>({
+  const { data: watchState, isLoading: watchStateLoading } = useQuery<WatchState>({
     queryKey: ["/api/webinars", id, "watch-state", watchToken],
-    queryFn: async () => {
-      const response = await apiRequest("GET", `/api/webinars/${id}/watch-state?watchToken=${encodeURIComponent(watchToken!)}`);
-      return response.json();
-    },
+    queryFn: () => fetchWatchState(id!, watchToken!),
     enabled: !!id && !!watchToken,
-    refetchInterval: (query) => query.state.data?.canWatch ? false : 5_000,
+    refetchInterval: isJoined ? 30_000 : 5_000,
+    retry: false,
   });
   const effectiveVimeoUrl = watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl;
   const canWatch = watchToken ? !!watchState?.canWatch : !!webinar?.vimeoUrl;
@@ -133,7 +134,7 @@ export default function WebinarRoom() {
 
   const submitSurveyMutation = useMutation({
     mutationFn: async (data: { surveyId: string; responses: Record<string, any> }) => {
-      return apiRequest("POST", "/api/feedback-responses", data);
+      return apiRequest("POST", "/api/feedback-responses", { ...data, watchToken });
     },
     onSuccess: () => {
       setSurveySubmitted(true);
@@ -146,6 +147,14 @@ export default function WebinarRoom() {
       return apiRequest("POST", `/api/webinars/${id}/progress`, data);
     },
   });
+  currentTimeRef.current = currentTime;
+  saveProgressMutationRef.current = saveProgressMutation.mutate;
+  useAttendanceTracking({
+    registrationId: watchState?.registrationId,
+    watchToken,
+    enabled: isJoined && canWatch,
+    currentPosition: currentTime,
+  });
 
   const isOnDemand = webinar?.scheduleMode && typeof webinar.scheduleMode === 'object' && (webinar.scheduleMode as any).onDemand;
   const isJustInTime = webinar?.scheduleMode && typeof webinar.scheduleMode === 'object' && (webinar.scheduleMode as any).justInTime;
@@ -155,7 +164,15 @@ export default function WebinarRoom() {
 
     const checkTime = () => {
       const now = new Date();
-      const start = new Date(watchState?.waitUntil || watchState?.selectedSession || webinar.startTime);
+      const scheduledStart = watchState?.waitUntil || watchState?.selectedSession;
+      // A watch-state without a selected/wait session represents immediate
+      // on-demand access. Never substitute the webinar's future fixed start.
+      if (canWatch && !scheduledStart) {
+        setWaitingForStart(false);
+        setCountdown("");
+        return;
+      }
+      const start = new Date(scheduledStart || webinar.startTime);
       const diff = start.getTime() - now.getTime();
       
       if (diff <= 0) {
@@ -282,17 +299,18 @@ export default function WebinarRoom() {
     if (!isJoined || !isPlaying) return;
 
     progressSaveRef.current = setInterval(() => {
-      saveProgressMutation.mutate({
+      const latestPosition = currentTimeRef.current;
+      saveProgressMutationRef.current({
         viewerSessionId: sessionId,
-        lastPosition: currentTime,
-        totalWatched: currentTime,
+        lastPosition: latestPosition,
+        totalWatched: latestPosition,
       });
     }, 30000);
 
     return () => {
       if (progressSaveRef.current) clearInterval(progressSaveRef.current);
     };
-  }, [isJoined, isPlaying, currentTime, sessionId]);
+  }, [isJoined, isPlaying, sessionId]);
 
   useEffect(() => {
     if (!ctas) return;
@@ -420,7 +438,9 @@ export default function WebinarRoom() {
       }
     };
 
-    ws.onclose = () => {};
+    ws.onclose = (event) => {
+      if (event.code === 1008 || event.code === 1011) setIsJoined(false);
+    };
 
     return () => {
       if (currentTime > 0) {

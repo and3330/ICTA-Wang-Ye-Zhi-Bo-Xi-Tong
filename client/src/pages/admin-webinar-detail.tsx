@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { applyDatePreservingTime, dateKeyInTimeZone } from "@/lib/webinar-date";
 import { cn } from "@/lib/utils";
 import { resolveFunnelCtaLabel } from "@/lib/funnel-analytics";
 import { 
@@ -40,6 +41,13 @@ import {
   isValidMetaPixelId,
   type TrackingWebinar,
 } from "@/components/webinar-tracking-provider";
+
+function toLocalDateTimeInput(value: Date | string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
 
 interface AnalyticsResponse {
   webinar: Webinar;
@@ -1109,8 +1117,7 @@ export default function AdminWebinarDetail() {
   const [isOfferOpen, setIsOfferOpen] = useState(false);
   const [offerName, setOfferName] = useState("");
   const [offerAmountMinor, setOfferAmountMinor] = useState("");
-  const [offerCurrency, setOfferCurrency] = useState("TWD");
-  const [offerProvider, setOfferProvider] = useState<"stripe" | "ecpay">("stripe");
+  const offerProvider = "ecpay" as const;
   const [isPollOpen, setIsPollOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [funnelFrom, setFunnelFrom] = useState(() => {
@@ -1471,7 +1478,7 @@ export default function AdminWebinarDetail() {
       setEditTitle(webinar.title);
       setEditDescription(webinar.description || "");
       setEditVimeoUrl(webinar.vimeoUrl);
-      setEditStartTime(new Date(webinar.startTime).toISOString().slice(0, 16));
+      setEditStartTime(toLocalDateTimeInput(webinar.startTime));
       setEditCoverImage(webinar.coverImage || "");
       setMetaPixelId(webinar.metaPixelId || "");
       setGtmContainerId(webinar.gtmContainerId || "");
@@ -1574,7 +1581,7 @@ export default function AdminWebinarDetail() {
       }
 
       if (webinar.startTime) {
-        setEventStartDate(new Date(webinar.startTime).toISOString().slice(0, 10));
+        setEventStartDate(dateKeyInTimeZone(webinar.startTime, webinar.timezone || "Asia/Taipei"));
       }
     }
   }, [webinar]);
@@ -1657,15 +1664,15 @@ export default function AdminWebinarDetail() {
 
   const createOffer = useMutation({
     mutationFn: async () => {
-      const amountMinor = Number(offerAmountMinor);
-      if (!offerName.trim() || !Number.isInteger(amountMinor) || amountMinor <= 0) {
-        throw new Error("請輸入有效的商品名稱與最小貨幣單位金額");
+      const amountTwd = Number(offerAmountMinor);
+      if (!offerName.trim() || !Number.isInteger(amountTwd) || amountTwd <= 0) {
+        throw new Error("請輸入有效的商品名稱與新台幣整數金額");
       }
       const response = await apiRequest("POST", `/api/webinars/${id}/offers`, {
         paymentProvider: offerProvider,
         name: offerName.trim(),
-        amountMinor,
-        currency: offerProvider === "ecpay" ? "TWD" : offerCurrency,
+        amountMinor: amountTwd * 100,
+        currency: "TWD",
         checkoutMode: "payment",
       });
       return response.json();
@@ -1675,7 +1682,7 @@ export default function AdminWebinarDetail() {
       setIsOfferOpen(false);
       setOfferName("");
       setOfferAmountMinor("");
-      toast({ title: offerProvider === "ecpay" ? "綠界優惠已建立" : "優惠已建立於 Stripe" });
+      toast({ title: "綠界商品已建立" });
     },
     onError: (error: any) => toast({ title: error.message, variant: "destructive" }),
   });
@@ -2507,7 +2514,13 @@ export default function AdminWebinarDetail() {
                             updateWebinar.mutate({
                               scheduleMode,
                               timezone: timezoneType === "fixed" ? settingsTimezone : (webinar?.timezone || "Asia/Taipei"),
-                              startTime: eventStartDate ? new Date(eventStartDate).toISOString() : undefined,
+                              startTime: eventStartDate && webinar?.startTime
+                                ? applyDatePreservingTime(
+                                    webinar.startTime,
+                                    eventStartDate,
+                                    timezoneType === "fixed" ? settingsTimezone : (webinar.timezone || "Asia/Taipei"),
+                                  )
+                                : undefined,
                             });
                           }}
                           disabled={updateWebinar.isPending}
@@ -2937,12 +2950,9 @@ export default function AdminWebinarDetail() {
                         <DialogDescription>{offerProvider === "ecpay" ? "綠界金額為新台幣整數元，需先在管理首頁啟用綠界。" : "Stripe 金額請使用最小貨幣單位，例如 USD 10.00 輸入 1000。"}</DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4">
-                        <div className="space-y-2"><Label>付款服務</Label><Select value={offerProvider} onValueChange={(value: "stripe" | "ecpay") => { setOfferProvider(value); if (value === "ecpay") setOfferCurrency("TWD"); }}><SelectTrigger data-testid="select-offer-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="stripe">Stripe</SelectItem><SelectItem value="ecpay">綠界 ECPay（自有商店）</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label>收款方式</Label><Input value="綠界 ECPay（會員自有商店）" disabled data-testid="input-offer-provider" /></div>
                         <div className="space-y-2"><Label>商品名稱</Label><Input value={offerName} onChange={(e) => setOfferName(e.target.value)} data-testid="input-offer-name" /></div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-2"><Label>金額（最小貨幣單位）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
-                          <div className="space-y-2"><Label>幣別</Label><Input maxLength={3} disabled={offerProvider === "ecpay"} value={offerCurrency} onChange={(e) => setOfferCurrency(e.target.value.toUpperCase())} data-testid="input-offer-currency" /></div>
-                        </div>
+                        <div className="space-y-2"><Label>售價（新台幣整數元）</Label><Input type="number" min="1" step="1" value={offerAmountMinor} onChange={(e) => setOfferAmountMinor(e.target.value)} data-testid="input-offer-amount" /></div>
                         <Button onClick={() => createOffer.mutate()} disabled={createOffer.isPending} data-testid="button-create-offer">
                           {createOffer.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}建立優惠
                         </Button>
@@ -2957,7 +2967,7 @@ export default function AdminWebinarDetail() {
                     return <div key={offer.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted p-3">
                       <span className="font-medium">{offer.name} <Badge variant="secondary">{offer.paymentProvider === "ecpay" ? "綠界" : "Stripe"}</Badge></span>
                       <div className="flex items-center gap-2">
-                        <Badge variant="outline">{offer.currency} {offer.amountMinor.toLocaleString()} minor units</Badge>
+                        <Badge variant="outline">{formatMinorCurrency(offer.currency, offer.amountMinor)}</Badge>
                         {salesPage ? <>
                           <Badge variant={salesPage.status === "published" ? "default" : "secondary"}>{salesPage.status === "published" ? "已發布" : "草稿"}</Badge>
                           <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/sales/${salesPage.id}`)}><Edit className="h-3.5 w-3.5 mr-1" />編輯銷售頁</Button>

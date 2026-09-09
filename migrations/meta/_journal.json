@@ -92,6 +92,27 @@
       "when": 1788406000000,
       "tag": "0013_checkout_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788954000000,
+      "tag": "0014_reliability_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788955000000,
+      "tag": "0015_reliability_security_finalize",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1788956000000,
+      "tag": "0016_archive_historical_ctas",
+      "breakpoints": true
     }
   ]
 }

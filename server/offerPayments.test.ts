@@ -37,9 +37,10 @@ test("only a verified payload is handed to domain payment processing", async () 
 });
 
 test("offer and CTA schemas reject invalid amounts, currencies, and missing destinations", () => {
-  assert.equal(createWebinarOfferSchema.safeParse({ name: "Course", amountMinor: 1000, currency: "usd" }).success, true);
-  assert.equal(createWebinarOfferSchema.safeParse({ name: "Course", amountMinor: 10.5, currency: "USD" }).success, false);
-  assert.equal(createWebinarOfferSchema.safeParse({ name: "Course", amountMinor: 1000, currency: "US" }).success, false);
+  assert.equal(createWebinarOfferSchema.safeParse({ paymentProvider: "ecpay", name: "Course", amountMinor: 1000, currency: "twd" }).success, true);
+  assert.equal(createWebinarOfferSchema.safeParse({ paymentProvider: "stripe", name: "Course", amountMinor: 1000, currency: "TWD" }).success, false);
+  assert.equal(createWebinarOfferSchema.safeParse({ paymentProvider: "ecpay", name: "Course", amountMinor: 1050, currency: "TWD" }).success, false);
+  assert.equal(createWebinarOfferSchema.safeParse({ paymentProvider: "ecpay", name: "Course", amountMinor: 1000, currency: "USD" }).success, false);
   const base = { webinarId: "webinar", text: "Buy", startTime: 0 };
   assert.equal(insertCtaButtonSchema.safeParse(base).success, false);
   assert.equal(insertCtaButtonSchema.safeParse({ ...base, url: "https://example.test" }).success, true);

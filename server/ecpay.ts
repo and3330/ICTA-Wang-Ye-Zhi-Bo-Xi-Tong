@@ -90,11 +90,12 @@ export function merchantTradeDate(date = new Date()): string {
 
 export function validateEcpayCallback(
   fields: Record<string, string>,
-  expected: { merchantId: string; merchantTradeNo: string; amount: number; hashKey: string; hashIv: string },
+  expected: { merchantId: string; merchantTradeNo: string; amount: number; hashKey: string; hashIv: string; allowSimulated?: boolean },
 ): boolean {
   return fields.MerchantID === expected.merchantId
     && fields.MerchantTradeNo === expected.merchantTradeNo
     && fields.RtnCode === "1"
+    && (expected.allowSimulated === true || fields.SimulatePaid !== "1")
     && /^\d+$/.test(fields.TradeAmt || "")
     && Number(fields.TradeAmt) === expected.amount
     && verifyCheckMacValue(fields, expected.hashKey, expected.hashIv);

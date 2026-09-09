@@ -97,10 +97,11 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
 
 test("checkout distinguishes direct published sales pages from trusted CTA attribution", async (t) => {
   const webinarId = "checkout-webinar";
+  const ownerId = "checkout-owner";
   const offerId = "7780bedb-f243-4f24-98ef-d97d0107ca42";
   const salesPageId = "6680bedb-f243-4f24-98ef-d97d0107ca42";
   const ctaId = "5580bedb-f243-4f24-98ef-d97d0107ca42";
-  const webinar = { id: webinarId, publishStatus: "published" } as Webinar;
+  const webinar = { id: webinarId, userId: ownerId, publishStatus: "published" } as Webinar;
   const offer = {
     id: offerId, webinarId, active: true, paymentProvider: "ecpay",
     ecpayItemName: "Published offer", ecpayAmountTwd: 100, checkoutMode: "payment",
@@ -113,11 +114,20 @@ test("checkout distinguishes direct published sales pages from trusted CTA attri
   let ctaLookupCalled = false;
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     getWebinarOffer: storage.getWebinarOffer,
     getCtaButtonsByWebinar: storage.getCtaButtonsByWebinar,
     getPublishedSalesPageCheckoutContext: storage.getPublishedSalesPageCheckoutContext,
   };
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
+  storage.getUser = async id => id === ownerId ? ({
+    id: ownerId,
+    isActive: true,
+    isSuperAdmin: false,
+    subscriptionPlan: "starter",
+    subscriptionStatus: "active",
+    planExpiresAt: new Date(Date.now() + 86_400_000),
+  } as any) : undefined;
   storage.getWebinarOffer = async id => id === offerId ? offer : undefined;
   storage.getCtaButtonsByWebinar = async () => {
     ctaLookupCalled = true;
@@ -212,9 +222,10 @@ test("checkout distinguishes direct published sales pages from trusted CTA attri
 
 test("public sales-page identity is returned and authorizes its bound direct checkout", async (t) => {
   const webinarId = "public-sales-webinar";
+  const ownerId = "public-sales-owner";
   const offerId = "7780bedb-f243-4f24-98ef-d97d0107ca42";
   const salesPageId = "6680bedb-f243-4f24-98ef-d97d0107ca42";
-  const webinar = { id: webinarId, publishStatus: "published" } as Webinar;
+  const webinar = { id: webinarId, userId: ownerId, publishStatus: "published" } as Webinar;
   const offer = {
     id: offerId, webinarId, active: true, paymentProvider: "ecpay",
     ecpayItemName: "Public offer", ecpayAmountTwd: 100, checkoutMode: "payment",
@@ -226,10 +237,19 @@ test("public sales-page identity is returned and authorizes its bound direct che
   let directContextCalled = false;
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     getPublicOfferSalesPage: storage.getPublicOfferSalesPage,
     getPublishedSalesPageCheckoutContext: storage.getPublishedSalesPageCheckoutContext,
   };
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
+  storage.getUser = async id => id === ownerId ? ({
+    id: ownerId,
+    isActive: true,
+    isSuperAdmin: false,
+    subscriptionPlan: "starter",
+    subscriptionStatus: "active",
+    planExpiresAt: new Date(Date.now() + 86_400_000),
+  } as any) : undefined;
   storage.getPublicOfferSalesPage = async slug => slug === page.slug ? { page, offer } : undefined;
   storage.getPublishedSalesPageCheckoutContext = async (requestedWebinar, requestedOffer, requestedPage) => {
     directContextCalled = true;

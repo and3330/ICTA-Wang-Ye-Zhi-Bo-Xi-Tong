@@ -3,6 +3,7 @@ import test from "node:test";
 import { insertRegistrationSchema, type Webinar, type WebinarSession } from "@shared/schema";
 import {
   getAvailableSessions,
+  generateRecurringSessions,
   isValidIanaTimezone,
   normalizeSelectedSession,
   scheduleDateBounds,
@@ -55,6 +56,27 @@ test("recurring civil times use the webinar timezone across DST", () => {
     new Date("2026-03-07T12:00:00.000Z"),
   );
   assert.equal(result.sessions[0].scheduledStart.toISOString(), "2026-03-15T06:30:00.000Z");
+});
+
+test("biweekly recurrence deterministically skips alternating anchored weeks", () => {
+  const recurring = webinar({
+    startTime: new Date("2026-03-01T14:00:00.000Z"),
+    recurringSchedule: {
+      enabled: true,
+      frequency: "biweekly",
+      days: [0],
+      times: ["09:00"],
+      excludeDates: [],
+    } as any,
+  });
+  const firstRun = generateRecurringSessions(recurring, new Date("2026-03-01T00:00:00.000Z"), 30);
+  const laterRun = generateRecurringSessions(recurring, new Date("2026-03-08T00:00:00.000Z"), 30);
+
+  assert.deepEqual(
+    firstRun.slice(0, 3).map((session) => session.scheduledStart.toISOString()),
+    ["2026-03-01T14:00:00.000Z", "2026-03-15T13:00:00.000Z", "2026-03-29T13:00:00.000Z"],
+  );
+  assert.equal(laterRun[0].scheduledStart.toISOString(), "2026-03-15T13:00:00.000Z");
 });
 
 test("recurring availability enforces valid webinar-local event date bounds", () => {

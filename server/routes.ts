@@ -39,6 +39,11 @@ import {
   users,
   ecpayConnections,
   webinarPayments,
+  webhookDeliveries,
+  aiResponseArtifacts,
+  webhooks,
+  uploadedAssets,
+  registrations,
 } from "@shared/schema";
 import {
   createWebinarLandingPageSchema,
@@ -49,7 +54,7 @@ import {
   webinarLandingPageCanPublish,
 } from "./webinarLandingPages";
 import { db } from "./db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, lte, or } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
@@ -67,7 +72,7 @@ import {
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
 import { isPaidBillableSubscriptionInvoice, reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
-import { canViewWebinar } from "./webinarAccess";
+import { canRetainViewerWsAccess, canViewWebinar, webinarWatchEligibility } from "./webinarAccess";
 import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
 import { postgresRateLimit } from "./rateLimit";
@@ -100,6 +105,7 @@ import {
   validatePublishableBlocks,
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
+import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -162,8 +168,12 @@ async function requireWebinarOwner(req: Request, res: Response, next: NextFuncti
   const webinarId = req.params.id as string | undefined;
   if (webinarId) {
     const webinar = await storage.getWebinar(webinarId);
-    if (!webinar || webinar.userId !== req.session.userId) {
+    if (!webinar) {
       return res.status(403).json({ message: "Forbidden" });
+    }
+    if (webinar.userId !== req.session.userId) {
+      const user = await storage.getUser(req.session.userId);
+      if (!user?.isSuperAdmin) return res.status(403).json({ message: "Forbidden" });
     }
   }
   next();
@@ -172,8 +182,15 @@ async function requireWebinarOwner(req: Request, res: Response, next: NextFuncti
 async function requirePublishedOrOwner(req: Request, res: Response, next: NextFunction) {
   const webinar = await storage.getWebinar(req.params.id as string);
   if (!webinar) return res.status(404).json({ message: "Webinar not found" });
-  if (!canViewWebinar(webinar, req.session?.userId)) {
+  const requester = req.session?.userId ? await storage.getUser(req.session.userId) : undefined;
+  if (!canViewWebinar(webinar, req.session?.userId, requester?.isSuperAdmin === true)) {
     return res.status(404).json({ message: "Webinar not found" });
+  }
+  if (webinar.userId !== req.session?.userId && !requester?.isSuperAdmin) {
+    const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
+    if (!hasStoredPublicEntitlement(owner)) {
+      return res.status(404).json({ message: "Webinar not found" });
+    }
   }
   next();
 }
@@ -191,6 +208,29 @@ function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContain
 function publicWebinar<T extends { vimeoUrl?: string | null }>(webinar: T): Omit<T, "vimeoUrl"> {
   const { vimeoUrl: _vimeoUrl, ...safe } = withSafeTrackingIds(webinar as any);
   return safe;
+}
+
+function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storage.getUser>>): boolean {
+  if (!user || !user.isActive) return false;
+  if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
+  if (!["active", "trialing"].includes(user.subscriptionStatus)) return false;
+  return !user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now();
+}
+
+async function isWebinarAdministrator(webinarUserId: string | null, sessionUserId?: string): Promise<boolean> {
+  if (!sessionUserId) return false;
+  if (webinarUserId === sessionUserId) return true;
+  return Boolean((await storage.getUser(sessionUserId))?.isSuperAdmin);
+}
+
+async function verifiedRegistrationCapability(req: Request) {
+  const registration = await storage.getRegistration(req.params.id as string);
+  const supplied = req.get("Authorization")?.replace(/^Bearer\s+/i, "") ||
+    req.get("X-Watch-Token") || req.body?.watchToken || req.query.watchToken;
+  const token = verifyWatchToken(supplied);
+  return registration && token?.registrationId === registration.id && token.webinarId === registration.webinarId
+    ? registration
+    : undefined;
 }
 
 export async function registerRoutes(
@@ -276,17 +316,34 @@ export async function registerRoutes(
       const verified = await verifyImageUpload(req.file.buffer);
       fs.writeFileSync(path.join(uploadsDir, verified.filename), req.file.buffer, { flag: "wx" });
       const url = `/uploads/${verified.filename}`;
+      try {
+        await db.insert(uploadedAssets).values({
+          userId: req.session.userId!,
+          url,
+          filename: verified.filename,
+        });
+      } catch (error) {
+        fs.rmSync(path.join(uploadsDir, verified.filename), { force: true });
+        throw error;
+      }
       res.json({ url, filename: verified.filename });
     } catch (error) {
       res.status(400).json({ message: error instanceof Error ? error.message : "圖片格式無效" });
     }
   });
 
-  app.delete("/api/upload", requireAdmin, (req: Request, res: Response) => {
+  app.delete("/api/upload", requireAdmin, async (req: Request, res: Response) => {
     const { url } = req.body;
     if (url && url.startsWith("/uploads/")) {
       const filename = url.replace("/uploads/", "");
       if (filename && !filename.includes("/") && !filename.includes("..")) {
+        const [owned] = await db.delete(uploadedAssets).where(and(
+          eq(uploadedAssets.userId, req.session.userId!),
+          eq(uploadedAssets.url, url),
+          eq(uploadedAssets.filename, filename),
+        )).returning({ id: uploadedAssets.id });
+        // Legacy files have no trustworthy ownership metadata and are retained.
+        if (!owned) return res.status(404).json({ message: "Upload not found" });
         const filePath = path.join(uploadsDir, filename);
         if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
@@ -339,9 +396,53 @@ export async function registerRoutes(
       }
     });
 
+    const revalidateWsAccess = async (): Promise<boolean> => {
+      if (!currentWebinarId) return true;
+      const currentWebinar = await storage.getWebinar(currentWebinarId);
+      if (!currentWebinar) return false;
+      if (isHost) {
+        await sessionReady;
+        const actor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
+        return Boolean(actor?.isActive && (actor.isSuperAdmin || currentWebinar.userId === actor.id));
+      }
+      if (currentRegistrationId) {
+        const owner = currentWebinar.userId ? await storage.getUser(currentWebinar.userId) : undefined;
+        const registration = await storage.getRegistration(currentRegistrationId);
+        const registrationEligible = Boolean(registration && registration.webinarId === currentWebinarId
+          && webinarWatchEligibility(currentWebinar, registration).canWatch);
+        return canRetainViewerWsAccess(
+          currentWebinar.publishStatus,
+          hasStoredPublicEntitlement(owner),
+          registrationEligible,
+        );
+      }
+      await sessionReady;
+      const actor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
+      return Boolean(actor?.isActive && (actor.isSuperAdmin || currentWebinar.userId === actor.id));
+    };
+
+    const accessRevalidationTimer = setInterval(() => {
+      void revalidateWsAccess().then((allowed) => {
+        if (!allowed && ws.readyState === WebSocket.OPEN) ws.close(1008, "Webinar access expired");
+      }).catch(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.close(1011, "Unable to verify webinar access");
+      });
+    }, 30_000);
+
     ws.on("message", async (data) => {
       try {
         const message = JSON.parse(data.toString());
+
+        // Authorization is deliberately re-evaluated at every action so an
+        // expired replay window, suspended owner, or revoked host session does
+        // not retain powers until the socket disconnects.
+        if (currentWebinarId && message.type !== "join" && message.type !== "joinAsHost") {
+          const stillAuthorized = await revalidateWsAccess();
+          if (!stillAuthorized) {
+            ws.close(1008, "Webinar access expired");
+            return;
+          }
+        }
         
         switch (message.type) {
           case "join": {
@@ -352,16 +453,22 @@ export async function registerRoutes(
             const { webinarId, sessionId, nickname, watchToken } = message.data;
             if (typeof webinarId !== "string" || typeof sessionId !== "string") break;
             await sessionReady;
+            const sessionActor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
             const requestedWebinar = await storage.getWebinar(webinarId);
-            if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId)) {
+            if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId, sessionActor?.isSuperAdmin === true)) {
               ws.send(JSON.stringify({
                 type: "error",
                 data: { message: "Webinar not found or unavailable" },
               }));
               break;
             }
-            const isOwner = requestedWebinar.userId === sessionUserId;
-            if (!isOwner) {
+            const isPrivilegedViewer = requestedWebinar.userId === sessionUserId || sessionActor?.isSuperAdmin === true;
+            if (!isPrivilegedViewer) {
+              const owner = requestedWebinar.userId ? await storage.getUser(requestedWebinar.userId) : undefined;
+              if (!hasStoredPublicEntitlement(owner)) {
+                ws.send(JSON.stringify({ type: "error", data: { message: "Webinar not found or unavailable" } }));
+                break;
+              }
               const token = verifyWatchToken(watchToken);
               const registration = token && token.webinarId === webinarId
                 ? await storage.getRegistration(token.registrationId)
@@ -370,8 +477,8 @@ export async function registerRoutes(
                 ws.send(JSON.stringify({ type: "error", data: { message: "Invalid watch token" } }));
                 break;
               }
-              if (registration.selectedSession && new Date(registration.selectedSession).getTime() > Date.now()) {
-                ws.send(JSON.stringify({ type: "error", data: { message: "This session has not started" } }));
+              if (!webinarWatchEligibility(requestedWebinar, registration).canWatch) {
+                ws.send(JSON.stringify({ type: "error", data: { message: "This webinar is not currently available" } }));
                 break;
               }
               currentRegistrationId = registration.id;
@@ -423,7 +530,9 @@ export async function registerRoutes(
             // Verify the connection owns this webinar before granting host powers.
             await sessionReady;
             const ownedWebinar = await storage.getWebinar(webinarId);
-            if (!sessionUserId || !ownedWebinar || ownedWebinar.userId !== sessionUserId) {
+            const hostActor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
+            if (!sessionUserId || !ownedWebinar || !hostActor?.isActive ||
+              (ownedWebinar.userId !== sessionUserId && !hostActor.isSuperAdmin)) {
               ws.send(JSON.stringify({
                 type: "error",
                 data: { message: "Unauthorized: not the webinar owner" }
@@ -741,6 +850,7 @@ export async function registerRoutes(
     });
 
     ws.on("close", () => {
+      clearInterval(accessRevalidationTimer);
       if (currentWebinarId) {
         if (isHost) {
           hostConnections.get(currentWebinarId)?.delete(ws);
@@ -860,8 +970,19 @@ export async function registerRoutes(
       return;
     }
 
-    if (reservationId) await storage.finalizeAiCreditReservation(reservationId);
-    await sendAiMessage(webinarId, sessionId, teacherName, answer);
+    if (reservationId && ownerId) {
+      const savedMessage = await storage.persistAiChatResponse({
+        reservationId, userId: ownerId, webinarId, sessionId, teacherName,
+        requestText: viewerMessage, responseText: answer,
+      });
+      const viewerWs = sessionConnections.get(sessionId);
+      if (viewerWs?.readyState === WebSocket.OPEN) {
+        viewerWs.send(JSON.stringify({ type: "chat", data: savedMessage }));
+      }
+      broadcastToHosts(webinarId, { type: "chat", data: { ...savedMessage, sessionId } });
+    } else {
+      await sendAiMessage(webinarId, sessionId, teacherName, answer);
+    }
   }
 
   // ============ Auth Routes ============
@@ -1164,8 +1285,8 @@ export async function registerRoutes(
       return res.status(404).json({ message: "Webinar not found" });
     }
     // Protect public/preview pages from legacy or manually inserted unsafe values.
-    const isOwner = webinar.userId === req.session?.userId;
-    res.json(isOwner ? withSafeTrackingIds(webinar) : publicWebinar(webinar));
+    const isAdministrator = await isWebinarAdministrator(webinar.userId, req.session?.userId);
+    res.json(isAdministrator ? withSafeTrackingIds(webinar) : publicWebinar(webinar));
   });
 
   app.post("/api/webinars", requireAdmin, async (req, res) => {
@@ -1306,6 +1427,7 @@ export async function registerRoutes(
       const data = { ...req.body };
       delete data.publishStatus;
       delete data.userId;
+      delete data.deletedAt;
       if (data.startTime && typeof data.startTime === "string") {
         data.startTime = new Date(data.startTime);
       }
@@ -1330,16 +1452,18 @@ export async function registerRoutes(
   // ============ Publish / Unpublish Webinar ============
   app.post("/api/webinars/:id/publish", requireWebinarOwner, async (req, res) => {
     try {
-      const user = await storage.getUser(req.session.userId!);
-      if (!user || !user.isActive) {
+      const targetWebinar = await storage.getWebinar(req.params.id as string);
+      if (!targetWebinar?.userId) return res.status(404).json({ message: "Webinar not found" });
+      const owner = await storage.getUser(targetWebinar.userId);
+      if (!owner || !owner.isActive) {
         return res.status(403).json({ message: "帳號已停用" });
       }
-      const entitlement = await refreshEntitlement(user);
+      const entitlement = await refreshEntitlement(owner);
       if (!entitlement.active) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       const maxPublished = entitlement.maxWebinars;
-      const publishResult = await storage.publishWebinarWithinLimit(user.id, req.params.id as string, maxPublished);
+      const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string, maxPublished);
       if (publishResult.limitExceeded) {
         return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished });
       }
@@ -1383,6 +1507,8 @@ export async function registerRoutes(
   app.get("/api/webinars/:id/landing-page", async (req, res) => {
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) return res.status(404).json({ message: "找不到說明會" });
+    const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
+    if (!hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "找不到說明會" });
     const page = await storage.getPublicWebinarLandingPage(webinar.id);
     if (!page) return res.status(404).json({ message: "說明會落地頁尚未發布" });
     res.json({ webinar: publicWebinar(webinar), landingPage: page, preview: false });
@@ -1859,6 +1985,7 @@ export async function registerRoutes(
       delete body.jitSelectionToken;
       // tags 為後台專用，禁止公開報名端設定
       delete body.tags;
+      if (typeof body.email === "string") body.email = body.email.trim().toLowerCase();
       let data = insertRegistrationSchema.parse(body);
 
       const webinarCheck = await storage.getWebinar(data.webinarId);
@@ -1900,6 +2027,9 @@ export async function registerRoutes(
         return res.status(503).json({ message: "此 Webinar 的帳號設定不完整，暫時無法報名" });
       }
       const webinarOwner = await storage.getUser(webinarCheck.userId);
+      if (!hasStoredPublicEntitlement(webinarOwner)) {
+        return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
+      }
       const monthlyRegistrantLimit = getMonthlyRegistrantLimit(webinarOwner?.subscriptionPlan || "");
       const registration = monthlyRegistrantLimit
         ? await storage.createRegistrationWithinMonthlyLimit(
@@ -1924,7 +2054,7 @@ export async function registerRoutes(
       
       const webinar = await storage.getWebinar(data.webinarId);
       if (webinar) {
-        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const baseUrl = appBaseUrl();
         try {
           await createEmailRemindersForRegistration(registration, webinar, baseUrl, watchToken);
         } catch (reminderError) {
@@ -1934,7 +2064,7 @@ export async function registerRoutes(
       
       res.json({ ...registration, watchToken });
     } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      res.status(error?.code === "REGISTRATION_CONFLICT" ? 409 : 400).json({ message: error.message });
     }
   });
 
@@ -1947,7 +2077,11 @@ export async function registerRoutes(
       const tags = Array.isArray(req.body.tags)
         ? req.body.tags.map((t: any) => String(t).trim()).filter(Boolean)
         : [];
-      const updated = await storage.updateRegistration(req.params.regId as string, { tags });
+      const updated = await storage.updateRegistrationForWebinar(
+        req.params.id as string,
+        req.params.regId as string,
+        { tags },
+      );
       res.json(updated);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -2008,37 +2142,6 @@ export async function registerRoutes(
     });
   });
 
-  // ============ Attendance Tracking ============
-  app.post("/api/registrations/:id/attend", async (req, res) => {
-    try {
-      const registration = await storage.updateRegistration(req.params.id, {
-        attended: true,
-        attendedAt: new Date(),
-      });
-      res.json(registration);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.post("/api/registrations/:id/leave", async (req, res) => {
-    try {
-      const registration = await storage.getRegistration(req.params.id);
-      if (registration && registration.attendedAt) {
-        const watchDuration = Math.floor((Date.now() - new Date(registration.attendedAt).getTime()) / 1000);
-        const updated = await storage.updateRegistration(req.params.id, {
-          leftAt: new Date(),
-          watchDuration,
-        });
-        res.json(updated);
-      } else {
-        res.json(registration);
-      }
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
   // ============ Fake Users Routes ============
   app.get("/api/webinars/:id/fake-users", requirePublishedOrOwner, async (req, res) => {
     const fakeUsers = await storage.getFakeUsersByWebinar(req.params.id as string);
@@ -2059,7 +2162,8 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/fake-users/:userId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteFakeUser(req.params.userId as string);
+    const deleted = await storage.deleteFakeUser(req.params.id as string, req.params.userId as string);
+    if (!deleted) return res.status(404).json({ message: "Fake user not found" });
     res.json({ success: true });
   });
 
@@ -2080,6 +2184,11 @@ export async function registerRoutes(
         ...req.body,
         webinarId: req.params.id
       });
+      if (data.fakeUserId) {
+        const belongs = (await storage.getFakeUsersByWebinar(req.params.id as string))
+          .some((fakeUser) => fakeUser.id === data.fakeUserId);
+        if (!belongs) return res.status(400).json({ message: "fakeUserId does not belong to this webinar" });
+      }
       const message = await storage.createScheduledMessage(data);
       res.json(message);
     } catch (error: any) {
@@ -2088,7 +2197,8 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/scheduled-messages/:msgId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteScheduledMessage(req.params.msgId as string);
+    const deleted = await storage.deleteScheduledMessage(req.params.id as string, req.params.msgId as string);
+    if (!deleted) return res.status(404).json({ message: "Scheduled message not found" });
     res.json({ success: true });
   });
 
@@ -2233,9 +2343,10 @@ export async function registerRoutes(
         {
           merchantId: payment.merchantIdSnapshot!,
           merchantTradeNo: payment.providerOrderId!,
-          amount: payment.amountMinor,
+          amount: payment.amountMinor / 100,
           hashKey: decryptEcpayCredential(payment.providerHashKeySnapshot),
           hashIv: decryptEcpayCredential(payment.providerHashIvSnapshot),
+          allowSimulated: payment.providerEnvironment !== "production",
         },
       );
       if (!valid) return fail();
@@ -2358,11 +2469,16 @@ export async function registerRoutes(
       const result = await storage.getPublicOfferSalesPage(slug);
       if (!result) return res.status(404).json({ message: "Sales page not found" });
        const { page, offer } = result;
+       const webinar = await storage.getWebinar(page.webinarId);
+       const owner = webinar?.userId ? await storage.getUser(webinar.userId) : undefined;
+       if (!webinar || !hasStoredPublicEntitlement(owner) || offer.paymentProvider !== "ecpay") {
+         return res.status(404).json({ message: "Sales page not found" });
+       }
        const publicCheckout = normalizeCheckoutSettings(page.publishedCheckoutSettings);
        const { successButtonUrl: _successButtonUrl, successTitle: _successTitle, successMessage: _successMessage, successButtonLabel: _successButtonLabel, ...publicCheckoutSettings } = publicCheckout;
       let display: { name: string; amountMinor: number | null; currency: string };
       if (offer.paymentProvider === "ecpay") {
-        display = { name: offer.ecpayItemName!, amountMinor: offer.ecpayAmountTwd, currency: "TWD" };
+        display = { name: offer.ecpayItemName!, amountMinor: (offer.ecpayAmountTwd || 0) * 100, currency: "TWD" };
       } else {
         const stripe = await getUncachableStripeClient();
         const [product, price] = await Promise.all([
@@ -2439,7 +2555,7 @@ export async function registerRoutes(
       const offers = await storage.getWebinarOffers(webinarId);
       const result = await Promise.all(offers.map(async (offer) => {
         if (offer.paymentProvider === "ecpay") {
-          return { ...offer, name: offer.ecpayItemName, amountMinor: offer.ecpayAmountTwd, currency: "TWD" };
+          return { ...offer, name: offer.ecpayItemName, amountMinor: (offer.ecpayAmountTwd || 0) * 100, currency: "TWD" };
         }
         const stripe = await getUncachableStripeClient();
         const [product, price] = await Promise.all([
@@ -2462,41 +2578,28 @@ export async function registerRoutes(
   app.post("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
     try {
       const webinarId = req.params.id as string;
+      const webinar = await storage.getWebinar(webinarId);
+      if (!webinar?.userId) return res.status(404).json({ message: "Webinar not found" });
       const input = createWebinarOfferSchema.parse(req.body);
-      if (input.paymentProvider === "ecpay") {
-        const [connection] = await db.select().from(ecpayConnections).where(and(
-          eq(ecpayConnections.userId, req.session.userId!),
-          eq(ecpayConnections.enabled, true),
-        )).limit(1);
-        if (!connection) return res.status(409).json({ message: "請先設定並啟用 ECPay 金流" });
-        const offer = await storage.createWebinarOffer({
-          webinarId,
-          paymentProvider: "ecpay",
-          ecpayItemName: input.name,
-          ecpayAmountTwd: input.amountMinor,
-          checkoutMode: "payment",
-        });
-        return res.json({ ...offer, name: offer.ecpayItemName, amountMinor: offer.ecpayAmountTwd, currency: "TWD" });
+      if (input.paymentProvider !== "ecpay") {
+        return res.status(400).json({ message: "Webinar product checkout must use the member's ECPay account" });
       }
-      const stripe = await getUncachableStripeClient();
-      const product = await stripe.products.create({
-        name: input.name,
-        metadata: { kind: "webinar_offer", webinarId },
-      });
-      const price = await stripe.prices.create({
-        product: product.id,
-        unit_amount: input.amountMinor,
-        currency: input.currency.toLowerCase(),
-        metadata: { kind: "webinar_offer", webinarId },
-      });
+      if (input.amountMinor % 100 !== 0) {
+        return res.status(400).json({ message: "ECPay TWD amount must be a whole-dollar value in minor units" });
+      }
+      const [connection] = await db.select().from(ecpayConnections).where(and(
+        eq(ecpayConnections.userId, webinar.userId),
+        eq(ecpayConnections.enabled, true),
+      )).limit(1);
+      if (!connection) return res.status(409).json({ message: "請先設定並啟用 ECPay 金流" });
       const offer = await storage.createWebinarOffer({
         webinarId,
-        paymentProvider: "stripe",
-        stripeProductId: product.id,
-        stripePriceId: price.id,
-        checkoutMode: input.checkoutMode,
+        paymentProvider: "ecpay",
+        ecpayItemName: input.name,
+        ecpayAmountTwd: input.amountMinor / 100,
+        checkoutMode: "payment",
       });
-      res.json({ ...offer, name: product.name, amountMinor: price.unit_amount, currency: price.currency.toUpperCase() });
+      res.json({ ...offer, name: offer.ecpayItemName, amountMinor: (offer.ecpayAmountTwd || 0) * 100, currency: "TWD" });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -2526,6 +2629,10 @@ export async function registerRoutes(
       const input = offerCheckoutSchema.parse(req.body);
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar || webinar.publishStatus !== "published") return res.status(404).json({ message: "Webinar not found" });
+      const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
+      if (!hasStoredPublicEntitlement(owner)) {
+        return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
+      }
       let cta: Awaited<ReturnType<typeof storage.getCtaButtonsByWebinar>>[number] | undefined;
       let offer: Awaited<ReturnType<typeof storage.getWebinarOffer>> | undefined;
       let salesPageId: string | undefined;
@@ -2540,6 +2647,13 @@ export async function registerRoutes(
         if (!offer || !offer.active || offer.webinarId !== webinarId) {
           return res.status(400).json({ message: "Offer is unavailable" });
         }
+        const linkedPage = (await storage.listOfferSalesPages(webinarId))
+          .find(page => page.offerId === offer!.id && page.status === "published" && page.publishedCheckoutSettings);
+        if (!linkedPage) return res.status(409).json({ message: "Linked sales page is not published" });
+        salesPageId = linkedPage.id;
+        salesPageVersion = linkedPage.version;
+        checkoutSettingsSnapshot = normalizeCheckoutSettings(linkedPage.publishedCheckoutSettings);
+        offerSlugSnapshot = linkedPage.slug;
       } else {
         // Public page IDs are untrusted: bind page, offer, and current publication
         // state in one storage query immediately before any provider/DB work.
@@ -2563,6 +2677,9 @@ export async function registerRoutes(
       }
 
       const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : "";
+      if (offer.paymentProvider !== "ecpay") {
+        return res.status(409).json({ message: "Webinar product checkout must use ECPay" });
+      }
       if (offer.paymentProvider === "ecpay") {
         const amountTwd = offer.ecpayAmountTwd;
         if (!webinar.userId || !offer.ecpayItemName || !Number.isInteger(amountTwd) || amountTwd === null || amountTwd <= 0) {
@@ -2596,7 +2713,7 @@ export async function registerRoutes(
           providerEnvironment: connection.environment,
           providerHashKeySnapshot: connection.hashKeyEncrypted,
           providerHashIvSnapshot: connection.hashIvEncrypted,
-          amountMinor: amountTwd,
+          amountMinor: amountTwd * 100,
           currency: "TWD",
           status: "pending",
         }).returning();
@@ -2605,7 +2722,7 @@ export async function registerRoutes(
           MerchantTradeNo: tradeNo,
           MerchantTradeDate: merchantTradeDate(),
           PaymentType: "aio",
-          TotalAmount: payment.amountMinor,
+          TotalAmount: amountTwd,
           TradeDesc: "Webinar offer",
           ItemName: offer.ecpayItemName.replace(/[<>&#]/g, " ").slice(0, 200),
           ReturnURL: `${appBaseUrl()}/api/ecpay/return`,
@@ -2699,7 +2816,8 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/ctas/:ctaId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteCtaButton(req.params.ctaId as string);
+    const deleted = await storage.deleteCtaButton(req.params.id as string, req.params.ctaId as string);
+    if (!deleted) return res.status(404).json({ message: "CTA not found" });
     res.json({ success: true });
   });
 
@@ -2723,7 +2841,8 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/polls/:pollId", requireWebinarOwner, async (req, res) => {
-    await storage.deletePoll(req.params.pollId as string);
+    const deleted = await storage.deletePoll(req.params.id as string, req.params.pollId as string);
+    if (!deleted) return res.status(404).json({ message: "Poll not found" });
     res.json({ success: true });
   });
 
@@ -2747,26 +2866,60 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/tips/:tipId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteTip(req.params.tipId as string);
+    const deleted = await storage.deleteTip(req.params.id as string, req.params.tipId as string);
+    if (!deleted) return res.status(404).json({ message: "Tip not found" });
     res.json({ success: true });
   });
 
   // ============ Questions (Q&A) Routes ============
   app.get("/api/webinars/:id/questions", requirePublishedOrOwner, async (req, res) => {
     const questionsList = await storage.getQuestionsByWebinar(req.params.id as string);
-    res.json(questionsList);
+    const webinar = await storage.getWebinar(req.params.id as string);
+    const isAdministrator = webinar ? await isWebinarAdministrator(webinar.userId, req.session?.userId) : false;
+    res.json(isAdministrator ? questionsList : questionsList
+      .filter(question => question.isPublic)
+      .map(({ askerEmail: _email, registrationId: _registrationId, answeredBy: _answeredBy, ...safe }) => safe));
   });
 
   app.get("/api/webinars/:id/questions/preset", requirePublishedOrOwner, async (req, res) => {
     const presetQuestions = await storage.getPresetQuestions(req.params.id as string);
-    res.json(presetQuestions);
+    const webinar = await storage.getWebinar(req.params.id as string);
+    const isAdministrator = webinar ? await isWebinarAdministrator(webinar.userId, req.session?.userId) : false;
+    res.json(isAdministrator ? presetQuestions : presetQuestions
+      .filter(question => question.isPublic)
+      .map(({ askerEmail: _email, registrationId: _registrationId, answeredBy: _answeredBy, ...safe }) => safe));
   });
 
   app.post("/api/webinars/:id/questions", requirePublishedOrOwner, async (req, res) => {
     try {
+      const webinar = await storage.getWebinar(req.params.id as string);
+      const isAdministrator = webinar ? await isWebinarAdministrator(webinar.userId, req.session?.userId) : false;
+      let viewerRegistration: Awaited<ReturnType<typeof storage.getRegistration>> | undefined;
+      if (!isAdministrator) {
+        const supplied = req.get("Authorization")?.replace(/^Bearer\s+/i, "") ||
+          req.get("X-Watch-Token") || req.body?.watchToken;
+        const token = verifyWatchToken(supplied);
+        viewerRegistration = token?.webinarId === req.params.id
+          ? await storage.getRegistration(token.registrationId)
+          : undefined;
+        if (!viewerRegistration || viewerRegistration.webinarId !== req.params.id) {
+          return res.status(401).json({ message: "Invalid or expired watch token" });
+        }
+      }
+      const input = { ...req.body };
+      delete input.watchToken;
       const data = insertQuestionSchema.parse({
-        ...req.body,
-        webinarId: req.params.id
+        ...input,
+        webinarId: req.params.id,
+        ...(viewerRegistration ? {
+          registrationId: viewerRegistration.id,
+          askerName: viewerRegistration.nickname || viewerRegistration.name,
+          askerEmail: viewerRegistration.email,
+          isPreset: false,
+          isPublic: true,
+          answer: null,
+          answeredBy: null,
+        } : {}),
       });
       const question = await storage.createQuestion(data);
 
@@ -2786,7 +2939,7 @@ export async function registerRoutes(
               to = owner?.email || "";
             }
             if (!to) return;
-            const baseUrl = `${req.protocol}://${req.get("host")}`;
+            const baseUrl = appBaseUrl();
             const controlUrl = `${baseUrl}/admin/webinar/${webinar.id}/control`;
             await sendQuestionNotificationEmail(
               to, webinar.title, data.askerName, data.question, controlUrl
@@ -2805,7 +2958,19 @@ export async function registerRoutes(
 
   app.patch("/api/webinars/:id/questions/:questionId", requireWebinarOwner, async (req, res) => {
     try {
-      const question = await storage.updateQuestion(req.params.questionId as string, req.body);
+      const existing = (await storage.getQuestionsByWebinar(req.params.id as string))
+        .find(item => item.id === req.params.questionId);
+      if (!existing) return res.status(404).json({ message: "Question not found" });
+      const allowed = z.object({
+        answer: z.string().max(10000).nullable().optional(),
+        answeredBy: z.string().max(200).nullable().optional(),
+        isPublic: z.boolean().optional(),
+        displayOrder: z.number().int().optional(),
+      }).strict().parse(req.body);
+      const question = await storage.updateQuestion(req.params.id as string, existing.id, {
+        ...allowed,
+        ...(allowed.answer !== undefined ? { answeredAt: allowed.answer ? new Date() : null } : {}),
+      });
       res.json(question);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -2813,7 +2978,11 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/questions/:questionId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteQuestion(req.params.questionId as string);
+    const existing = (await storage.getQuestionsByWebinar(req.params.id as string))
+      .find(item => item.id === req.params.questionId);
+    if (!existing) return res.status(404).json({ message: "Question not found" });
+    const deleted = await storage.deleteQuestion(req.params.id as string, existing.id);
+    if (!deleted) return res.status(404).json({ message: "Question not found" });
     res.json({ success: true });
   });
 
@@ -2838,7 +3007,13 @@ export async function registerRoutes(
 
   app.patch("/api/webinars/:id/feedback-survey/:surveyId", requireWebinarOwner, async (req, res) => {
     try {
-      const survey = await storage.updateFeedbackSurvey(req.params.surveyId as string, req.body);
+      const patch = insertFeedbackSurveySchema.omit({ webinarId: true }).partial().strict().parse(req.body);
+      const survey = await storage.updateFeedbackSurvey(
+        req.params.id as string,
+        req.params.surveyId as string,
+        patch,
+      );
+      if (!survey) return res.status(404).json({ message: "Feedback survey not found" });
       res.json(survey);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -2848,7 +3023,20 @@ export async function registerRoutes(
   // ============ Feedback Responses Routes ============
   app.post("/api/feedback-responses", async (req, res) => {
     try {
-      const data = insertFeedbackResponseSchema.parse(req.body);
+      const supplied = req.get("Authorization")?.replace(/^Bearer\s+/i, "") ||
+        req.get("X-Watch-Token") || req.body?.watchToken;
+      const token = verifyWatchToken(supplied);
+      const survey = typeof req.body?.surveyId === "string"
+        ? await storage.getFeedbackSurvey(req.body.surveyId)
+        : undefined;
+      const registration = token ? await storage.getRegistration(token.registrationId) : undefined;
+      if (!survey || !survey.isActive || !registration ||
+        token?.webinarId !== survey.webinarId || registration.webinarId !== survey.webinarId) {
+        return res.status(401).json({ message: "Invalid or expired watch token" });
+      }
+      const input = { ...req.body };
+      delete input.watchToken;
+      const data = insertFeedbackResponseSchema.parse({ ...input, registrationId: registration.id });
       const response = await storage.createFeedbackResponse(data);
       res.json(response);
     } catch (error: any) {
@@ -2857,6 +3045,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/feedback-surveys/:surveyId/responses", requireAdmin, async (req, res) => {
+    const survey = await storage.getFeedbackSurvey(req.params.surveyId as string);
+    if (!survey) return res.status(404).json({ message: "Feedback survey not found" });
+    const webinar = await storage.getWebinar(survey.webinarId);
+    if (!webinar || !(await isWebinarAdministrator(webinar.userId, req.session.userId))) {
+      return res.status(404).json({ message: "Feedback survey not found" });
+    }
     const responses = await storage.getFeedbackResponsesBySurvey(req.params.surveyId as string);
     res.json(responses);
   });
@@ -3038,7 +3232,8 @@ export async function registerRoutes(
 
   app.delete("/api/webinars/:id/sessions/:sessionId", requireWebinarOwner, async (req, res) => {
     try {
-      await storage.deleteWebinarSession(req.params.sessionId as string);
+      const deleted = await storage.deleteWebinarSession(req.params.id as string, req.params.sessionId as string);
+      if (!deleted) return res.status(404).json({ message: "Session not found" });
       res.json({ success: true });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -3067,7 +3262,7 @@ export async function registerRoutes(
         replayEnabled: sourceWebinar.replayEnabled ?? undefined,
         replayAvailableHours: sourceWebinar.replayAvailableHours ?? undefined,
         emailSettings: sourceWebinar.emailSettings as any,
-        userId: req.session.userId,
+        userId: sourceWebinar.userId || req.session.userId,
       });
 
       const [sourceFakeUsers, sourceMessages, sourceCtas, sourcePolls, sourceTips, sourceOffers] = await Promise.all([
@@ -3100,10 +3295,12 @@ export async function registerRoutes(
 
       const offerIdMap = new Map<string, string>();
       for (const offer of sourceOffers) {
+        if (offer.paymentProvider !== "ecpay" || !offer.ecpayItemName || !offer.ecpayAmountTwd) continue;
         const copied = await storage.createWebinarOffer({
           webinarId: newWebinar.id,
-          stripeProductId: offer.stripeProductId,
-          stripePriceId: offer.stripePriceId,
+          paymentProvider: "ecpay",
+          ecpayItemName: offer.ecpayItemName,
+          ecpayAmountTwd: offer.ecpayAmountTwd,
           checkoutMode: "payment",
         });
         offerIdMap.set(offer.id, copied.id);
@@ -3191,12 +3388,15 @@ export async function registerRoutes(
     }
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) return res.status(404).json({ message: "Webinar not found" });
-    const selectedSession = registration.selectedSession ? new Date(registration.selectedSession) : null;
-    const canWatch = !selectedSession || selectedSession.getTime() <= Date.now();
+    const eligibility = webinarWatchEligibility(webinar, registration);
+    const { selectedSession, replayEndsAt, canWatch } = eligibility;
     res.json({
+      registrationId: registration.id,
       selectedSession,
       canWatch,
       waitUntil: canWatch ? null : selectedSession,
+      liveEndsAt: eligibility.liveEndsAt,
+      replayEndsAt,
       mode: selectedSession ? "scheduled" : "onDemand",
       ...(canWatch ? { vimeoUrl: webinar.vimeoUrl } : {}),
     });
@@ -3254,11 +3454,35 @@ export async function registerRoutes(
   // ============ Mark Attendance ============
   app.post("/api/registrations/:id/attend", async (req, res) => {
     try {
-      const registration = await storage.updateRegistration(req.params.id as string, {
-        attended: true,
-        attendedAt: new Date(),
+      const authorized = await verifiedRegistrationCapability(req);
+      if (!authorized) return res.status(401).json({ message: "Invalid or expired watch token" });
+      const transitioned = await db.transaction(async (tx) => {
+        const [changed] = await tx.update(registrations).set({
+          attended: true,
+          attendedAt: new Date(),
+        }).where(and(eq(registrations.id, authorized.id), sql`${registrations.attended} IS NOT TRUE`)).returning();
+        if (!changed) return undefined;
+        const hooksForEvent = await tx.select().from(webhooks).where(and(
+          eq(webhooks.webinarId, authorized.webinarId),
+          eq(webhooks.eventType, "attendance"),
+          eq(webhooks.enabled, true),
+        ));
+        for (const hook of hooksForEvent) {
+          await tx.insert(webhookDeliveries).values({
+            webhookId: hook.id,
+            eventType: "attendance",
+            eventKey: `attendance:${authorized.id}`,
+            payload: {
+              event: "attendance",
+              data: { registrationId: authorized.id, attendedAt: changed.attendedAt },
+              timestamp: new Date().toISOString(),
+            },
+          }).onConflictDoNothing();
+        }
+        return changed;
       });
-      res.json(registration);
+      const registration = transitioned || authorized;
+      res.json({ attended: !!registration?.attended, attendedAt: registration?.attendedAt || null });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -3266,12 +3490,55 @@ export async function registerRoutes(
 
   app.post("/api/registrations/:id/leave", async (req, res) => {
     try {
-      const { watchDuration } = req.body;
-      const registration = await storage.updateRegistration(req.params.id as string, {
-        leftAt: new Date(),
-        watchDuration,
+      const authorized = await verifiedRegistrationCapability(req);
+      if (!authorized) return res.status(401).json({ message: "Invalid or expired watch token" });
+      const requested = Number(req.body?.watchDuration);
+      const elapsed = authorized.attendedAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(authorized.attendedAt).getTime()) / 1000))
+        : 0;
+      const watchDuration = Number.isFinite(requested)
+        ? Math.min(elapsed, Math.max(0, Math.floor(requested)))
+        : elapsed;
+      const webinar = await storage.getWebinar(authorized.webinarId);
+      if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+      const transitioned = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(registrations)
+          .where(eq(registrations.id, authorized.id)).for("update");
+        if (!current) return undefined;
+        const previousDuration = current.watchDuration || 0;
+        const nextDuration = Math.max(previousDuration, watchDuration);
+        const [changed] = await tx.update(registrations).set({
+          leftAt: new Date(),
+          watchDuration: nextDuration,
+        }).where(eq(registrations.id, authorized.id)).returning();
+        if (!changed) return undefined;
+        const completionThreshold = webinar.videoDuration
+          ? Math.max(1, Math.floor(webinar.videoDuration * 0.95))
+          : Number.POSITIVE_INFINITY;
+        if (previousDuration >= completionThreshold || nextDuration < completionThreshold) {
+          return changed;
+        }
+        const hooksForEvent = await tx.select().from(webhooks).where(and(
+          eq(webhooks.webinarId, authorized.webinarId),
+          eq(webhooks.eventType, "completion"),
+          eq(webhooks.enabled, true),
+        ));
+        for (const hook of hooksForEvent) {
+          await tx.insert(webhookDeliveries).values({
+            webhookId: hook.id,
+            eventType: "completion",
+            eventKey: `completion:${authorized.id}`,
+            payload: {
+              event: "completion",
+              data: { registrationId: authorized.id, leftAt: changed.leftAt, watchDuration: changed.watchDuration },
+              timestamp: new Date().toISOString(),
+            },
+          }).onConflictDoNothing();
+        }
+        return changed;
       });
-      res.json(registration);
+      const registration = transitioned || authorized;
+      res.json({ leftAt: registration?.leftAt || null, watchDuration: registration?.watchDuration || 0 });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -3282,19 +3549,102 @@ export async function registerRoutes(
     try {
       const hooks = await storage.getWebhooksByEvent(webinarId, eventType);
       for (const hook of hooks) {
-        const body = JSON.stringify({ event: eventType, data: payload, timestamp: new Date().toISOString() });
+        const envelope = { event: eventType, data: payload, timestamp: new Date().toISOString() };
+        const body = JSON.stringify(envelope);
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (hook.secret) {
           const signature = crypto.createHmac("sha256", hook.secret).update(body).digest("hex");
           headers["X-Webhook-Signature"] = signature;
         }
-        fetch(hook.targetUrl, { method: "POST", headers, body }).catch(err => {
-          console.error(`Webhook delivery failed for ${hook.targetUrl}:`, err.message);
+        const leaseToken = crypto.randomBytes(18).toString("base64url");
+        const [delivery] = await db.insert(webhookDeliveries).values({
+          webhookId: hook.id,
+          eventType,
+          payload: envelope,
+          status: "processing",
+          attemptCount: 1,
+          leaseToken,
+          nextAttemptAt: new Date(Date.now() + WEBHOOK_LEASE_MS),
+        }).returning({ id: webhookDeliveries.id });
+        void deliverWebhook(hook.targetUrl, { headers, body }).then(async () => {
+          await db.update(webhookDeliveries).set({
+            status: "delivered", deliveredAt: new Date(), lastError: null, leaseToken: null,
+          }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
+        }).catch(async (err) => {
+          await db.update(webhookDeliveries).set({
+            status: "retry", leaseToken: null,
+            nextAttemptAt: new Date(Date.now() + 60_000),
+            lastError: String(err?.message || err).slice(0, 2000),
+          }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
+          console.error(`Webhook delivery failed for ${hook.id}:`, err.message);
         });
       }
     } catch (err) {
       console.error("Webhook dispatch error:", err);
     }
+  }
+
+  async function retryWebhookDeliveries() {
+    const claimNow = new Date();
+    const due = await db.select().from(webhookDeliveries).where(and(
+      lte(webhookDeliveries.nextAttemptAt, claimNow),
+      or(
+        eq(webhookDeliveries.status, "pending"),
+        eq(webhookDeliveries.status, "retry"),
+        eq(webhookDeliveries.status, "processing"),
+      ),
+    )).limit(50);
+    for (const delivery of due) {
+      const leaseToken = crypto.randomBytes(18).toString("base64url");
+      const claimed = await db.update(webhookDeliveries).set({
+        status: "processing",
+        nextAttemptAt: new Date(Date.now() + WEBHOOK_LEASE_MS),
+        leaseToken,
+        attemptCount: sql`${webhookDeliveries.attemptCount} + 1`,
+      }).where(and(
+        eq(webhookDeliveries.id, delivery.id),
+        eq(webhookDeliveries.attemptCount, delivery.attemptCount),
+        lte(webhookDeliveries.nextAttemptAt, claimNow),
+        or(
+          eq(webhookDeliveries.status, "pending"),
+          eq(webhookDeliveries.status, "retry"),
+          eq(webhookDeliveries.status, "processing"),
+        ),
+      )).returning({ id: webhookDeliveries.id, attemptCount: webhookDeliveries.attemptCount });
+      if (!claimed[0]) continue;
+      const [hook] = await db.select().from(webhooks).where(eq(webhooks.id, delivery.webhookId)).limit(1);
+      if (!hook?.enabled) {
+        await db.update(webhookDeliveries).set({ status: "failed", lastError: "Webhook disabled or deleted" })
+          .where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
+        continue;
+      }
+      const body = JSON.stringify(delivery.payload);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (hook.secret) {
+        headers["X-Webhook-Signature"] = crypto.createHmac("sha256", hook.secret).update(body).digest("hex");
+      }
+      try {
+        await deliverWebhook(hook.targetUrl, { headers, body });
+        await db.update(webhookDeliveries).set({
+          status: "delivered", deliveredAt: new Date(),
+          lastError: null, leaseToken: null,
+        }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
+      } catch (error) {
+        const attempts = claimed[0].attemptCount;
+        await db.update(webhookDeliveries).set({
+          status: attempts >= 8 ? "failed" : "retry",
+          leaseToken: null,
+          nextAttemptAt: new Date(Date.now() + Math.min(3600, 2 ** attempts * 30) * 1000),
+          lastError: String(error instanceof Error ? error.message : error).slice(0, 2000),
+        }).where(and(eq(webhookDeliveries.id, delivery.id), eq(webhookDeliveries.leaseToken, leaseToken)));
+      }
+    }
+  }
+
+  if (process.env.NODE_ENV !== "test") {
+    void retryWebhookDeliveries().catch(error => console.error("Webhook retry sweep failed:", error));
+    setInterval(() => void retryWebhookDeliveries().catch(error =>
+      console.error("Webhook retry sweep failed:", error)), 60_000);
   }
 
   app.get("/api/webinars/:id/webhooks", requireWebinarOwner, async (req, res) => {
@@ -3305,6 +3655,7 @@ export async function registerRoutes(
   app.post("/api/webinars/:id/webhooks", requireWebinarOwner, async (req, res) => {
     try {
       const data = insertWebhookSchema.parse({ ...req.body, webinarId: req.params.id });
+      await assertSafeWebhookUrl(data.targetUrl);
       const hook = await storage.createWebhook(data);
       res.json(hook);
     } catch (error: any) {
@@ -3314,7 +3665,17 @@ export async function registerRoutes(
 
   app.patch("/api/webinars/:id/webhooks/:hookId", requireWebinarOwner, async (req, res) => {
     try {
-      const hook = await storage.updateWebhook(req.params.hookId as string, req.body);
+      const existing = (await storage.getWebhooksByWebinar(req.params.id as string))
+        .find(item => item.id === req.params.hookId);
+      if (!existing) return res.status(404).json({ message: "Webhook not found" });
+      const update = z.object({
+        eventType: z.enum(["registration", "completion", "attendance"]).optional(),
+        targetUrl: z.string().url().optional(),
+        secret: z.string().max(512).nullable().optional(),
+        enabled: z.boolean().optional(),
+      }).strict().parse(req.body);
+      if (update.targetUrl) await assertSafeWebhookUrl(update.targetUrl);
+      const hook = await storage.updateWebhook(req.params.id as string, existing.id, update);
       res.json(hook);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -3322,7 +3683,11 @@ export async function registerRoutes(
   });
 
   app.delete("/api/webinars/:id/webhooks/:hookId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteWebhook(req.params.hookId as string);
+    const existing = (await storage.getWebhooksByWebinar(req.params.id as string))
+      .find(item => item.id === req.params.hookId);
+    if (!existing) return res.status(404).json({ message: "Webhook not found" });
+    const deleted = await storage.deleteWebhook(req.params.id as string, existing.id);
+    if (!deleted) return res.status(404).json({ message: "Webhook not found" });
     res.json({ success: true });
   });
 
@@ -3394,7 +3759,26 @@ export async function registerRoutes(
         if (reservationId) await storage.refundAiCreditReservation(reservationId);
         return res.status(502).json({ message: "AI 暫時無法完成回答，點數已退回，請稍後再試" });
       }
-      if (reservationId) await storage.finalizeAiCreditReservation(reservationId);
+      if (!owner) throw new Error("Webinar owner not found");
+      if (reservationId) {
+        await storage.persistAiArtifactAndConsume({
+          reservationId,
+          userId: owner.id,
+          webinarId,
+          kind: "test_question",
+          requestText: parsed.data.question,
+          responseText: answer,
+        });
+      } else {
+        await db.insert(aiResponseArtifacts).values({
+          reservationId: null,
+          userId: owner.id,
+          webinarId,
+          kind: "test_question",
+          requestText: parsed.data.question,
+          responseText: answer,
+        });
+      }
       return res.json({ answer, pointsCharged: unlimited ? 0 : AI_POINTS_PER_REPLY, unlimited });
     } catch (error) {
       if (reservationId) {
@@ -3448,57 +3832,17 @@ export async function registerRoutes(
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
 
-      // 可選：先清除既有互動內容
-      if (replace) {
-        const [msgs, ctas, tps, pls] = await Promise.all([
-          storage.getScheduledMessagesByWebinar(webinarId),
-          storage.getCtaButtonsByWebinar(webinarId),
-          storage.getTipsByWebinar(webinarId),
-          storage.getPollsByWebinar(webinarId),
-        ]);
-        await Promise.all([
-          ...msgs.map((m) => storage.deleteScheduledMessage(m.id)),
-          ...ctas.map((c) => storage.deleteCtaButton(c.id)),
-          ...tps.map((t) => storage.deleteTip(t.id)),
-          ...pls.map((p) => storage.deletePoll(p.id)),
-        ]);
-      }
-
-      // 建立假人並對應名稱 → id
-      const nameToId = new Map<string, string>();
-      for (const name of result.fakeUsers) {
-        const fu = await storage.createFakeUser({ webinarId, name });
-        nameToId.set(name, fu.id);
-      }
-      for (const m of result.messages) {
-        await storage.createScheduledMessage({
-          webinarId,
-          fakeUserId: nameToId.get(m.name) || null,
-          message: m.message,
-          triggerTime: m.triggerTime,
-          messageType: "chat",
-        } as any);
-      }
-      for (const p of result.polls) {
-        await storage.createPoll({ webinarId, question: p.question, options: p.options, triggerTime: p.triggerTime } as any);
-      }
-      for (const t of result.tips) {
-        await storage.createTip({ webinarId, title: t.title, content: t.content, triggerTime: t.triggerTime, icon: t.icon } as any);
-      }
-      for (const c of result.ctas) {
-        await storage.createCtaButton({ webinarId, text: c.text, url: c.url, startTime: c.startTime } as any);
-      }
-
-      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
+      const counts = await storage.persistGeneratedInteractions({
+        reservationId: reserve.reservationId,
+        userId: webinar.userId || req.session.userId!,
+        webinarId,
+        replace,
+        requestText: JSON.stringify({ goal, transcript }),
+        result,
+      });
       res.json({
         success: true,
-        counts: {
-          fakeUsers: result.fakeUsers.length,
-          messages: result.messages.length,
-          polls: result.polls.length,
-          tips: result.tips.length,
-          ctas: result.ctas.length,
-        },
+        counts,
       });
     } catch (error: any) {
       if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
@@ -3525,26 +3869,14 @@ export async function registerRoutes(
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
-      if (replace) {
-        const existing = await storage.getEmailSequences(webinarId);
-        await Promise.all(existing.map((e) => storage.deleteEmailSequence(webinarId, e.id)));
-      }
-      let order = 0;
-      const created = [];
-      for (const e of emails) {
-        const seq = await storage.createEmailSequence({
-          webinarId,
-          name: e.name,
-          segment: e.segment,
-          delayMinutes: e.delayMinutes,
-          subject: e.subject,
-          htmlBody: e.htmlBody,
-          enabled: true,
-          sortOrder: order++,
-        } as any);
-        created.push(seq);
-      }
-      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
+      const created = await storage.persistGeneratedEmailSequences({
+        reservationId: reserve.reservationId,
+        userId: webinar.userId || req.session.userId!,
+        webinarId,
+        replace,
+        requestText: JSON.stringify({ goal, knowledge }),
+        emails,
+      });
       res.json({ success: true, count: created.length, sequences: created });
     } catch (error: any) {
       if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
@@ -3571,16 +3903,14 @@ export async function registerRoutes(
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
-      if (replace) {
-        const existing = await storage.getSocialPosts(webinarId);
-        await Promise.all(existing.map((p) => storage.deleteSocialPost(webinarId, p.id)));
-      }
-      const created = [];
-      for (const p of posts) {
-        const sp = await storage.createSocialPost({ webinarId, platform: p.platform, content: p.content, status: "draft" } as any);
-        created.push(sp);
-      }
-      if (reserve.reservationId) await storage.finalizeAiCreditReservation(reserve.reservationId);
+      const created = await storage.persistGeneratedSocialPosts({
+        reservationId: reserve.reservationId,
+        userId: webinar.userId || req.session.userId!,
+        webinarId,
+        replace,
+        requestText: JSON.stringify({ goal, knowledge }),
+        posts,
+      });
       res.json({ success: true, count: created.length, posts: created });
     } catch (error: any) {
       if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);

@@ -11,12 +11,13 @@ type Block =
   | { id: string; enabled: boolean; type: "offer"; headline: string; priceLabel?: string; buttonLabel: string }
   | { id: string; enabled: boolean; type: "faq"; items: { question: string; answer: string }[] };
 type CheckoutSettings = { transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string; successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string };
-type PublicPage = { id: string; title: string; webinarId: string; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string } };
+type PublicPage = { id: string; title: string; webinarId: string; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string; paymentProvider: "stripe" | "ecpay" } };
 
 function price(offer: PublicPage["offer"]) {
   if (offer.amountMinor === null) return "價格請洽詢";
+  const wholeAmount = offer.amountMinor / 100;
   const digits = offer.currency === "TWD" ? 0 : 2;
-  return new Intl.NumberFormat("zh-TW", { style: "currency", currency: offer.currency, maximumFractionDigits: digits }).format(offer.amountMinor / (10 ** digits));
+  return new Intl.NumberFormat("zh-TW", { style: "currency", currency: offer.currency, maximumFractionDigits: digits }).format(wholeAmount);
 }
 
 export default function SalesPage() {

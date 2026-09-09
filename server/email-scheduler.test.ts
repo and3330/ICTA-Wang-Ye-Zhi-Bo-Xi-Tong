@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EmailReminder, EmailSequence, Registration, Webinar } from "@shared/schema";
-import { buildDeferredEmail, createEmailRemindersForRegistration } from "./email-scheduler";
+import {
+  buildDeferredEmail,
+  createEmailRemindersForRegistration,
+  EMAIL_CLAIM_BATCH_SIZE,
+  EMAIL_LEASE_MS,
+  EMAIL_MAX_BATCHES_PER_TICK,
+  EMAIL_PROVIDER_DEADLINE_MS,
+} from "./email-scheduler";
 import { storage } from "./storage";
 import { verifyWatchTokenFor } from "./watchTokens";
 
@@ -22,6 +29,12 @@ function webinar(): Webinar {
     },
   } as Webinar;
 }
+
+test("scheduler burst policy drains hundreds concurrently inside fenced leases", () => {
+  assert.equal(EMAIL_CLAIM_BATCH_SIZE * EMAIL_MAX_BATCHES_PER_TICK, 500);
+  assert.ok(EMAIL_LEASE_MS > EMAIL_PROVIDER_DEADLINE_MS);
+  assert.ok(EMAIL_CLAIM_BATCH_SIZE >= 20);
+});
 
 test("reminders are based on the registration's selected session", async (t) => {
   const original = storage.createEmailReminder;

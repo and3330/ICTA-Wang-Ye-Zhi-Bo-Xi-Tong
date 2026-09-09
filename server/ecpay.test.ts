@@ -33,6 +33,13 @@ test("callback validation rejects tampered MAC, merchant, and amount", () => {
   assert.equal(validateEcpayCallback({ ...callback, MerchantID: "3002608", CheckMacValue }, expected), false);
   assert.equal(validateEcpayCallback({ ...callback, TradeAmt: "101", CheckMacValue }, expected), false);
   assert.equal(validateEcpayCallback({ ...callback, CheckMacValue: `${CheckMacValue.slice(0, -1)}0` }, expected), false);
+  const simulated = { ...callback, SimulatePaid: "1" };
+  const simulatedMac = createCheckMacValue(simulated, key, iv);
+  assert.equal(validateEcpayCallback({ ...simulated, CheckMacValue: simulatedMac }, expected), false);
+  assert.equal(validateEcpayCallback(
+    { ...simulated, CheckMacValue: simulatedMac },
+    { ...expected, allowSimulated: true },
+  ), true);
 });
 
 test("MerchantTradeDate uses a zero-padded 24-hour Asia/Taipei clock at midnight", () => {

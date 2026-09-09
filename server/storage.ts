@@ -1,10 +1,11 @@
 import { db } from "./db";
 import crypto from "node:crypto";
+import { EMAIL_CLAIM_BATCH_SIZE, EMAIL_LEASE_MS } from "./emailDeliveryPolicy";
 import { authoritativeRegistrationFunnelEvent } from "./funnelAnalytics";
 import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like, inArray } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
-  registrations, type InsertRegistration, type Registration,
+  registrations, registrationIdentityKeys, type InsertRegistration, type Registration,
   fakeUsers, type InsertFakeUser, type FakeUser,
   scheduledMessages, type InsertScheduledMessage, type ScheduledMessage,
   ctaButtons, type InsertCtaButton, type CtaButton,
@@ -25,7 +26,7 @@ import {
   webinarDocuments, type InsertWebinarDocument, type WebinarDocument,
   emailSequences, type InsertEmailSequence, type EmailSequence,
   socialPosts, type InsertSocialPost, type SocialPost,
-  aiPointTransactions, aiCreditLots, aiCreditReservations,
+  aiPointTransactions, aiCreditLots, aiCreditReservations, aiCreditRevocations, aiResponseArtifacts,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
@@ -50,6 +51,20 @@ export function allocateAiCreditLots(
   return allocations;
 }
 
+export function annualGrantRevocationKeys(
+  lots: Array<{ idempotencyKey: string | null }>,
+): string[] {
+  return lots.flatMap((lot) => lot.idempotencyKey ? [lot.idempotencyKey] : []);
+}
+
+export function partitionCtasForReplacement(oldCtaIds: string[], paymentCtaIds: Array<string | null>) {
+  const referenced = new Set(paymentCtaIds.filter((id): id is string => Boolean(id)));
+  return {
+    retireIds: oldCtaIds.filter((id) => referenced.has(id)),
+    deleteIds: oldCtaIds.filter((id) => !referenced.has(id)),
+  };
+}
+
 export interface IStorage {
   // Users (Admin)
   getUser(id: string): Promise<User | undefined>;
@@ -72,10 +87,16 @@ export interface IStorage {
   // AI 點數
   reserveAiCredits(userId: string, points: number): Promise<{ reservationId: string; remaining: number } | null>;
   finalizeAiCreditReservation(reservationId: string): Promise<void>;
+  persistAiChatResponse(data: { reservationId: string; userId: string; webinarId: string; sessionId: string; teacherName: string; requestText: string; responseText: string }): Promise<ChatMessage>;
+  persistAiArtifactAndConsume(data: { reservationId: string; userId: string; webinarId: string; kind: string; requestText: string; responseText: string }): Promise<void>;
+  persistGeneratedInteractions(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; result: any }): Promise<{ fakeUsers: number; messages: number; polls: number; tips: number; ctas: number }>;
+  persistGeneratedEmailSequences(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; emails: any[] }): Promise<EmailSequence[]>;
+  persistGeneratedSocialPosts(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; posts: any[] }): Promise<SocialPost[]>;
   refundAiCreditReservation(reservationId: string): Promise<void>;
   getAiCreditSummary(userId: string): Promise<{ points: number; giftedPoints: number; permanentPoints: number; nextExpiry: Date | null; nextExpiryPoints: number }>;
   grantAiCredits(data: { userId: string; points: number; source: "monthly_gift" | "admin_grant"; grantedAt?: Date; expiresAt?: Date | null; idempotencyKey?: string | null }): Promise<{ added: boolean; points: number }>;
   revokeUnusedAiCreditsByPrefix(userId: string, idempotencyKeyPrefix: string): Promise<number>;
+  revokeAiCreditSource(userId: string, idempotencyKey: string): Promise<number>;
   reconcileAnnualAiCredits(data: {
     userId: string;
     idempotencyKeyPrefix: string;
@@ -121,16 +142,17 @@ export interface IStorage {
   getFunnelEventsByRegistrations(webinarId: string, registrationIds: string[]): Promise<WebinarFunnelEvent[]>;
   getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined>;
   updateRegistration(id: string, data: Partial<Registration>): Promise<Registration | undefined>;
+  updateRegistrationForWebinar(webinarId: string, id: string, data: Partial<Registration>): Promise<Registration | undefined>;
   
   // Fake Users
   createFakeUser(data: InsertFakeUser): Promise<FakeUser>;
   getFakeUsersByWebinar(webinarId: string): Promise<FakeUser[]>;
-  deleteFakeUser(id: string): Promise<void>;
+  deleteFakeUser(webinarId: string, id: string): Promise<boolean>;
   
   // Scheduled Messages
   createScheduledMessage(data: InsertScheduledMessage): Promise<ScheduledMessage>;
   getScheduledMessagesByWebinar(webinarId: string): Promise<ScheduledMessage[]>;
-  deleteScheduledMessage(id: string): Promise<void>;
+  deleteScheduledMessage(webinarId: string, id: string): Promise<boolean>;
   
   // CTA Buttons
   createWebinarOffer(data: typeof webinarOffers.$inferInsert): Promise<WebinarOffer>;
@@ -166,18 +188,18 @@ export interface IStorage {
   getPublicWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined>;
   createCtaButton(data: InsertCtaButton): Promise<CtaButton>;
   getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]>;
-  deleteCtaButton(id: string): Promise<void>;
+  deleteCtaButton(webinarId: string, id: string): Promise<boolean>;
   
   // Tips
   createTip(data: InsertTip): Promise<Tip>;
   getTipsByWebinar(webinarId: string): Promise<Tip[]>;
-  deleteTip(id: string): Promise<void>;
+  deleteTip(webinarId: string, id: string): Promise<boolean>;
   
   // Polls
   createPoll(data: InsertPoll): Promise<Poll>;
   getPollsByWebinar(webinarId: string): Promise<Poll[]>;
   getPoll(id: string): Promise<Poll | undefined>;
-  deletePoll(id: string): Promise<void>;
+  deletePoll(webinarId: string, id: string): Promise<boolean>;
   
   // Poll Votes
   createPollVote(data: InsertPollVote): Promise<PollVote>;
@@ -187,13 +209,14 @@ export interface IStorage {
   createQuestion(data: InsertQuestion): Promise<Question>;
   getQuestionsByWebinar(webinarId: string): Promise<Question[]>;
   getPresetQuestions(webinarId: string): Promise<Question[]>;
-  updateQuestion(id: string, data: Partial<Question>): Promise<Question | undefined>;
-  deleteQuestion(id: string): Promise<void>;
+  updateQuestion(webinarId: string, id: string, data: Partial<Question>): Promise<Question | undefined>;
+  deleteQuestion(webinarId: string, id: string): Promise<boolean>;
   
   // Feedback Surveys
   createFeedbackSurvey(data: InsertFeedbackSurvey): Promise<FeedbackSurvey>;
   getFeedbackSurveyByWebinar(webinarId: string): Promise<FeedbackSurvey | undefined>;
-  updateFeedbackSurvey(id: string, data: Partial<FeedbackSurvey>): Promise<FeedbackSurvey | undefined>;
+  getFeedbackSurvey(id: string): Promise<FeedbackSurvey | undefined>;
+  updateFeedbackSurvey(webinarId: string, id: string, data: Partial<FeedbackSurvey>): Promise<FeedbackSurvey | undefined>;
   
   // Feedback Responses
   createFeedbackResponse(data: InsertFeedbackResponse): Promise<FeedbackResponse>;
@@ -212,7 +235,10 @@ export interface IStorage {
   // Email Reminders
   createEmailReminder(data: InsertEmailReminder): Promise<EmailReminder>;
   getPendingEmailReminders(before: Date): Promise<EmailReminder[]>;
+  claimPendingEmailReminders(before: Date, leaseToken: string, limit?: number): Promise<EmailReminder[]>;
   updateEmailReminder(id: string, data: Partial<EmailReminder>): Promise<void>;
+  updateClaimedEmailReminder(id: string, leaseToken: string, data: Partial<EmailReminder>): Promise<boolean>;
+  renewClaimedEmailReminder(id: string, leaseToken: string, leaseExpiresAt: Date): Promise<boolean>;
   
   // Chat Messages
   createChatMessage(data: InsertChatMessage): Promise<ChatMessage>;
@@ -228,14 +254,14 @@ export interface IStorage {
   getWebinarSessions(webinarId: string): Promise<WebinarSession[]>;
   getUpcomingSessions(webinarId: string): Promise<WebinarSession[]>;
   updateWebinarSession(id: string, data: Partial<WebinarSession>): Promise<void>;
-  deleteWebinarSession(id: string): Promise<void>;
+  deleteWebinarSession(webinarId: string, id: string): Promise<boolean>;
   
   // Webhooks
   createWebhook(data: InsertWebhook): Promise<Webhook>;
   getWebhooksByWebinar(webinarId: string): Promise<Webhook[]>;
   getWebhooksByEvent(webinarId: string, eventType: string): Promise<Webhook[]>;
-  deleteWebhook(id: string): Promise<void>;
-  updateWebhook(id: string, data: Partial<Webhook>): Promise<Webhook | undefined>;
+  deleteWebhook(webinarId: string, id: string): Promise<boolean>;
+  updateWebhook(webinarId: string, id: string, data: Partial<Webhook>): Promise<Webhook | undefined>;
 
   // Webinar Documents (AI 知識文檔)
   createWebinarDocument(data: InsertWebinarDocument): Promise<WebinarDocument>;
@@ -456,6 +482,33 @@ export class DatabaseStorage implements IStorage {
     return db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${userId}`}))`);
       const now = new Date();
+      const stale = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.userId, userId),
+        eq(aiCreditReservations.status, "reserved"),
+        lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
+      )).for("update");
+      for (const reservation of stale) {
+        const [artifact] = await tx.select({ id: aiResponseArtifacts.id }).from(aiResponseArtifacts)
+          .where(eq(aiResponseArtifacts.reservationId, reservation.id)).limit(1);
+        if (artifact) {
+          await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: now })
+            .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+          continue;
+        }
+        for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
+          await tx.update(aiCreditLots)
+            .set({ remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})` })
+            .where(and(
+              eq(aiCreditLots.id, allocation.lotId),
+              sql`NOT EXISTS (
+                SELECT 1 FROM ${aiCreditRevocations}
+                WHERE ${aiCreditRevocations.idempotencyKey} = ${aiCreditLots.idempotencyKey}
+              )`,
+            ));
+        }
+        await tx.update(aiCreditReservations).set({ status: "refunded", completedAt: now })
+          .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+      }
       const lots = await tx.select().from(aiCreditLots).where(and(
         eq(aiCreditLots.userId, userId),
         gt(aiCreditLots.remainingPoints, 0),
@@ -485,15 +538,217 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(aiCreditReservations.id, reservationId), eq(aiCreditReservations.status, "reserved")));
   }
 
+  async persistAiChatResponse(data: { reservationId: string; userId: string; webinarId: string; sessionId: string; teacherName: string; requestText: string; responseText: string }): Promise<ChatMessage> {
+    return db.transaction(async (tx) => {
+      const [reservation] = await tx.select().from(aiCreditReservations)
+        .where(and(eq(aiCreditReservations.id, data.reservationId), eq(aiCreditReservations.userId, data.userId)))
+        .for("update");
+      if (!reservation || reservation.status !== "reserved") throw new Error("AI credit reservation is not active");
+      const [message] = await tx.insert(chatMessages).values({
+        webinarId: data.webinarId,
+        sessionId: data.sessionId,
+        senderName: data.teacherName,
+        message: data.responseText,
+        senderType: "host",
+        isPrivate: true,
+      }).returning();
+      await tx.insert(aiResponseArtifacts).values({
+        reservationId: reservation.id,
+        userId: data.userId,
+        webinarId: data.webinarId,
+        kind: "viewer_chat",
+        requestText: data.requestText,
+        responseText: data.responseText,
+      });
+      const consumed = await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: new Date() })
+        .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")))
+        .returning({ id: aiCreditReservations.id });
+      if (!consumed[0]) throw new Error("AI credit reservation could not be consumed");
+      return message;
+    });
+  }
+
+  async persistAiArtifactAndConsume(data: { reservationId: string; userId: string; webinarId: string; kind: string; requestText: string; responseText: string }): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [reservation] = await tx.select({ id: aiCreditReservations.id }).from(aiCreditReservations)
+        .where(and(
+          eq(aiCreditReservations.id, data.reservationId),
+          eq(aiCreditReservations.userId, data.userId),
+          eq(aiCreditReservations.status, "reserved"),
+        )).for("update");
+      if (!reservation) throw new Error("AI credit reservation is not active");
+      await tx.insert(aiResponseArtifacts).values({
+        reservationId: reservation.id,
+        userId: data.userId,
+        webinarId: data.webinarId,
+        kind: data.kind,
+        requestText: data.requestText,
+        responseText: data.responseText,
+      });
+      const consumed = await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: new Date() })
+        .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")))
+        .returning({ id: aiCreditReservations.id });
+      if (!consumed[0]) throw new Error("AI credit reservation could not be consumed");
+    });
+  }
+
+  private async persistGeneratedAiResult<T>(
+    data: { reservationId: string | null; userId: string; webinarId: string; kind: string; requestText: string; responseText: string },
+    persist: (tx: any) => Promise<T>,
+  ): Promise<T> {
+    return db.transaction(async (tx) => {
+      if (data.reservationId) {
+        const [reservation] = await tx.select({ id: aiCreditReservations.id }).from(aiCreditReservations)
+          .where(and(
+            eq(aiCreditReservations.id, data.reservationId),
+            eq(aiCreditReservations.userId, data.userId),
+            eq(aiCreditReservations.status, "reserved"),
+          )).for("update");
+        if (!reservation) throw new Error("AI credit reservation is not active");
+      }
+      const saved = await persist(tx);
+      await tx.insert(aiResponseArtifacts).values({
+        reservationId: data.reservationId,
+        userId: data.userId,
+        webinarId: data.webinarId,
+        kind: data.kind,
+        requestText: data.requestText,
+        responseText: data.responseText,
+      });
+      if (data.reservationId) {
+        const consumed = await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: new Date() })
+          .where(and(eq(aiCreditReservations.id, data.reservationId), eq(aiCreditReservations.status, "reserved")))
+          .returning({ id: aiCreditReservations.id });
+        if (!consumed[0]) throw new Error("AI credit reservation could not be consumed");
+      }
+      return saved;
+    });
+  }
+
+  async persistGeneratedInteractions(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; result: any }) {
+    return this.persistGeneratedAiResult({
+      ...data,
+      kind: "generated_interactions",
+      responseText: JSON.stringify(data.result),
+    }, async (tx) => {
+      if (data.replace) {
+        const oldPolls = await tx.select({ id: polls.id }).from(polls).where(eq(polls.webinarId, data.webinarId));
+        if (oldPolls.length) await tx.delete(pollVotes).where(inArray(pollVotes.pollId, oldPolls.map((poll: { id: string }) => poll.id)));
+        await tx.delete(scheduledMessages).where(eq(scheduledMessages.webinarId, data.webinarId));
+        await tx.delete(fakeUsers).where(eq(fakeUsers.webinarId, data.webinarId));
+        const oldCtas = await tx.select({ id: ctaButtons.id }).from(ctaButtons)
+          .where(eq(ctaButtons.webinarId, data.webinarId));
+        const oldCtaIds = oldCtas.map((cta: { id: string }) => cta.id);
+        if (oldCtaIds.length) {
+          const paidRefs = await tx.select({ ctaId: webinarPayments.ctaId }).from(webinarPayments)
+            .where(and(
+              eq(webinarPayments.webinarId, data.webinarId),
+              inArray(webinarPayments.ctaId, oldCtaIds),
+            ));
+          const { retireIds: referencedIds, deleteIds: unreferencedIds } = partitionCtasForReplacement(
+            oldCtaIds,
+            paidRefs.map((row: { ctaId: string | null }) => row.ctaId),
+          );
+          if (referencedIds.length) {
+            await tx.update(ctaButtons).set({ archivedAt: new Date() }).where(and(
+              eq(ctaButtons.webinarId, data.webinarId),
+              inArray(ctaButtons.id, referencedIds),
+            ));
+          }
+          if (unreferencedIds.length) {
+            await tx.delete(ctaButtons).where(and(
+              eq(ctaButtons.webinarId, data.webinarId),
+              inArray(ctaButtons.id, unreferencedIds),
+            ));
+          }
+        }
+        await tx.delete(tips).where(eq(tips.webinarId, data.webinarId));
+        await tx.delete(polls).where(eq(polls.webinarId, data.webinarId));
+      }
+      const nameToId = new Map<string, string>();
+      for (const name of data.result.fakeUsers) {
+        const [fakeUser] = await tx.insert(fakeUsers).values({ webinarId: data.webinarId, name }).returning();
+        nameToId.set(name, fakeUser.id);
+      }
+      for (const message of data.result.messages) {
+        await tx.insert(scheduledMessages).values({
+          webinarId: data.webinarId, fakeUserId: nameToId.get(message.name) || null,
+          message: message.message, triggerTime: message.triggerTime, messageType: "chat",
+        });
+      }
+      for (const poll of data.result.polls) await tx.insert(polls).values({ webinarId: data.webinarId, ...poll });
+      for (const tip of data.result.tips) await tx.insert(tips).values({ webinarId: data.webinarId, ...tip });
+      for (const cta of data.result.ctas) {
+        await tx.insert(ctaButtons).values({
+          webinarId: data.webinarId, text: cta.text, url: cta.url,
+          startTime: cta.startTime, ctaKey: crypto.randomBytes(18).toString("base64url"),
+        });
+      }
+      return {
+        fakeUsers: data.result.fakeUsers.length, messages: data.result.messages.length,
+        polls: data.result.polls.length, tips: data.result.tips.length, ctas: data.result.ctas.length,
+      };
+    });
+  }
+
+  async persistGeneratedEmailSequences(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; emails: any[] }) {
+    return this.persistGeneratedAiResult({
+      ...data,
+      kind: "generated_email_sequences",
+      responseText: JSON.stringify(data.emails),
+    }, async (tx) => {
+      if (data.replace) await tx.delete(emailSequences).where(eq(emailSequences.webinarId, data.webinarId));
+      const created: EmailSequence[] = [];
+      for (let sortOrder = 0; sortOrder < data.emails.length; sortOrder += 1) {
+        const email = data.emails[sortOrder];
+        const [saved] = await tx.insert(emailSequences).values({
+          webinarId: data.webinarId, name: email.name, segment: email.segment,
+          delayMinutes: email.delayMinutes, subject: email.subject, htmlBody: email.htmlBody,
+          enabled: true, sortOrder,
+        }).returning();
+        created.push(saved);
+      }
+      return created;
+    });
+  }
+
+  async persistGeneratedSocialPosts(data: { reservationId: string | null; userId: string; webinarId: string; replace: boolean; requestText: string; posts: any[] }) {
+    return this.persistGeneratedAiResult({
+      ...data,
+      kind: "generated_social_posts",
+      responseText: JSON.stringify(data.posts),
+    }, async (tx) => {
+      if (data.replace) await tx.delete(socialPosts).where(eq(socialPosts.webinarId, data.webinarId));
+      const created: SocialPost[] = [];
+      for (const post of data.posts) {
+        const [saved] = await tx.insert(socialPosts).values({
+          webinarId: data.webinarId, platform: post.platform, content: post.content, status: "draft",
+        }).returning();
+        created.push(saved);
+      }
+      return created;
+    });
+  }
+
   async refundAiCreditReservation(reservationId: string): Promise<void> {
     await db.transaction(async (tx) => {
+      const [candidate] = await tx.select({ userId: aiCreditReservations.userId }).from(aiCreditReservations)
+        .where(eq(aiCreditReservations.id, reservationId));
+      if (!candidate) return;
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${candidate.userId}`}))`);
       const [reservation] = await tx.select().from(aiCreditReservations)
         .where(eq(aiCreditReservations.id, reservationId)).for("update");
       if (!reservation || reservation.status !== "reserved") return;
       for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
         await tx.update(aiCreditLots)
           .set({ remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})` })
-          .where(eq(aiCreditLots.id, allocation.lotId));
+          .where(and(
+            eq(aiCreditLots.id, allocation.lotId),
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${aiCreditRevocations}
+              WHERE ${aiCreditRevocations.idempotencyKey} = ${aiCreditLots.idempotencyKey}
+            )`,
+          ));
       }
       await tx.update(aiCreditReservations)
         .set({ status: "refunded", completedAt: new Date() })
@@ -513,6 +768,19 @@ export class DatabaseStorage implements IStorage {
     if (!Number.isInteger(data.points) || data.points <= 0) throw new Error("Invalid credit grant");
     return db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.userId}`}))`);
+      if (data.idempotencyKey) {
+        const [revoked] = await tx.select({ userId: aiCreditRevocations.userId }).from(aiCreditRevocations)
+          .where(eq(aiCreditRevocations.idempotencyKey, data.idempotencyKey)).limit(1);
+        if (revoked) {
+          if (revoked.userId !== data.userId) throw new Error("AI credit revocation attribution mismatch");
+          const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+            eq(aiCreditLots.userId, data.userId),
+            gt(aiCreditLots.remainingPoints, 0),
+            or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+          ));
+          return { added: false, points: active.reduce((sum, lot) => sum + lot.remainingPoints, 0) };
+        }
+      }
       const inserted = await tx.insert(aiCreditLots).values({
         userId: data.userId,
         source: data.source,
@@ -566,6 +834,27 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async revokeAiCreditSource(userId: string, idempotencyKey: string): Promise<number> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${userId}`}))`);
+      await tx.insert(aiCreditRevocations).values({ userId, idempotencyKey })
+        .onConflictDoNothing({ target: aiCreditRevocations.idempotencyKey });
+      const revoked = await tx.update(aiCreditLots).set({ remainingPoints: 0 }).where(and(
+        eq(aiCreditLots.userId, userId),
+        eq(aiCreditLots.idempotencyKey, idempotencyKey),
+        gt(aiCreditLots.remainingPoints, 0),
+      )).returning({ remainingPoints: aiCreditLots.remainingPoints });
+      const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, userId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+      ));
+      await tx.update(users).set({ aiPoints: active.reduce((sum, lot) => sum + lot.remainingPoints, 0) })
+        .where(eq(users.id, userId));
+      return revoked.length;
+    });
+  }
+
   async reconcileAnnualAiCredits(data: {
     userId: string;
     idempotencyKeyPrefix: string;
@@ -579,6 +868,9 @@ export class DatabaseStorage implements IStorage {
       let revoked = 0;
       if (valid) {
         for (const grant of data.grants) {
+          const [revocation] = await tx.select({ idempotencyKey: aiCreditRevocations.idempotencyKey }).from(aiCreditRevocations)
+            .where(eq(aiCreditRevocations.idempotencyKey, grant.idempotencyKey)).limit(1);
+          if (revocation) continue;
           const inserted = await tx.insert(aiCreditLots).values({
             userId: data.userId,
             source: "monthly_gift",
@@ -600,6 +892,19 @@ export class DatabaseStorage implements IStorage {
           }
         }
       } else {
+        const annualLots = await tx.select({ idempotencyKey: aiCreditLots.idempotencyKey }).from(aiCreditLots)
+          .where(and(
+            eq(aiCreditLots.userId, data.userId),
+            eq(aiCreditLots.source, "monthly_gift"),
+            like(aiCreditLots.idempotencyKey, `${data.idempotencyKeyPrefix}%`),
+          ));
+        const revocationKeys = annualGrantRevocationKeys(annualLots);
+        if (revocationKeys.length) {
+          await tx.insert(aiCreditRevocations).values(revocationKeys.map((idempotencyKey) => ({
+            userId: data.userId,
+            idempotencyKey,
+          }))).onConflictDoNothing({ target: aiCreditRevocations.idempotencyKey });
+        }
         const rows = await tx.update(aiCreditLots)
           .set({ remainingPoints: 0 })
           .where(and(
@@ -627,6 +932,7 @@ export class DatabaseStorage implements IStorage {
   // 回傳 { points: 新餘額, alreadyProcessed }。session 已處理時不重複入點。
   async creditPointPurchase(data: { userId: string; points: number; amountTwd: number; stripeSessionId: string }): Promise<{ points: number; alreadyProcessed: boolean }> {
     return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.userId}`}))`);
       const inserted = await tx
         .insert(aiPointTransactions)
         .values({
@@ -648,14 +954,20 @@ export class DatabaseStorage implements IStorage {
         return { points: active.reduce((sum, lot) => sum + lot.remainingPoints, 0), alreadyProcessed: true };
       }
 
-      await tx.insert(aiCreditLots).values({
-        userId: data.userId,
-        source: "purchase",
-        originalPoints: data.points,
-        remainingPoints: data.points,
-        expiresAt: null,
-        idempotencyKey: `purchase:${data.stripeSessionId}`,
-      });
+      const idempotencyKey = `purchase:${data.stripeSessionId}`;
+      const [revoked] = await tx.select({ userId: aiCreditRevocations.userId }).from(aiCreditRevocations)
+        .where(eq(aiCreditRevocations.idempotencyKey, idempotencyKey)).limit(1);
+      if (revoked && revoked.userId !== data.userId) throw new Error("AI credit revocation attribution mismatch");
+      if (!revoked) {
+        await tx.insert(aiCreditLots).values({
+          userId: data.userId,
+          source: "purchase",
+          originalPoints: data.points,
+          remainingPoints: data.points,
+          expiresAt: null,
+          idempotencyKey,
+        });
+      }
       const active = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
         eq(aiCreditLots.userId, data.userId),
         gt(aiCreditLots.remainingPoints, 0),
@@ -754,16 +1066,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getWebinar(id: string): Promise<Webinar | undefined> {
-    const result = await db.select().from(webinars).where(eq(webinars.id, id));
+    const result = await db.select().from(webinars).where(and(eq(webinars.id, id), isNull(webinars.deletedAt)));
     return result[0];
   }
 
   async getAllWebinars(): Promise<Webinar[]> {
-    return db.select().from(webinars).orderBy(desc(webinars.createdAt));
+    return db.select().from(webinars).where(isNull(webinars.deletedAt)).orderBy(desc(webinars.createdAt));
   }
 
   async getWebinarsByUser(userId: string): Promise<Webinar[]> {
-    return db.select().from(webinars).where(eq(webinars.userId, userId)).orderBy(desc(webinars.createdAt));
+    return db.select().from(webinars).where(and(eq(webinars.userId, userId), isNull(webinars.deletedAt))).orderBy(desc(webinars.createdAt));
   }
 
   async updateWebinar(id: string, data: Partial<InsertWebinar>): Promise<Webinar | undefined> {
@@ -772,46 +1084,34 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteWebinar(id: string): Promise<void> {
-    // Delete in order respecting FK constraints
-    // First: tables referencing polls (pollVotes)
-    const webinarPolls = await db.select({ id: polls.id }).from(polls).where(eq(polls.webinarId, id));
-    for (const poll of webinarPolls) {
-      await db.delete(pollVotes).where(eq(pollVotes.pollId, poll.id));
-    }
-    // Tables referencing feedbackSurveys (feedbackResponses)
-    const surveys = await db.select({ id: feedbackSurveys.id }).from(feedbackSurveys).where(eq(feedbackSurveys.webinarId, id));
-    for (const survey of surveys) {
-      await db.delete(feedbackResponses).where(eq(feedbackResponses.surveyId, survey.id));
-    }
-    // Tables referencing registrations (emailReminders, viewerProgress, questions with registrationId)
-    await db.delete(emailReminders).where(eq(emailReminders.webinarId, id));
-    await db.delete(viewerProgress).where(eq(viewerProgress.webinarId, id));
-    await db.delete(questions).where(eq(questions.webinarId, id));
-    await db.delete(webinarFunnelEvents).where(eq(webinarFunnelEvents.webinarId, id));
-    await db.delete(webinarPayments).where(eq(webinarPayments.webinarId, id));
-    await db.delete(offerSalesPages).where(eq(offerSalesPages.webinarId, id));
-    // Now delete registrations
-    await db.delete(registrations).where(eq(registrations.webinarId, id));
-    // Delete other direct children
-    await db.delete(scheduledMessages).where(eq(scheduledMessages.webinarId, id));
-    await db.delete(fakeUsers).where(eq(fakeUsers.webinarId, id));
-    await db.delete(ctaButtons).where(eq(ctaButtons.webinarId, id));
-    await db.delete(webinarOffers).where(eq(webinarOffers.webinarId, id));
-    await db.delete(polls).where(eq(polls.webinarId, id));
-    await db.delete(tips).where(eq(tips.webinarId, id));
-    await db.delete(feedbackSurveys).where(eq(feedbackSurveys.webinarId, id));
-    await db.delete(chatMessages).where(eq(chatMessages.webinarId, id));
-    await db.delete(likes).where(eq(likes.webinarId, id));
-    await db.delete(webinarAnalytics).where(eq(webinarAnalytics.webinarId, id));
-    await db.delete(webinarSessions).where(eq(webinarSessions.webinarId, id));
-    // Finally delete the webinar
-    await db.delete(webinars).where(eq(webinars.id, id));
+    // Financial and attribution records are legal/audit records. A webinar is
+    // therefore retired atomically rather than cascading or manually deleting
+    // its graph.
+    await db.transaction(async (tx) => {
+      await tx.update(webinars).set({
+        deletedAt: new Date(),
+        publishStatus: "draft",
+        status: "ended",
+      }).where(and(eq(webinars.id, id), isNull(webinars.deletedAt)));
+      await tx.update(webinarOffers).set({ active: false }).where(eq(webinarOffers.webinarId, id));
+      await tx.update(offerSalesPages).set({ status: "draft", updatedAt: new Date() }).where(eq(offerSalesPages.webinarId, id));
+      await tx.update(webinarLandingPages).set({ status: "draft", updatedAt: new Date() }).where(eq(webinarLandingPages.webinarId, id));
+    });
   }
 
   // Registrations
   async createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration> {
     return db.transaction(async (tx) => {
+      const identity = await tx.insert(registrationIdentityKeys).values({
+        webinarId: data.webinarId,
+        normalizedEmail: data.email.trim().toLowerCase(),
+      }).onConflictDoNothing().returning();
+      if (!identity[0]) throw Object.assign(new Error("此 Email 已報名"), { code: "REGISTRATION_CONFLICT" });
       const result = await tx.insert(registrations).values(data).returning();
+      await tx.update(registrationIdentityKeys).set({ registrationId: result[0].id }).where(and(
+        eq(registrationIdentityKeys.webinarId, data.webinarId),
+        eq(registrationIdentityKeys.normalizedEmail, data.email.trim().toLowerCase()),
+      ));
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
         authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
@@ -844,7 +1144,16 @@ export class DatabaseStorage implements IStorage {
         ));
       if (Number(totals[0]?.value || 0) >= monthlyLimit) return null;
 
+      const identity = await tx.insert(registrationIdentityKeys).values({
+        webinarId: data.webinarId,
+        normalizedEmail: data.email.trim().toLowerCase(),
+      }).onConflictDoNothing().returning();
+      if (!identity[0]) throw Object.assign(new Error("此 Email 已報名"), { code: "REGISTRATION_CONFLICT" });
       const result = await tx.insert(registrations).values(data).returning();
+      await tx.update(registrationIdentityKeys).set({ registrationId: result[0].id }).where(and(
+        eq(registrationIdentityKeys.webinarId, data.webinarId),
+        eq(registrationIdentityKeys.normalizedEmail, data.email.trim().toLowerCase()),
+      ));
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
         authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
@@ -878,12 +1187,19 @@ export class DatabaseStorage implements IStorage {
 
   async getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined> {
     const result = await db.select().from(registrations)
-      .where(and(eq(registrations.webinarId, webinarId), eq(registrations.email, email)));
+      .where(and(eq(registrations.webinarId, webinarId), sql`lower(btrim(${registrations.email})) = ${email.trim().toLowerCase()}`));
     return result[0];
   }
 
   async updateRegistration(id: string, data: Partial<Registration>): Promise<Registration | undefined> {
     const result = await db.update(registrations).set(data).where(eq(registrations.id, id)).returning();
+    return result[0];
+  }
+
+  async updateRegistrationForWebinar(webinarId: string, id: string, data: Partial<Registration>): Promise<Registration | undefined> {
+    const result = await db.update(registrations).set(data).where(and(
+      eq(registrations.id, id), eq(registrations.webinarId, webinarId),
+    )).returning();
     return result[0];
   }
 
@@ -897,8 +1213,9 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(fakeUsers).where(eq(fakeUsers.webinarId, webinarId));
   }
 
-  async deleteFakeUser(id: string): Promise<void> {
-    await db.delete(fakeUsers).where(eq(fakeUsers.id, id));
+  async deleteFakeUser(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(fakeUsers).where(and(eq(fakeUsers.id, id), eq(fakeUsers.webinarId, webinarId)))
+      .returning({ id: fakeUsers.id })).length === 1;
   }
 
   // Scheduled Messages
@@ -913,8 +1230,10 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(scheduledMessages.triggerTime));
   }
 
-  async deleteScheduledMessage(id: string): Promise<void> {
-    await db.delete(scheduledMessages).where(eq(scheduledMessages.id, id));
+  async deleteScheduledMessage(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(scheduledMessages).where(and(
+      eq(scheduledMessages.id, id), eq(scheduledMessages.webinarId, webinarId),
+    )).returning({ id: scheduledMessages.id })).length === 1;
   }
 
   // CTA Buttons
@@ -1112,12 +1431,28 @@ export class DatabaseStorage implements IStorage {
 
   async getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]> {
     return db.select().from(ctaButtons)
-      .where(eq(ctaButtons.webinarId, webinarId))
+      .where(and(eq(ctaButtons.webinarId, webinarId), isNull(ctaButtons.archivedAt)))
       .orderBy(asc(ctaButtons.startTime));
   }
 
-  async deleteCtaButton(id: string): Promise<void> {
-    await db.delete(ctaButtons).where(eq(ctaButtons.id, id));
+  async deleteCtaButton(webinarId: string, id: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [cta] = await tx.select({ id: ctaButtons.id }).from(ctaButtons).where(and(
+        eq(ctaButtons.id, id), eq(ctaButtons.webinarId, webinarId),
+      )).for("update");
+      if (!cta) return false;
+      const [payment] = await tx.select({ id: webinarPayments.id }).from(webinarPayments).where(and(
+        eq(webinarPayments.webinarId, webinarId), eq(webinarPayments.ctaId, id),
+      )).limit(1);
+      if (payment) {
+        await tx.update(ctaButtons).set({ archivedAt: new Date() }).where(and(
+          eq(ctaButtons.id, id), eq(ctaButtons.webinarId, webinarId),
+        ));
+      } else {
+        await tx.delete(ctaButtons).where(and(eq(ctaButtons.id, id), eq(ctaButtons.webinarId, webinarId)));
+      }
+      return true;
+    });
   }
 
   // Tips
@@ -1132,8 +1467,9 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(tips.triggerTime));
   }
 
-  async deleteTip(id: string): Promise<void> {
-    await db.delete(tips).where(eq(tips.id, id));
+  async deleteTip(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(tips).where(and(eq(tips.id, id), eq(tips.webinarId, webinarId)))
+      .returning({ id: tips.id })).length === 1;
   }
 
   // Polls
@@ -1156,8 +1492,9 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  async deletePoll(id: string): Promise<void> {
-    await db.delete(polls).where(eq(polls.id, id));
+  async deletePoll(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(polls).where(and(eq(polls.id, id), eq(polls.webinarId, webinarId)))
+      .returning({ id: polls.id })).length === 1;
   }
 
   // Poll Votes
@@ -1188,13 +1525,16 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(questions.displayOrder));
   }
 
-  async updateQuestion(id: string, data: Partial<Question>): Promise<Question | undefined> {
-    const result = await db.update(questions).set(data).where(eq(questions.id, id)).returning();
+  async updateQuestion(webinarId: string, id: string, data: Partial<Question>): Promise<Question | undefined> {
+    const result = await db.update(questions).set(data).where(and(
+      eq(questions.id, id), eq(questions.webinarId, webinarId),
+    )).returning();
     return result[0];
   }
 
-  async deleteQuestion(id: string): Promise<void> {
-    await db.delete(questions).where(eq(questions.id, id));
+  async deleteQuestion(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(questions).where(and(eq(questions.id, id), eq(questions.webinarId, webinarId)))
+      .returning({ id: questions.id })).length === 1;
   }
 
   // Feedback Surveys
@@ -1209,8 +1549,14 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  async updateFeedbackSurvey(id: string, data: Partial<FeedbackSurvey>): Promise<FeedbackSurvey | undefined> {
-    const result = await db.update(feedbackSurveys).set(data).where(eq(feedbackSurveys.id, id)).returning();
+  async getFeedbackSurvey(id: string): Promise<FeedbackSurvey | undefined> {
+    return (await db.select().from(feedbackSurveys).where(eq(feedbackSurveys.id, id)).limit(1))[0];
+  }
+
+  async updateFeedbackSurvey(webinarId: string, id: string, data: Partial<FeedbackSurvey>): Promise<FeedbackSurvey | undefined> {
+    const result = await db.update(feedbackSurveys).set(data).where(and(
+      eq(feedbackSurveys.id, id), eq(feedbackSurveys.webinarId, webinarId),
+    )).returning();
     return result[0];
   }
 
@@ -1315,8 +1661,64 @@ export class DatabaseStorage implements IStorage {
       ));
   }
 
+  async claimPendingEmailReminders(before: Date, leaseToken: string, limit = EMAIL_CLAIM_BATCH_SIZE): Promise<EmailReminder[]> {
+    return db.transaction(async (tx) => {
+      // A transaction-scoped lock makes claiming safe across scheduler replicas;
+      // expired processing leases are recoverable after a crashed worker.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('email-reminder-claims'))`);
+      await tx.update(emailReminders).set({
+        status: "failed",
+        errorMessage: "Delivery attempts exhausted after worker lease expired",
+        leaseToken: null,
+        leaseExpiresAt: null,
+      }).where(and(
+        eq(emailReminders.status, "processing"),
+        lte(emailReminders.leaseExpiresAt, before),
+        gte(emailReminders.attemptCount, 5),
+      ));
+      const candidates = await tx.select({ id: emailReminders.id }).from(emailReminders)
+        .where(and(
+          lte(emailReminders.scheduledFor, before),
+          or(
+            eq(emailReminders.status, "pending"),
+            and(eq(emailReminders.status, "processing"), lt(emailReminders.leaseExpiresAt, before)),
+          ),
+          lt(emailReminders.attemptCount, 5),
+        ))
+        .orderBy(asc(emailReminders.scheduledFor))
+        .limit(Math.min(EMAIL_CLAIM_BATCH_SIZE, Math.max(1, limit)));
+      if (!candidates.length) return [];
+      const ids = candidates.map(item => item.id);
+      return tx.update(emailReminders).set({
+        status: "processing",
+        leaseToken,
+        leaseExpiresAt: new Date(before.getTime() + EMAIL_LEASE_MS),
+        attemptCount: sql`${emailReminders.attemptCount} + 1`,
+      }).where(inArray(emailReminders.id, ids)).returning();
+    });
+  }
+
   async updateEmailReminder(id: string, data: Partial<EmailReminder>): Promise<void> {
     await db.update(emailReminders).set(data).where(eq(emailReminders.id, id));
+  }
+
+  async updateClaimedEmailReminder(id: string, leaseToken: string, data: Partial<EmailReminder>): Promise<boolean> {
+    const updated = await db.update(emailReminders).set(data).where(and(
+      eq(emailReminders.id, id),
+      eq(emailReminders.status, "processing"),
+      eq(emailReminders.leaseToken, leaseToken),
+    )).returning({ id: emailReminders.id });
+    return updated.length === 1;
+  }
+
+  async renewClaimedEmailReminder(id: string, leaseToken: string, leaseExpiresAt: Date): Promise<boolean> {
+    const updated = await db.update(emailReminders).set({ leaseExpiresAt }).where(and(
+      eq(emailReminders.id, id),
+      eq(emailReminders.status, "processing"),
+      eq(emailReminders.leaseToken, leaseToken),
+      gt(emailReminders.leaseExpiresAt, new Date()),
+    )).returning({ id: emailReminders.id });
+    return updated.length === 1;
   }
 
   // Chat Messages
@@ -1390,8 +1792,10 @@ export class DatabaseStorage implements IStorage {
     await db.update(webinarSessions).set(data).where(eq(webinarSessions.id, id));
   }
 
-  async deleteWebinarSession(id: string): Promise<void> {
-    await db.delete(webinarSessions).where(eq(webinarSessions.id, id));
+  async deleteWebinarSession(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(webinarSessions).where(and(
+      eq(webinarSessions.id, id), eq(webinarSessions.webinarId, webinarId),
+    )).returning({ id: webinarSessions.id })).length === 1;
   }
 
   // Webhooks
@@ -1410,12 +1814,15 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async deleteWebhook(id: string): Promise<void> {
-    await db.delete(webhooks).where(eq(webhooks.id, id));
+  async deleteWebhook(webinarId: string, id: string): Promise<boolean> {
+    return (await db.delete(webhooks).where(and(eq(webhooks.id, id), eq(webhooks.webinarId, webinarId)))
+      .returning({ id: webhooks.id })).length === 1;
   }
 
-  async updateWebhook(id: string, data: Partial<Webhook>): Promise<Webhook | undefined> {
-    const result = await db.update(webhooks).set(data).where(eq(webhooks.id, id)).returning();
+  async updateWebhook(webinarId: string, id: string, data: Partial<Webhook>): Promise<Webhook | undefined> {
+    const result = await db.update(webhooks).set(data).where(and(
+      eq(webhooks.id, id), eq(webhooks.webinarId, webinarId),
+    )).returning();
     return result[0];
   }
 

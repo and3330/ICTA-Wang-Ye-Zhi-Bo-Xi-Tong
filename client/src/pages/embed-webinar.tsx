@@ -9,7 +9,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { Heart, Send, ExternalLink, Loader2 } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { getWatchToken } from "@/lib/watch-access";
+import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
+import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 
 export default function EmbedWebinar() {
@@ -52,17 +53,21 @@ export default function EmbedWebinar() {
     enabled: !!id,
   });
   const watchToken = getWatchToken(id);
-  const { data: watchState, isLoading: watchStateLoading } = useQuery<{ selectedSession?: string | null; waitUntil?: string | null; vimeoUrl?: string | null; canWatch: boolean }>({
+  const { data: watchState, isLoading: watchStateLoading } = useQuery<WatchState>({
     queryKey: ["/api/webinars", id, "watch-state", watchToken],
-    queryFn: async () => {
-      const response = await apiRequest("GET", `/api/webinars/${id}/watch-state?watchToken=${encodeURIComponent(watchToken!)}`);
-      return response.json();
-    },
+    queryFn: () => fetchWatchState(id!, watchToken!),
     enabled: !!id && !!watchToken,
-    refetchInterval: (query) => query.state.data?.canWatch ? false : 5_000,
+    refetchInterval: isJoined ? 30_000 : 5_000,
+    retry: false,
   });
   const effectiveVimeoUrl = watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl;
   const canWatch = watchToken ? !!watchState?.canWatch : !!webinar?.vimeoUrl;
+  useAttendanceTracking({
+    registrationId: watchState?.registrationId,
+    watchToken,
+    enabled: isJoined && canWatch,
+    currentPosition: currentTime,
+  });
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -113,7 +118,11 @@ export default function EmbedWebinar() {
         }
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      if (event.code === 1008 || event.code === 1011) {
+        setIsJoined(false);
+        return;
+      }
       setTimeout(() => connectWebSocket(), 3000);
     };
     wsRef.current = ws;

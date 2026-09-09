@@ -2,6 +2,16 @@ import { storage } from "./storage";
 import { sendEmail } from "./gmail";
 import type { Webinar, Registration, EmailSequence, EmailReminder } from "@shared/schema";
 import { createWatchToken, watchTokenExpiry } from "./watchTokens";
+import crypto from "node:crypto";
+import { appBaseUrl } from "./mail";
+import { scoreLeadInsight } from "./leadInsights";
+import {
+  EMAIL_CLAIM_BATCH_SIZE, EMAIL_MAX_BATCHES_PER_TICK, EMAIL_LEASE_MS,
+} from "./emailDeliveryPolicy";
+export {
+  EMAIL_CLAIM_BATCH_SIZE, EMAIL_MAX_BATCHES_PER_TICK,
+  EMAIL_PROVIDER_DEADLINE_MS, EMAIL_LEASE_MS,
+} from "./emailDeliveryPolicy";
 
 function getEmailHtml(type: string, name: string, webinarTitle: string, startTime: Date, webinarUrl: string, timezone: string = "Asia/Taipei", customSubject?: string, customTemplate?: string, onDemand = false): { subject: string; html: string } {
   const formattedDate = startTime.toLocaleString('zh-TW', {
@@ -176,26 +186,17 @@ export async function createEmailRemindersForRegistration(
 
   if (emailSettings.confirmationEnabled !== false) {
     try {
-      const webinarUrl = `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(
-        createWatchToken(registration.id, webinar.id, watchTokenExpiry(registration.selectedSession, webinar.replayAvailableHours ?? 48)),
-      )}`;
-      const { subject, html } = getEmailHtml(
-        "confirmation",
-        registration.name,
-        webinar.title,
-        startTime ?? now,
-        webinarUrl,
-        webinar.timezone || "Asia/Taipei",
-        emailSettings.customSubject,
-        emailSettings.customTemplate,
-        !startTime
-      );
-      if (subject && html) {
-        await sendEmail({ to: registration.email, subject, htmlBody: html });
-        console.log(`Sent confirmation email to ${registration.email}`);
-      }
+      // Confirmation uses the same durable leased queue as every deferred
+      // message; request retries and scheduler replicas cannot double-send it.
+      await storage.createEmailReminder({
+        webinarId: webinar.id,
+        registrationId: registration.id,
+        reminderType: "confirmation",
+        scheduledFor: now,
+        status: "pending",
+      });
     } catch (err) {
-      console.error(`Failed to send confirmation email:`, err);
+      console.error(`Failed to enqueue confirmation email:`, err);
     }
   }
 }
@@ -259,6 +260,7 @@ export function buildDeferredEmail(
     webinar.timezone || "Asia/Taipei",
     emailSettings?.customSubject,
     emailSettings?.customTemplate,
+    !registration.selectedSession,
   );
 }
 
@@ -332,37 +334,47 @@ export function startEmailScheduler() {
 
   setInterval(async () => {
     try {
-      const now = new Date();
-      const pendingReminders = await storage.getPendingEmailReminders(now);
+      // Drain multiple bounded batches per tick. Each batch sends concurrently,
+      // so 25 provider calls bounded at 15s remain safely inside the 45s lease.
+      for (let batch = 0; batch < EMAIL_MAX_BATCHES_PER_TICK; batch += 1) {
+        const leaseToken = crypto.randomBytes(18).toString("base64url");
+        const pendingReminders = await storage.claimPendingEmailReminders(new Date(), leaseToken, EMAIL_CLAIM_BATCH_SIZE);
+        if (pendingReminders.length === 0) return;
+        console.log(`Processing ${pendingReminders.length} pending email reminders`);
 
-      if (pendingReminders.length === 0) return;
-
-      console.log(`Processing ${pendingReminders.length} pending email reminders`);
-
-      for (const reminder of pendingReminders) {
+        await Promise.all(pendingReminders.map(async (reminder) => {
+        const finish = (data: Partial<EmailReminder>) =>
+          storage.updateClaimedEmailReminder(reminder.id, leaseToken, data);
         try {
           const registration = await storage.getRegistration(reminder.registrationId);
           if (!registration) {
-            await storage.updateEmailReminder(reminder.id, { status: "failed", errorMessage: "Registration not found" });
-            continue;
+            await finish({ status: "failed", errorMessage: "Registration not found", leaseToken: null, leaseExpiresAt: null });
+            return;
           }
 
           const webinar = await storage.getWebinar(reminder.webinarId);
           if (!webinar) {
-            await storage.updateEmailReminder(reminder.id, { status: "failed", errorMessage: "Webinar not found" });
-            continue;
+            await finish({ status: "failed", errorMessage: "Webinar not found", leaseToken: null, leaseExpiresAt: null });
+            return;
+          }
+          if (webinar.publishStatus !== "published") {
+            await finish({ status: "failed", errorMessage: "Webinar is not published", leaseToken: null, leaseExpiresAt: null });
+            return;
           }
 
-          const baseUrl = process.env.REPLIT_DEV_DOMAIN
-            ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-            : "http://localhost:5000";
+          const baseUrl = appBaseUrl();
           let subject = "";
           let html = "";
           if (reminder.reminderType === "sequence" && reminder.sequenceId) {
             const seq = await storage.getEmailSequence(reminder.sequenceId);
-            if (!seq) {
-              await storage.updateEmailReminder(reminder.id, { status: "failed", errorMessage: "Sequence not found" });
-              continue;
+            if (!seq || !seq.enabled || seq.webinarId !== webinar.id) {
+              await finish({ status: "failed", errorMessage: "Sequence not found", leaseToken: null, leaseExpiresAt: null });
+              return;
+            }
+            const events = await storage.getFunnelEventsByRegistration(webinar.id, registration.id);
+            if (scoreLeadInsight(registration, events, webinar.videoDuration || 0).suppressSalesFollowUp) {
+              await finish({ status: "failed", errorMessage: "Suppressed after refund", leaseToken: null, leaseExpiresAt: null });
+              return;
             }
             const filled = buildDeferredEmail(reminder, registration, webinar, baseUrl, seq);
             subject = filled.subject;
@@ -374,22 +386,35 @@ export function startEmailScheduler() {
           }
 
           if (subject && html) {
+            const renewed = await storage.renewClaimedEmailReminder(
+              reminder.id,
+              leaseToken,
+              new Date(Date.now() + EMAIL_LEASE_MS),
+            );
+            if (!renewed) return;
             await sendEmail({ to: registration.email, subject, htmlBody: html });
-            await storage.updateEmailReminder(reminder.id, {
+            await finish({
               status: "sent",
               sentAt: new Date(),
+              leaseToken: null,
+              leaseExpiresAt: null,
             });
             console.log(`Sent ${reminder.reminderType} email to ${registration.email}`);
           } else {
-            await storage.updateEmailReminder(reminder.id, { status: "failed", errorMessage: "Unknown reminder type" });
+            await finish({ status: "failed", errorMessage: "Unknown reminder type", leaseToken: null, leaseExpiresAt: null });
           }
         } catch (err: any) {
           console.error(`Failed to send reminder ${reminder.id}:`, err);
-          await storage.updateEmailReminder(reminder.id, {
-            status: "failed",
+          await finish({
+            status: (reminder.attemptCount || 0) >= 5 ? "failed" : "pending",
+            scheduledFor: new Date(Date.now() + Math.min(60, 2 ** (reminder.attemptCount || 1)) * 60_000),
             errorMessage: err.message || "Send failed",
+            leaseToken: null,
+            leaseExpiresAt: null,
           });
         }
+        }));
+        if (pendingReminders.length < EMAIL_CLAIM_BATCH_SIZE) return;
       }
     } catch (err) {
       console.error("Email scheduler error:", err);

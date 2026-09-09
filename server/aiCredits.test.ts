@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allocateAiCreditLots } from "./storage";
+import { allocateAiCreditLots, annualGrantRevocationKeys, partitionCtasForReplacement } from "./storage";
 import { annualMonthlyGrantDates, hasRemainingPaidAmount, isPaidBillableSubscriptionInvoice, monthlyGiftForLookupKeys, oneYearAfter } from "./subscriptionCreditGrants";
 
 test("subscription plans grant the configured monthly AI points", () => {
@@ -70,4 +70,19 @@ test("AI credit allocation consumes lots in the order supplied and rejects parti
     { lotId: "gift-expiring-later", points: 60 },
   ]);
   assert.equal(allocateAiCreditLots(lots, 621), null);
+});
+
+test("annual revocation tombstones include fully-spent as well as unspent grant lots", () => {
+  assert.deepEqual(annualGrantRevocationKeys([
+    { idempotencyKey: "annual:0" },
+    { idempotencyKey: "annual:1" },
+    { idempotencyKey: null },
+  ]), ["annual:0", "annual:1"]);
+});
+
+test("AI interaction replacement retires payment-referenced CTAs and deletes only unreferenced CTAs", () => {
+  assert.deepEqual(
+    partitionCtasForReplacement(["paid", "unused", "also-paid"], ["paid", null, "also-paid", "paid"]),
+    { retireIds: ["paid", "also-paid"], deleteIds: ["unused"] },
+  );
 });

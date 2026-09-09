@@ -214,6 +214,17 @@ async function reconcileRefundedAnnualCharge(charge: Stripe.Charge): Promise<voi
     : charge.payment_intent?.id;
   if (!paymentIntentId) return;
   const stripe = await getUncachableStripeClient();
+  // AI-credit checkout refunds use a durable revocation tombstone. If the
+  // refund webhook arrives before checkout completion, the later grant sees
+  // the tombstone and records the purchase without making credits spendable.
+  const checkoutSessions = await stripe.checkout.sessions.list({ payment_intent: paymentIntentId, limit: 100 });
+  for (const session of checkoutSessions.data) {
+    if (session.metadata?.kind !== "ai_points") continue;
+    const userId = session.metadata.userId;
+    if (userId && Number(charge.amount_refunded || 0) >= Number(session.amount_total || 0)) {
+      await storage.revokeAiCreditSource(userId, `purchase:${session.id}`);
+    }
+  }
   const invoicePayments = await stripe.invoicePayments.list({
     payment: { type: "payment_intent", payment_intent: paymentIntentId },
     status: "paid",
@@ -231,8 +242,6 @@ async function reconcileRefundedAnnualCharge(charge: Stripe.Charge): Promise<voi
     const subscriptionId = typeof invoice.parent?.subscription_details?.subscription === "string"
       ? invoice.parent.subscription_details.subscription
       : invoice.parent?.subscription_details?.subscription?.id;
-    if (!subscriptionId) continue;
-
     const lineItems = await stripe.invoices.listLineItems(invoice.id, { limit: 100 });
     const priceIds = Array.from(new Set(lineItems.data.flatMap((line) => {
       const priceId = line.pricing?.price_details?.price;
@@ -250,7 +259,17 @@ async function reconcileRefundedAnnualCharge(charge: Stripe.Charge): Promise<voi
       const priceId = line.pricing?.price_details?.price;
       return Boolean(priceId && annualPriceIds.has(priceId));
     });
-    if (!annualLine?.period?.start) continue;
+    if (!annualLine?.period?.start || !subscriptionId) {
+      // Monthly gifts are tied directly to the invoice. Revoke only unused
+      // points; already-consumed credits never produce a negative balance.
+      if (!hasRemainingPaidAmount([{
+        amount: charge.amount,
+        amountRefunded: charge.amount_refunded,
+      }])) {
+        await storage.revokeAiCreditSource(user.id, `subscription-invoice:${invoice.id}`);
+      }
+      continue;
+    }
 
     const prefix = `annual-subscription-month:${subscriptionId}:${annualLine.period.start}:`;
     await storage.reconcileAnnualAiCredits({

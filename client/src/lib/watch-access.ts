@@ -1,9 +1,23 @@
 export type WatchState = {
+  registrationId?: string;
   selectedSession?: string | null;
   waitUntil?: string | null;
   vimeoUrl?: string | null;
   canWatch: boolean;
+  accessRevoked?: boolean;
 };
+
+export async function fetchWatchState(webinarId: string, watchToken: string): Promise<WatchState> {
+  const response = await fetch(
+    `/api/webinars/${encodeURIComponent(webinarId)}/watch-state?watchToken=${encodeURIComponent(watchToken)}`,
+    { credentials: "include" },
+  );
+  if ([401, 403, 404].includes(response.status)) {
+    return { canWatch: false, accessRevoked: true };
+  }
+  if (!response.ok) throw new Error("Unable to verify webinar access");
+  return response.json();
+}
 
 const tokenKey = (webinarId: string) => `icta_watch_token_${webinarId}`;
 const stateKey = (webinarId: string) => `icta_watch_state_${webinarId}`;

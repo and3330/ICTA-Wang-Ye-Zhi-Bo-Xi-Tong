@@ -125,11 +125,23 @@ export function generateRecurringSessions(
   const civilStart = new Date(Date.UTC(today.year, today.month - 1, today.day));
   const exclusions = new Set((recurring.excludeDates || []).map((date) => String(date).slice(0, 10)));
   const generated: AvailableSession[] = [];
+  const webinarStart = zonedParts(new Date(webinar.startTime), timeZone);
+  const recurrenceAnchor = bounds.start
+    ? new Date(`${bounds.start}T00:00:00.000Z`)
+    : new Date(Date.UTC(
+      webinarStart.year,
+      webinarStart.month - 1,
+      webinarStart.day,
+    ));
 
   for (let offset = 0; offset < horizonDays && generated.length < maximum; offset++) {
     const civil = new Date(civilStart);
     civil.setUTCDate(civil.getUTCDate() + offset);
     if (!recurring.days.includes(civil.getUTCDay())) continue;
+    if (
+      (recurring as typeof recurring & { frequency?: string }).frequency === "biweekly" &&
+      Math.floor((civil.getTime() - recurrenceAnchor.getTime()) / (7 * 86_400_000)) % 2 !== 0
+    ) continue;
     const ymd = [
       civil.getUTCFullYear(),
       String(civil.getUTCMonth() + 1).padStart(2, "0"),

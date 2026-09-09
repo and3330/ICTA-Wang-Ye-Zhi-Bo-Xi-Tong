@@ -1,0 +1,4 @@
+export const EMAIL_CLAIM_BATCH_SIZE = 25;
+export const EMAIL_MAX_BATCHES_PER_TICK = 20;
+export const EMAIL_PROVIDER_DEADLINE_MS = 15_000;
+export const EMAIL_LEASE_MS = 45_000;

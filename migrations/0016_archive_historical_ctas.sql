@@ -1,0 +1,1 @@
+ALTER TABLE cta_buttons ADD COLUMN IF NOT EXISTS archived_at timestamp;
