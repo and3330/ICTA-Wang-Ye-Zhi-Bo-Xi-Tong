@@ -259,6 +259,30 @@ export const offerSalesPages = pgTable("offer_sales_pages", {
 export type OfferSalesPage = typeof offerSalesPages.$inferSelect;
 export type InsertOfferSalesPage = typeof offerSalesPages.$inferInsert;
 
+// Safe, data-only webinar registration landing page. Rendering is performed by
+// the client; this table intentionally stores no HTML, CSS, or JavaScript.
+export const webinarLandingPages = pgTable("webinar_landing_pages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }).unique(),
+  title: text("title").notNull(),
+  blocks: jsonb("blocks").$type<unknown[]>().notNull().default([]),
+  brandSettings: jsonb("brand_settings").$type<{ primaryColor: string; secondaryColor: string; backgroundColor: string }>().notNull().default({ primaryColor: "#0f766e", secondaryColor: "#f59e0b", backgroundColor: "#ffffff" }),
+  // Public visitors read only this immutable-at-save snapshot. Draft edits never
+  // change the live page until the owner explicitly publishes again.
+  publishedTitle: text("published_title"),
+  publishedBlocks: jsonb("published_blocks").$type<unknown[]>(),
+  publishedBrandSettings: jsonb("published_brand_settings").$type<{ primaryColor: string; secondaryColor: string; backgroundColor: string }>(),
+  status: text("status").$type<"draft" | "published">().notNull().default("draft"),
+  version: integer("version").notNull().default(1),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  webinarIndex: index("webinar_landing_pages_webinar_idx").on(table.webinarId),
+}));
+export type WebinarLandingPage = typeof webinarLandingPages.$inferSelect;
+export type InsertWebinarLandingPage = typeof webinarLandingPages.$inferInsert;
+
 export const ctaButtons = pgTable("cta_buttons", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),

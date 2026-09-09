@@ -21,6 +21,26 @@ import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } fro
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
+type LandingBlock = { id?: string; type: string; enabled?: boolean; [key: string]: any };
+
+const isSafeLandingImage = (value?: string) => Boolean(value && (value.startsWith("https://") || value.startsWith("/uploads/")));
+function WebinarLanding({ blocks, brand, title, description, onRegister, countdownTarget }: { blocks: LandingBlock[]; brand: any; title: string; description?: string; onRegister: () => void; countdownTarget?: number }) {
+  const list = blocks.filter((b) => b.enabled !== false);
+  const scroll = () => onRegister();
+  return <div className="webinar-landing" style={{ "--landing-primary": brand?.primaryColor || "#123d5a", "--landing-secondary": brand?.secondaryColor || "#0b8b86" } as React.CSSProperties}>
+    {list.map((block, index) => {
+      const key = block.id || `${block.type}-${index}`;
+      if (block.type === "hero") return <section className="webinar-landing-hero" key={key}><div><span className="webinar-kicker">ONLINE WEBINAR</span><h1>{block.headline || title}</h1><p>{block.subheadline || description}</p><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></div>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={title} />}</section>;
+      if (block.type === "intro") return <section className="webinar-landing-section" key={key}><span className="webinar-kicker">ABOUT THIS EVENT</span><h2>{block.headline || "關於這場說明會"}</h2><p>{block.content || description}</p></section>;
+      if (block.type === "audience" || block.type === "agenda") return <section className="webinar-landing-section" key={key}><h2>{block.headline}</h2><div className="webinar-landing-list">{(block.items || []).map((item: string) => <div key={item}>{item}</div>)}</div></section>;
+      if (block.type === "instructor") return <section className="webinar-landing-section webinar-instructor" key={key}>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={block.name || "講師"} />}<div><h2>{block.headline || "關於講師"}</h2><h3>{block.name}</h3><p>{block.bio}</p></div></section>;
+      if (block.type === "faq") return <section className="webinar-landing-section webinar-faq" key={key}><h2>{block.headline || "常見問題"}</h2>{(block.items || []).map((item: any) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
+      if (block.type === "countdown") return <section className="webinar-landing-cta" key={key}><h2>{block.headline || "席位有限，現在就預約"}</h2>{countdownTarget ? <Countdown target={countdownTarget} /> : null}<button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></section>;
+      if (block.type === "cta") return <section className="webinar-landing-cta" key={key}><h2>{block.headline || "準備好開始了嗎？"}</h2><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></section>;
+      return null;
+    })}
+  </div>;
+}
 
 interface AvailableSessionsResponse {
   mode: "fixed" | "recurring" | "onDemand" | "justInTime";
@@ -91,6 +111,11 @@ export default function Registration() {
 
   const { data: webinar, isLoading } = useQuery<Webinar>({
     queryKey: ["/api/webinars", id],
+    enabled: !!id,
+  });
+  const previewMode = new URLSearchParams(window.location.search).get("preview") === "1";
+  const { data: landingResponse, isLoading: landingLoading, error: landingError } = useQuery<{ landingPage?: { blocks?: LandingBlock[]; brandSettings?: any } }>({
+    queryKey: previewMode ? ["/api/webinars", id, "landing-page", "preview"] : ["/api/webinars", id, "landing-page"],
     enabled: !!id,
   });
 
@@ -197,7 +222,7 @@ export default function Registration() {
     }
   }, [availableSessions, selectedSession]);
 
-  if (isLoading) {
+  if (isLoading || landingLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-white" />
@@ -210,26 +235,40 @@ export default function Registration() {
       <div className="min-h-screen flex items-center justify-center" style={{ background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
         <Card className="max-w-md mx-auto">
           <CardContent className="pt-6">
-            <p className="text-center text-muted-foreground">找不到此研討會</p>
+            <p className="text-center text-muted-foreground">無法開啟此說明會。請確認 ID 是否正確、頁面是否已發布；草稿預覽需要擁有者登入。</p>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  if (webinar.publishStatus !== "published") {
+  if (webinar.publishStatus !== "published" && !previewMode) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
         <Card className="max-w-md mx-auto">
           <CardContent className="pt-6">
-            <p className="text-center text-muted-foreground" data-testid="text-webinar-not-published">此研討會尚未開放報名</p>
+            <p className="text-center text-muted-foreground" data-testid="text-webinar-not-published">{previewMode ? "此草稿預覽需要擁有者登入，或落地頁尚未建立。" : "此說明會尚未發布，暫時無法報名。"}</p>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  const brandSettings = webinar.brandSettings as { logo?: string; primaryColor?: string; secondaryColor?: string; backgroundColor?: string } | null;
+  if (landingError || !landingResponse?.landingPage) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" }}>
+        <Card className="max-w-md mx-auto">
+          <CardContent className="pt-6 text-center">
+            <p className="font-semibold">此說明會落地頁尚未發布</p>
+            <p className="mt-2 text-sm text-muted-foreground">主辦人完成發布後，即可透過這個正式網址開放報名。</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const landingPage = (landingResponse?.landingPage || (webinar as any).landingPage) as { blocks?: LandingBlock[]; brandSettings?: any } | null;
+  const brandSettings = ((landingPage?.brandSettings || webinar.brandSettings) as { logo?: string; primaryColor?: string; secondaryColor?: string; backgroundColor?: string } | null);
   const brandGradient = brandSettings?.primaryColor && brandSettings?.secondaryColor
     ? { background: `linear-gradient(135deg, ${brandSettings.primaryColor} 0%, ${brandSettings.secondaryColor} 100%)` }
     : { background: "linear-gradient(135deg, #4338ca 0%, #7e22ce 50%, #be185d 100%)" };
@@ -341,13 +380,14 @@ export default function Registration() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient}>
+    <div className="min-h-screen" style={{ ...brandGradient, background: brandSettings?.backgroundColor || brandGradient.background }}>
       <WebinarTrackingProvider
         webinarId={id}
         metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
         gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
       />
-      <Card className="max-w-lg w-full">
+      {landingPage?.blocks?.length ? <WebinarLanding blocks={landingPage.blocks} brand={brandSettings} title={webinar.title} description={webinar.description || undefined} countdownTarget={countdownTarget} onRegister={() => document.getElementById("registration-form")?.scrollIntoView({ behavior: "smooth" })} /> : <div className="mx-auto max-w-lg p-5 text-center text-sm text-muted-foreground">落地頁內容暫時無法載入，以下仍可完成報名。</div>}
+      <Card id="registration-form" className="max-w-lg w-full mx-auto my-8">
         <CardHeader className="text-center">
           {brandSettings?.logo && (
             <div className="flex justify-center mb-2">

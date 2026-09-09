@@ -30,6 +30,7 @@ import {
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
   offerSalesPages, type OfferSalesPage, type InsertOfferSalesPage,
+  webinarLandingPages, type WebinarLandingPage, type InsertWebinarLandingPage,
 } from "@shared/schema";
 
 export function allocateAiCreditLots(
@@ -158,6 +159,11 @@ export interface IStorage {
     offerId: string,
     salesPageId: string,
   ): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined>;
+  getWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined>;
+  createWebinarLandingPage(data: InsertWebinarLandingPage): Promise<WebinarLandingPage>;
+  updateWebinarLandingPage(webinarId: string, version: number, data: Partial<Pick<WebinarLandingPage, "title" | "blocks" | "brandSettings">>): Promise<WebinarLandingPage | undefined>;
+  setWebinarLandingPageStatus(webinarId: string, version: number, status: "draft" | "published"): Promise<WebinarLandingPage | undefined>;
+  getPublicWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined>;
   createCtaButton(data: InsertCtaButton): Promise<CtaButton>;
   getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]>;
   deleteCtaButton(id: string): Promise<void>;
@@ -1021,6 +1027,54 @@ export class DatabaseStorage implements IStorage {
         eq(webinarOffers.active, true),
       )).limit(1);
     return result[0];
+  }
+
+  async getWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined> {
+    const result = await db.select().from(webinarLandingPages).where(eq(webinarLandingPages.webinarId, webinarId)).limit(1);
+    return result[0];
+  }
+
+  async createWebinarLandingPage(data: InsertWebinarLandingPage): Promise<WebinarLandingPage> {
+    await db.insert(webinarLandingPages).values(data).onConflictDoNothing({ target: webinarLandingPages.webinarId });
+    const result = await db.select().from(webinarLandingPages).where(eq(webinarLandingPages.webinarId, data.webinarId)).limit(1);
+    return result[0];
+  }
+
+  async updateWebinarLandingPage(webinarId: string, version: number, data: Partial<Pick<WebinarLandingPage, "title" | "blocks" | "brandSettings">>): Promise<WebinarLandingPage | undefined> {
+    const result = await db.update(webinarLandingPages).set({
+      ...data, version: sql`${webinarLandingPages.version} + 1`, updatedAt: new Date(),
+    }).where(and(eq(webinarLandingPages.webinarId, webinarId), eq(webinarLandingPages.version, version))).returning();
+    return result[0];
+  }
+
+  async setWebinarLandingPageStatus(webinarId: string, version: number, status: "draft" | "published"): Promise<WebinarLandingPage | undefined> {
+    const publicationGuard = status === "published"
+      ? sql`EXISTS (SELECT 1 FROM ${webinars} WHERE ${webinars.id} = ${webinarLandingPages.webinarId} AND ${webinars.publishStatus} = 'published')`
+      : sql`true`;
+    const result = await db.update(webinarLandingPages).set({
+      status, publishedAt: status === "published" ? new Date() : null,
+      ...(status === "published" ? {
+        publishedTitle: webinarLandingPages.title,
+        publishedBlocks: webinarLandingPages.blocks,
+        publishedBrandSettings: webinarLandingPages.brandSettings,
+      } : {}),
+      version: sql`${webinarLandingPages.version} + 1`, updatedAt: new Date(),
+    }).where(and(eq(webinarLandingPages.webinarId, webinarId), eq(webinarLandingPages.version, version), publicationGuard)).returning();
+    return result[0];
+  }
+
+  async getPublicWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined> {
+    const result = await db.select({ page: webinarLandingPages }).from(webinarLandingPages)
+      .innerJoin(webinars, eq(webinars.id, webinarLandingPages.webinarId))
+      .where(and(eq(webinarLandingPages.webinarId, webinarId), eq(webinarLandingPages.status, "published"), eq(webinars.publishStatus, "published"))).limit(1);
+    const page = result[0]?.page;
+    if (!page?.publishedTitle || !page.publishedBlocks || !page.publishedBrandSettings) return undefined;
+    return {
+      ...page,
+      title: page.publishedTitle,
+      blocks: page.publishedBlocks,
+      brandSettings: page.publishedBrandSettings,
+    };
   }
 
   async getPublishedSalesPageCheckoutContext(

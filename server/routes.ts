@@ -39,6 +39,14 @@ import {
   ecpayConnections,
   webinarPayments,
 } from "@shared/schema";
+import {
+  createWebinarLandingPageSchema,
+  updateWebinarLandingPageSchema,
+  webinarLandingVersionSchema,
+  defaultWebinarLandingTemplate,
+  DEFAULT_WEBINAR_LANDING_BRAND,
+  webinarLandingPageCanPublish,
+} from "./webinarLandingPages";
 import { db } from "./db";
 import { and, eq, sql } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
@@ -200,7 +208,7 @@ export async function registerRoutes(
     }
     const isPublicGetRoute =
       (req.method === 'GET' || req.method === 'OPTIONS') &&
-      (req.path.match(/^\/api\/webinars\/[^/]+$/) || /^\/api\/sales-pages\/[^/]+$/.test(req.path) || req.path === '/api/webinars') &&
+       (req.path.match(/^\/api\/webinars\/[^/]+$/) || /^\/api\/webinars\/[^/]+\/landing-page$/.test(req.path) || /^\/api\/sales-pages\/[^/]+$/.test(req.path) || req.path === '/api/webinars') &&
       !req.path.includes('/stats/');
     const isPublicPostRoute =
       (req.method === 'POST' || req.method === 'OPTIONS') &&
@@ -1354,6 +1362,80 @@ export async function registerRoutes(
     }
   });
 
+  // ============ Webinar registration landing page ============
+  // The public endpoint is ID-based on purpose; no unsupported slug is exposed.
+  app.get("/api/webinars/:id/landing-page/preview", requireWebinarOwner, async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar) return res.status(404).json({ message: "找不到說明會" });
+    let page = await storage.getWebinarLandingPage(webinar.id);
+    if (!page) {
+      page = await storage.createWebinarLandingPage({
+        webinarId: webinar.id, title: webinar.title,
+        blocks: defaultWebinarLandingTemplate(webinar), brandSettings: DEFAULT_WEBINAR_LANDING_BRAND,
+      });
+    }
+    res.json({ webinar: withSafeTrackingIds(webinar), landingPage: page, preview: true });
+  });
+
+  app.get("/api/webinars/:id/landing-page", async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar) return res.status(404).json({ message: "找不到說明會" });
+    const page = await storage.getPublicWebinarLandingPage(webinar.id);
+    if (!page) return res.status(404).json({ message: "說明會落地頁尚未發布" });
+    res.json({ webinar: publicWebinar(webinar), landingPage: page, preview: false });
+  });
+
+  app.post("/api/webinars/:id/landing-page", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinar = await storage.getWebinar(req.params.id as string);
+      if (!webinar) return res.status(404).json({ message: "找不到說明會" });
+      const existing = await storage.getWebinarLandingPage(webinar.id);
+      if (existing) return res.json(existing);
+      const input = req.body && Object.keys(req.body).length
+        ? createWebinarLandingPageSchema.parse(req.body)
+        : { title: webinar.title, blocks: defaultWebinarLandingTemplate(webinar), brandSettings: DEFAULT_WEBINAR_LANDING_BRAND };
+      res.status(201).json(await storage.createWebinarLandingPage({ webinarId: webinar.id, ...input }));
+    } catch (error: any) {
+      res.status(400).json({ message: error.message || "落地頁資料格式錯誤" });
+    }
+  });
+
+  app.patch("/api/webinars/:id/landing-page", requireWebinarOwner, async (req, res) => {
+    try {
+      const input = updateWebinarLandingPageSchema.parse(req.body);
+      const page = await storage.updateWebinarLandingPage(req.params.id as string, input.version, {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.blocks !== undefined ? { blocks: input.blocks } : {}),
+        ...(input.brandSettings !== undefined ? { brandSettings: input.brandSettings } : {}),
+      });
+      if (!page) return res.status(409).json({ message: "版本已更新，請重新載入後再儲存", code: "VERSION_CONFLICT" });
+      res.json(page);
+    } catch (error: any) { res.status(400).json({ message: error.message || "落地頁資料格式錯誤" }); }
+  });
+
+  app.post("/api/webinars/:id/landing-page/publish", requireWebinarOwner, async (req, res) => {
+    try {
+      const input = webinarLandingVersionSchema.parse(req.body);
+      const webinar = await storage.getWebinar(req.params.id as string);
+      const page = await storage.getWebinarLandingPage(req.params.id as string);
+      if (!webinar || !page) return res.status(404).json({ message: "找不到落地頁" });
+      const allowed = webinarLandingPageCanPublish(webinar, page.blocks);
+      if (!allowed.ok) return res.status(409).json({ message: allowed.message });
+      const published = await storage.setWebinarLandingPageStatus(webinar.id, input.version, "published");
+      if (!published) return res.status(409).json({ message: "版本衝突或說明會已取消發布", code: "VERSION_CONFLICT" });
+      res.json(published);
+    } catch (error: any) { res.status(400).json({ message: error.message || "發布資料格式錯誤" }); }
+  });
+
+  app.post("/api/webinars/:id/landing-page/unpublish", requireWebinarOwner, async (req, res) => {
+    try {
+      const input = webinarLandingVersionSchema.parse(req.body);
+      const page = await storage.setWebinarLandingPageStatus(req.params.id as string, input.version, "draft");
+      if (!page) return res.status(409).json({ message: "版本衝突，請重新載入後再試", code: "VERSION_CONFLICT" });
+      res.json(page);
+    } catch (error: any) { res.status(400).json({ message: error.message || "取消發布資料格式錯誤" }); }
+  });
+
   // ============ Stripe Routes ============
   app.get("/api/stripe/publishable-key", async (_req, res) => {
     try {
@@ -1779,6 +1861,10 @@ export async function registerRoutes(
       const webinarCheck = await storage.getWebinar(data.webinarId);
       if (!webinarCheck || webinarCheck.publishStatus !== "published") {
         return res.status(403).json({ message: "此直播間尚未發佈，無法報名" });
+      }
+      const publishedLanding = await storage.getPublicWebinarLandingPage(webinarCheck.id);
+      if (!publishedLanding) {
+        return res.status(403).json({ message: "此說明會落地頁尚未發布，暫時無法報名" });
       }
       if (!process.env.SESSION_SECRET) {
         return res.status(503).json({ message: "Registration is temporarily unavailable" });

@@ -20,6 +20,7 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SalesPage from "@/pages/sales-page";
 import SalesPageEditor from "@/pages/sales-page-editor";
+import LandingPageEditor from "@/pages/landing-page-editor";
 
 function Router() {
   return (
@@ -42,6 +43,7 @@ function Router() {
       <Route path="/admin/dashboard" component={AdminDashboard} />
       <Route path="/admin/webinar/:id" component={AdminWebinarDetail} />
       <Route path="/admin/webinar/:id/control" component={AdminControl} />
+       <Route path="/admin/webinar/:id/landing-page" component={LandingPageEditor} />
        <Route path="/admin/webinar/:id/sales/:pageId" component={SalesPageEditor} />
       <Route path="/super-admin" component={SuperAdmin} />
       

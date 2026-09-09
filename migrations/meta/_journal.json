@@ -78,6 +78,13 @@
       "when": 1788404000000,
       "tag": "0010_offer_sales_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788405000000,
+      "tag": "0012_webinar_landing_pages",
+      "breakpoints": true
     }
   ]
 }

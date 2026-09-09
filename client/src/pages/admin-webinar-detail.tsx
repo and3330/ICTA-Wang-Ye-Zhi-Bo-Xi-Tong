@@ -2240,6 +2240,9 @@ export default function AdminWebinarDetail() {
             <Radio className="h-4 w-4 mr-2" />
             {s.btnLiveControl}
           </Button>
+           <Button variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/landing-page`)} data-testid="button-edit-landing-page">
+             <Edit className="h-4 w-4 mr-2" />編輯落地頁
+           </Button>
         </div>
       </header>
 
