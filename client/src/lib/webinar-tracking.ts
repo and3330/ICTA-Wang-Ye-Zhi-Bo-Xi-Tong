@@ -212,7 +212,7 @@ export async function openSalesPageOfferCheckout(webinarId: string, pageId: stri
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ pageId, offerId, visitorToken: getWebinarVisitorToken(webinarId) }),
+      body: JSON.stringify({ salesPageId: pageId, offerId, visitorToken: getWebinarVisitorToken(webinarId) }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => null))?.message || "Unable to start checkout");
     const result = await response.json() as { provider?: "stripe" | "ecpay"; url?: string; action?: string; fields?: Record<string, string | number> };

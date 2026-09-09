@@ -10,7 +10,8 @@ type Block =
   | { id: string; enabled: boolean; type: "benefits"; headline: string; items: string[] }
   | { id: string; enabled: boolean; type: "offer"; headline: string; priceLabel?: string; buttonLabel: string }
   | { id: string; enabled: boolean; type: "faq"; items: { question: string; answer: string }[] };
-type PublicPage = { id: string; title: string; webinarId: string; offerId: string; blocks: Block[]; offer: { name: string; amountMinor: number | null; currency: string } };
+type CheckoutSettings = { transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string; successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string };
+type PublicPage = { id: string; title: string; webinarId: string; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string } };
 
 function price(offer: PublicPage["offer"]) {
   if (offer.amountMinor === null) return "價格請洽詢";
@@ -21,11 +22,13 @@ function price(offer: PublicPage["offer"]) {
 export default function SalesPage() {
   const { slug } = useParams<{ slug: string }>();
   const [checkoutError, setCheckoutError] = useState("");
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
   const { data, isLoading } = useQuery<PublicPage>({ queryKey: ["/api/sales-pages", slug], enabled: !!slug });
   useEffect(() => { if (data) trackWebinarEvent(data.webinarId, "landing_view"); }, [data]);
   if (isLoading) return <div className="sales-loading"><div className="sales-skeleton" /></div>;
   if (!data) return <div className="sales-loading"><div className="studio-modal-card"><b>此銷售頁目前無法開啟</b><p>請確認網址，或稍後再試。</p></div></div>;
-  const checkout = async () => { setCheckoutError(""); try { await openSalesPageOfferCheckout(data.webinarId, data.id, data.offerId); } catch (e) { setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。"); } };
+  const checkout = async () => { if (checkoutBusy) return; setCheckoutError(""); setCheckoutBusy(true); try { await openSalesPageOfferCheckout(data.webinarId, data.id, data.offerId); } catch (e) { setCheckoutBusy(false); setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。"); } };
+  const settings = data.checkoutSettings;
   const blocks = data.blocks.filter((block) => block.enabled);
   return <main className="sales-page">
      <header><span>開賣啦 SELLCASE</span><span>安心付款・立即取得內容</span></header>
@@ -39,7 +42,8 @@ export default function SalesPage() {
         return <section className="studio-faq" key={block.id}><h2>常見問題</h2>{block.items.map((item) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
       })}
     </div>
-    {checkoutError && <div className="studio-modal"><div className="studio-modal-card"><b>付款頁面尚未開啟</b><p>{checkoutError}</p><button className="sales-cta" onClick={checkout}>再試一次</button></div></div>}
+     {checkoutBusy && <div className="studio-modal" role="dialog" aria-live="polite"><div className="studio-modal-card"><div className="sales-spinner" aria-hidden="true" /><b>{settings?.transitionTitle || "正在前往安全付款頁面"}</b><p>{settings?.transitionMessage || "請稍候，我們正在準備您的付款。"}</p></div></div>}
+     {checkoutError && <div className="studio-modal" role="alert"><div className="studio-modal-card"><b>付款頁面尚未開啟</b><p>{checkoutError}</p><button className="sales-cta" onClick={checkout}>再試一次</button><button className="studio-icon-btn" onClick={() => setCheckoutError("")}>返回優惠頁</button></div></div>}
      <footer className="sales-footer">由 開賣啦 SellCase 安全處理訂單</footer>
   </main>;
 }

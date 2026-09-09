@@ -2883,6 +2883,7 @@ export default function AdminWebinarDetail() {
                 { id: "email-sequences", label: s.seqTitle, icon: Mail },
               ], notificationsSection, setNotificationsSection)}
               <div className="space-y-6">
+              {notificationsSection === "notifications" && <>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -3050,7 +3051,9 @@ export default function AdminWebinarDetail() {
                   </Button>
                 </CardContent>
               </Card>
+              </>}
 
+              {notificationsSection === "webhooks" && (
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
@@ -3158,7 +3161,9 @@ export default function AdminWebinarDetail() {
                   )}
                 </CardContent>
               </Card>
+              )}
 
+              {notificationsSection === "email-sequences" && <>
               <Card className="border-primary/40 bg-primary/5">
                 <CardHeader className="flex flex-row items-center justify-between gap-2">
                   <div>
@@ -3304,6 +3309,7 @@ export default function AdminWebinarDetail() {
                   )}
                 </CardContent>
               </Card>
+              </>}
               </div>
             </div>
           </TabsContent>

@@ -7,6 +7,7 @@ import {
   salesPageCanPublish,
   salesPageImageUrlSchema,
   updateSalesPageSchema,
+  checkoutSettingsSchema,
   validatePublishableBlocks,
 } from "./salesPages";
 
@@ -28,6 +29,15 @@ test("sales page blocks are strict, bounded, and have stable unique IDs", () => 
   assert.equal(salesPageBlocksSchema.safeParse([{
     id: "html", type: "richText", enabled: true, content: "<script>alert(1)</script>",
   }]).success, false);
+});
+
+test("checkout settings normalize blank success URL and reject unsafe navigation", () => {
+  const blank = checkoutSettingsSchema.parse({ successButtonUrl: "" });
+  assert.equal(blank.successButtonUrl, undefined);
+  assert.equal(checkoutSettingsSchema.safeParse({ successButtonUrl: "/members" }).success, true);
+  assert.equal(checkoutSettingsSchema.safeParse({ successButtonUrl: "https://example.com/member" }).success, true);
+  assert.equal(checkoutSettingsSchema.safeParse({ successButtonUrl: "//evil.example" }).success, false);
+  assert.equal(checkoutSettingsSchema.safeParse({ successButtonUrl: "javascript:alert(1)" }).success, false);
 });
 
 test("sales page image URLs allow only HTTPS and safe same-origin uploads", () => {

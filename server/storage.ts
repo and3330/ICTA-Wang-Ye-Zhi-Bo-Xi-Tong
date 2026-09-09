@@ -144,7 +144,7 @@ export interface IStorage {
     webinarId: string,
     pageId: string,
     version: number,
-    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks">>,
+    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks" | "checkoutSettings">>,
   ): Promise<OfferSalesPage | undefined>;
   setOfferSalesPageStatus(
     webinarId: string,
@@ -996,6 +996,8 @@ export class DatabaseStorage implements IStorage {
     const result = await db.update(offerSalesPages).set({
       status,
       publishedAt: status === "published" ? new Date() : null,
+      publishedCheckoutSettings: status === "published" ? sql`${offerSalesPages.checkoutSettings}` : offerSalesPages.publishedCheckoutSettings,
+      publishedOrderedBlocks: status === "published" ? sql`${offerSalesPages.orderedBlocks}` : offerSalesPages.publishedOrderedBlocks,
       version: sql`${offerSalesPages.version} + 1`,
       updatedAt: new Date(),
     }).where(and(

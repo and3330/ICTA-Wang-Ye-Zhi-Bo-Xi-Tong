@@ -156,13 +156,38 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
       });
 
       const visitorTokenHash = session.metadata.visitorTokenHash || null;
-      const inserted = await tx.insert(webinarPayments).values({
+      const pendingPaymentId = metadataId(session.metadata.paymentId);
+      const [precreated] = pendingPaymentId ? await tx.select().from(webinarPayments)
+        .where(eq(webinarPayments.id, pendingPaymentId)).limit(1) : [undefined];
+      if (precreated && (
+        precreated.webinarId !== webinarId || precreated.offerId !== offerId ||
+        precreated.ctaId !== ctaId || precreated.registrationId !== registrationId ||
+        precreated.amountMinor !== amountMinor || precreated.currency !== currency ||
+        precreated.checkoutStatusTokenHash !== (session.metadata.checkoutStatusTokenHash || null) ||
+        precreated.originSalesPageIdSnapshot !== (metadataId(session.metadata.originSalesPageIdSnapshot) || null) ||
+        precreated.salesPageVersion !== (session.metadata.salesPageVersion ? Number(session.metadata.salesPageVersion) : null)
+      )) throw new Error("Mismatched pre-created payment attribution");
+      const precreatedChanged = precreated?.status === "pending"
+        ? await tx.update(webinarPayments).set({
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId: paymentIntentId,
+            status: "paid",
+            purchasedAt: new Date(),
+            updatedAt: new Date(),
+          }).where(and(eq(webinarPayments.id, precreated.id), eq(webinarPayments.status, "pending")))
+          .returning({ id: webinarPayments.id })
+        : [];
+      const inserted = precreated ? [] : await tx.insert(webinarPayments).values({
         webinarId,
         offerId,
         ctaId,
         registrationId,
         visitorTokenHash,
         stripeCheckoutSessionId: session.id,
+        checkoutStatusTokenHash: session.metadata.checkoutStatusTokenHash || null,
+        salesPageId: metadataId(session.metadata.salesPageId) || null,
+        originSalesPageIdSnapshot: metadataId(session.metadata.originSalesPageIdSnapshot) || null,
+        salesPageVersion: session.metadata.salesPageVersion ? Number(session.metadata.salesPageVersion) : null,
         stripePaymentIntentId: paymentIntentId,
         amountMinor: amountMinor!,
         currency,
@@ -170,7 +195,28 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
          purchasedAt: new Date(),
       }).onConflictDoNothing({ target: webinarPayments.stripeCheckoutSessionId })
         .returning({ id: webinarPayments.id });
-      if (inserted[0]) {
+      // Checkout now creates a pending row before redirect. Upgrade that row
+      // here as well as supporting the historical webhook-first path.
+      let paidApplied = Boolean(inserted[0] || precreatedChanged[0]);
+      if (!inserted[0] && !precreated) {
+        const [pending] = await tx.select({ id: webinarPayments.id, status: webinarPayments.status })
+          .from(webinarPayments)
+          .where(eq(webinarPayments.stripeCheckoutSessionId, session.id))
+          .limit(1);
+        if (pending?.status === "pending") {
+          const changed = await tx.update(webinarPayments).set({
+            stripePaymentIntentId: paymentIntentId,
+            amountMinor: amountMinor!,
+            currency,
+            status: "paid",
+            purchasedAt: new Date(),
+            updatedAt: new Date(),
+          }).where(and(eq(webinarPayments.id, pending.id), eq(webinarPayments.status, "pending")))
+            .returning({ id: webinarPayments.id });
+          paidApplied = Boolean(changed[0]);
+        }
+      }
+      if (paidApplied) {
         await tx.insert(webinarFunnelEvents).values({
           webinarId,
           eventType: "purchase",

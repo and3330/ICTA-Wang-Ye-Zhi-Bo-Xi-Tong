@@ -248,6 +248,19 @@ export const offerSalesPages = pgTable("offer_sales_pages", {
   title: varchar("title", { length: 200 }).notNull(),
   status: text("status").$type<"draft" | "published">().notNull().default("draft"),
   orderedBlocks: jsonb("ordered_blocks").$type<unknown[]>().notNull().default([]),
+  publishedOrderedBlocks: jsonb("published_ordered_blocks").$type<unknown[]>(),
+  publishedCheckoutSettings: jsonb("published_checkout_settings").$type<{
+    transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string;
+    successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string;
+  }>(),
+  checkoutSettings: jsonb("checkout_settings").$type<{
+    transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string;
+    successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string;
+  }>().notNull().default({
+    transitionTitle: "正在前往安全付款頁面", transitionMessage: "請稍候，我們正在準備您的付款。",
+    successTitle: "付款成功，謝謝您的支持！", successMessage: "您的購買已確認。",
+    successButtonLabel: "前往內容", cancelTitle: "付款尚未完成", cancelMessage: "您可以返回優惠頁，再試一次。",
+  }),
   version: integer("version").notNull().default(1),
   publishedAt: timestamp("published_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -807,6 +820,15 @@ export const webinarPayments = pgTable("webinar_payments", {
   visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
   paymentProvider: text("payment_provider").notNull().default("stripe"),
   stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
+  checkoutStatusTokenHash: varchar("checkout_status_token_hash", { length: 64 }).unique(),
+  salesPageId: varchar("sales_page_id").references(() => offerSalesPages.id, { onDelete: "set null" }),
+  originSalesPageIdSnapshot: varchar("origin_sales_page_id_snapshot"),
+  salesPageVersion: integer("sales_page_version"),
+  checkoutSettingsSnapshot: jsonb("checkout_settings_snapshot").$type<{
+    transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string;
+    successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string;
+  }>(),
+  offerSlugSnapshot: varchar("offer_slug_snapshot", { length: 80 }),
   stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
   providerOrderId: varchar("provider_order_id", { length: 64 }).unique(),
   ecpayConnectionId: varchar("ecpay_connection_id").references(() => ecpayConnections.id, { onDelete: "restrict" }),

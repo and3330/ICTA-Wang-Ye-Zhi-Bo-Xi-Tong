@@ -19,6 +19,7 @@ import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
+import { SafeRichText } from "@/components/safe-rich-text";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 type LandingBlock = { id?: string; type: string; enabled?: boolean; [key: string]: any };
@@ -32,6 +33,7 @@ function WebinarLanding({ blocks, brand, title, description, onRegister, countdo
       const key = block.id || `${block.type}-${index}`;
       if (block.type === "hero") return <section className="webinar-landing-hero" key={key}><div><span className="webinar-kicker">ONLINE WEBINAR</span><h1>{block.headline || title}</h1><p>{block.subheadline || description}</p><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></div>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={title} />}</section>;
       if (block.type === "intro") return <section className="webinar-landing-section" key={key}><span className="webinar-kicker">ABOUT THIS EVENT</span><h2>{block.headline || "關於這場說明會"}</h2><p>{block.content || description}</p></section>;
+      if (block.type === "richText") return <section className="webinar-landing-section rich-text-preview" key={key}><SafeRichText value={block.body} /></section>;
       if (block.type === "audience" || block.type === "agenda") return <section className="webinar-landing-section" key={key}><h2>{block.headline}</h2><div className="webinar-landing-list">{(block.items || []).map((item: string) => <div key={item}>{item}</div>)}</div></section>;
       if (block.type === "instructor") return <section className="webinar-landing-section webinar-instructor" key={key}>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={block.name || "講師"} />}<div><h2>{block.headline || "關於講師"}</h2><h3>{block.name}</h3><p>{block.bio}</p></div></section>;
       if (block.type === "faq") return <section className="webinar-landing-section webinar-faq" key={key}><h2>{block.headline || "常見問題"}</h2>{(block.items || []).map((item: any) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;

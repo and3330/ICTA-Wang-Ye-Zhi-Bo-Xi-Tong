@@ -11,6 +11,7 @@ import { createEmailRemindersForRegistration, startEmailScheduler } from "./emai
 import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
 import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry } from "./watchTokens";
 import crypto from "crypto";
+import { safeUploadContentType, verifyImageUpload } from "./safeImageUpload";
 import {
   insertWebinarSchema,
   insertRegistrationSchema,
@@ -95,6 +96,7 @@ import {
   salesPageSlugSchema,
   salesPageVersionSchema,
   updateSalesPageSchema,
+  normalizeCheckoutSettings,
   validatePublishableBlocks,
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
@@ -108,6 +110,12 @@ const RECHARGE_MIN_TWD = 100; // 自訂金額最低消費
 const RECHARGE_PACKAGES: Record<string, number> = { p300: 300, p1000: 1000, p3000: 3000 }; // 固定儲值包（元）
 const OUT_OF_POINTS_DEFAULT = "感謝您的提問！目前線上客服忙線中，主辦團隊將盡快親自回覆您 🙏";
 export const OFFER_CHECKOUT_RATE_LIMIT = { namespace: "offer-checkout", limit: 20, windowSeconds: 60 } as const;
+function createCheckoutStatusToken() {
+  // 192-bit bearer capability; only its SHA-256 digest is persisted.
+  return crypto.randomBytes(24).toString("base64url");
+}
+function checkoutStatusTokenHash(token: string) { return crypto.createHash("sha256").update(token).digest("hex"); }
+function validCheckoutStatusToken(token: string) { return /^[A-Za-z0-9_-]{32}$/.test(token); }
 
 declare module "express-session" {
   interface SessionData {
@@ -255,34 +263,23 @@ export async function registerRoutes(
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
 
-  const uploadStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadsDir),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname) || ".png";
-      const name = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
-      cb(null, name);
-    },
-  });
-
   const upload = multer({
-    storage: uploadStorage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
-      const allowed = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-      if (allowed.includes(file.mimetype)) {
-        cb(null, true);
-      } else {
-        cb(new Error("只允許上傳圖片格式 (jpg, png, gif, webp)"));
-      }
-    },
   });
 
-  app.post("/api/upload", requireAdmin, upload.single("file"), (req: Request, res: Response) => {
+  app.post("/api/upload", requireAdmin, upload.single("file"), async (req: Request, res: Response) => {
     if (!req.file) {
       return res.status(400).json({ message: "未選擇檔案" });
     }
-    const url = `/uploads/${req.file.filename}`;
-    res.json({ url, filename: req.file.filename });
+    try {
+      const verified = await verifyImageUpload(req.file.buffer);
+      fs.writeFileSync(path.join(uploadsDir, verified.filename), req.file.buffer, { flag: "wx" });
+      const url = `/uploads/${verified.filename}`;
+      res.json({ url, filename: verified.filename });
+    } catch (error) {
+      res.status(400).json({ message: error instanceof Error ? error.message : "圖片格式無效" });
+    }
   });
 
   app.delete("/api/upload", requireAdmin, (req: Request, res: Response) => {
@@ -303,6 +300,12 @@ export async function registerRoutes(
   app.use("/uploads", serveStatic(uploadsDir, {
     maxAge: "1d",
     immutable: true,
+    setHeaders: (res, filename) => {
+      res.setHeader("Content-Type", safeUploadContentType(filename));
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    },
   }));
 
   // WebSocket Server
@@ -1021,7 +1024,7 @@ export async function registerRoutes(
       const entitlement = await refreshEntitlement(user);
       const webinarCount = await storage.getWebinarCountByUser(user.id);
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
-      res.json({
+       res.json({
         plan: entitlement.plan,
         amountUsd: entitlement.amountUsd,
         status: entitlement.status,
@@ -2269,6 +2272,7 @@ export async function registerRoutes(
         slug: input.slug,
         title: input.title,
         orderedBlocks: input.blocks,
+         checkoutSettings: input.checkoutSettings,
       });
       res.status(201).json(page);
     } catch (error: any) {
@@ -2293,6 +2297,7 @@ export async function registerRoutes(
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.slug !== undefined ? { slug: input.slug } : {}),
         ...(input.blocks !== undefined ? { orderedBlocks: input.blocks } : {}),
+         ...(input.checkoutSettings !== undefined ? { checkoutSettings: normalizeCheckoutSettings(input.checkoutSettings) } : {}),
       });
       if (!page) return res.status(409).json({ message: "Version conflict", code: "VERSION_CONFLICT" });
       res.json(page);
@@ -2352,7 +2357,9 @@ export async function registerRoutes(
       const slug = salesPageSlugSchema.parse(req.params.slug);
       const result = await storage.getPublicOfferSalesPage(slug);
       if (!result) return res.status(404).json({ message: "Sales page not found" });
-      const { page, offer } = result;
+       const { page, offer } = result;
+       const publicCheckout = normalizeCheckoutSettings(page.publishedCheckoutSettings);
+       const { successButtonUrl: _successButtonUrl, successTitle: _successTitle, successMessage: _successMessage, successButtonLabel: _successButtonLabel, ...publicCheckoutSettings } = publicCheckout;
       let display: { name: string; amountMinor: number | null; currency: string };
       if (offer.paymentProvider === "ecpay") {
         display = { name: offer.ecpayItemName!, amountMinor: offer.ecpayAmountTwd, currency: "TWD" };
@@ -2374,7 +2381,8 @@ export async function registerRoutes(
         offerId: page.offerId,
         slug: page.slug,
         title: page.title,
-        blocks: page.orderedBlocks,
+         blocks: page.publishedOrderedBlocks ?? [],
+         checkoutSettings: publicCheckoutSettings,
         publishedAt: page.publishedAt,
         offer: {
           paymentProvider: offer.paymentProvider,
@@ -2386,6 +2394,43 @@ export async function registerRoutes(
       if (error instanceof z.ZodError) return res.status(400).json({ message: error.message });
       res.status(502).json({ message: "Offer display is temporarily unavailable" });
     }
+  });
+
+  // This endpoint intentionally accepts the provider identifier only as a
+  // lookup key. Query-string state is never used as payment proof, and the
+  // response contains no purchaser or cross-order information.
+  app.get("/api/public/checkout-status", async (req, res) => {
+    const sessionId = typeof req.query.session_id === "string" ? req.query.session_id : "";
+    const orderId = typeof req.query.order_id === "string" ? req.query.order_id : "";
+    const provider = typeof req.query.provider === "string" ? req.query.provider : "";
+    const statusToken = typeof req.query.status_token === "string" ? req.query.status_token : "";
+    if (!statusToken || !validCheckoutStatusToken(statusToken)) return res.status(403).json({ status: "unknown" });
+    if (orderId || provider === "ecpay") {
+      if (orderId && !/^[A-Za-z0-9_-]{8,64}$/.test(orderId)) return res.status(400).json({ status: "unknown" });
+      const [payment] = await db.select({ status: webinarPayments.status, checkoutStatusTokenHash: webinarPayments.checkoutStatusTokenHash, checkoutSettingsSnapshot: webinarPayments.checkoutSettingsSnapshot, offerSlugSnapshot: webinarPayments.offerSlugSnapshot })
+        .from(webinarPayments).where(and(
+          eq(webinarPayments.paymentProvider, "ecpay"),
+          eq(webinarPayments.checkoutStatusTokenHash, checkoutStatusTokenHash(statusToken)),
+        )).limit(1);
+      if (!payment || payment.checkoutStatusTokenHash !== checkoutStatusTokenHash(statusToken)) return res.status(403).json({ status: "unknown" });
+      const state = payment.status === "paid" ? "paid" : payment.status === "pending" ? "pending" : "failed";
+      return res.json({ status: state, ...(state === "paid" ? { checkoutSettings: payment.checkoutSettingsSnapshot } : {}), offerSlug: payment.offerSlugSnapshot });
+    }
+    if (!/^cs_[A-Za-z0-9_=-]{8,200}$/.test(sessionId)) {
+      return res.status(400).json({ status: "unknown" });
+    }
+    const [payment] = await db.select({ status: webinarPayments.status, checkoutStatusTokenHash: webinarPayments.checkoutStatusTokenHash, checkoutSettingsSnapshot: webinarPayments.checkoutSettingsSnapshot, offerSlugSnapshot: webinarPayments.offerSlugSnapshot })
+      .from(webinarPayments)
+      .where(eq(webinarPayments.stripeCheckoutSessionId, sessionId)).limit(1);
+    if (!payment || payment.checkoutStatusTokenHash !== checkoutStatusTokenHash(statusToken)) return res.status(403).json({ status: "unknown" });
+    const state = payment.status === "paid" ? "paid"
+        : payment.status === "pending" ? "pending"
+        : payment.status === "canceled" ? "canceled" : "failed";
+    return res.json({
+      status: state,
+      ...(state === "paid" ? { checkoutSettings: payment.checkoutSettingsSnapshot } : {}),
+      offerSlug: payment.offerSlugSnapshot,
+    });
   });
 
   app.get("/api/webinars/:id/offers", requireWebinarOwner, async (req, res) => {
@@ -2483,6 +2528,10 @@ export async function registerRoutes(
       if (!webinar || webinar.publishStatus !== "published") return res.status(404).json({ message: "Webinar not found" });
       let cta: Awaited<ReturnType<typeof storage.getCtaButtonsByWebinar>>[number] | undefined;
       let offer: Awaited<ReturnType<typeof storage.getWebinarOffer>> | undefined;
+      let salesPageId: string | undefined;
+      let salesPageVersion: number | undefined;
+      let checkoutSettingsSnapshot: ReturnType<typeof normalizeCheckoutSettings> | undefined;
+      let offerSlugSnapshot: string | undefined;
       if (input.ctaId) {
         // A persisted CTA is the established webinar-room attribution flow.
         cta = (await storage.getCtaButtonsByWebinar(webinarId)).find(item => item.id === input.ctaId);
@@ -2501,6 +2550,10 @@ export async function registerRoutes(
         );
         if (!context) return res.status(404).json({ message: "Sales page or offer is unavailable" });
         offer = context.offer;
+        salesPageId = context.page.id;
+        salesPageVersion = context.page.version;
+        checkoutSettingsSnapshot = normalizeCheckoutSettings(context.page.publishedCheckoutSettings);
+        offerSlugSnapshot = context.page.slug;
       }
       if (input.registrationId) {
         const registration = await storage.getRegistration(input.registrationId);
@@ -2521,6 +2574,9 @@ export async function registerRoutes(
         )).limit(1);
         if (!connection) return res.status(409).json({ message: "ECPay checkout is unavailable" });
         const tradeNo = merchantTradeNo();
+        const statusToken = createCheckoutStatusToken();
+        const clientBackUrl = `${appBaseUrl()}/purchase-result?p=e&t=${statusToken}`;
+        if (clientBackUrl.length > 200) return res.status(409).json({ message: "ECPay return URL exceeds the 200 character provider limit; configure a shorter APP_BASE_URL" });
         const [payment] = await db.insert(webinarPayments).values({
           webinarId,
           offerId: offer.id,
@@ -2529,6 +2585,12 @@ export async function registerRoutes(
           visitorTokenHash: visitorTokenHash || null,
           paymentProvider: "ecpay",
           providerOrderId: tradeNo,
+           checkoutStatusTokenHash: checkoutStatusTokenHash(statusToken),
+           salesPageId,
+           originSalesPageIdSnapshot: salesPageId,
+           salesPageVersion,
+           checkoutSettingsSnapshot,
+           offerSlugSnapshot,
           ecpayConnectionId: connection.id,
           merchantIdSnapshot: connection.merchantId,
           providerEnvironment: connection.environment,
@@ -2547,6 +2609,7 @@ export async function registerRoutes(
           TradeDesc: "Webinar offer",
           ItemName: offer.ecpayItemName.replace(/[<>&#]/g, " ").slice(0, 200),
           ReturnURL: `${appBaseUrl()}/api/ecpay/return`,
+           ClientBackURL: clientBackUrl,
           ChoosePayment: "ALL",
           EncryptType: "1",
         };
@@ -2570,6 +2633,24 @@ export async function registerRoutes(
       if (!price.active || price.type !== "one_time" || price.unit_amount === null || productId !== offer.stripeProductId) {
         return res.status(409).json({ message: "Offer price is unavailable" });
       }
+      const statusToken = createCheckoutStatusToken();
+      const [pendingPayment] = await db.insert(webinarPayments).values({
+        webinarId,
+        offerId: offer.id,
+        ctaId: cta?.id,
+        registrationId: input.registrationId,
+        visitorTokenHash: visitorTokenHash || null,
+        paymentProvider: "stripe",
+        checkoutStatusTokenHash: checkoutStatusTokenHash(statusToken),
+        salesPageId,
+        originSalesPageIdSnapshot: salesPageId,
+        salesPageVersion,
+        checkoutSettingsSnapshot,
+        offerSlugSnapshot,
+        amountMinor: price.unit_amount,
+        currency: price.currency.toUpperCase(),
+        status: "pending",
+      }).returning({ id: webinarPayments.id });
       const metadata = {
         kind: "webinar_offer",
         webinarId,
@@ -2578,17 +2659,27 @@ export async function registerRoutes(
         stripePriceId: offer.stripePriceId,
         ...(input.registrationId ? { registrationId: input.registrationId } : {}),
         ...(visitorTokenHash ? { visitorTokenHash } : {}),
+        checkoutStatusTokenHash: checkoutStatusTokenHash(statusToken),
+        ...(salesPageId ? { salesPageId } : {}),
+        ...(salesPageId ? { originSalesPageIdSnapshot: salesPageId } : {}),
+        ...(salesPageVersion ? { salesPageVersion: String(salesPageVersion) } : {}),
+        paymentId: pendingPayment.id,
       };
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
+       const baseUrl = appBaseUrl();
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
         line_items: [{ price: offer.stripePriceId!, quantity: 1 }],
         metadata,
         payment_intent_data: { metadata },
         client_reference_id: input.registrationId || undefined,
-        success_url: `${baseUrl}/webinar/${encodeURIComponent(webinarId)}?checkout=success`,
-        cancel_url: `${baseUrl}/webinar/${encodeURIComponent(webinarId)}?checkout=cancel`,
+         success_url: `${baseUrl}/purchase-result?provider=stripe&session_id={CHECKOUT_SESSION_ID}&status_token=${encodeURIComponent(statusToken)}`,
+         cancel_url: `${baseUrl}/purchase-result?provider=stripe&session_id={CHECKOUT_SESSION_ID}&status_token=${encodeURIComponent(statusToken)}&checkout=canceled`,
       });
+       // Persist a pending local order before sending the browser to Stripe.
+       // The verified webhook uses the unique session id and upgrades this
+       // row atomically, while older/replayed webhooks remain idempotent.
+       await db.update(webinarPayments).set({ stripeCheckoutSessionId: session.id, updatedAt: new Date() })
+         .where(eq(webinarPayments.id, pendingPayment.id));
       await storage.createFunnelEvent({
         webinarId,
         eventType: "checkout_start",

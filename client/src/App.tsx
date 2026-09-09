@@ -20,6 +20,7 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SalesPage from "@/pages/sales-page";
 import SalesPageEditor from "@/pages/sales-page-editor";
+import PurchaseResult from "@/pages/purchase-result";
 import LandingPageEditor from "@/pages/landing-page-editor";
 
 function Router() {
@@ -37,6 +38,7 @@ function Router() {
        <Route path="/forgot-password" component={ForgotPassword} />
        <Route path="/reset-password" component={ResetPassword} />
        <Route path="/sales/:slug" component={SalesPage} />
+       <Route path="/purchase-result" component={PurchaseResult} />
       
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />

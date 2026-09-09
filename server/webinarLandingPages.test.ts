@@ -7,13 +7,34 @@ import { storage } from "./storage";
 import { webinars } from "@shared/schema";
 import {
   webinarLandingBlocksSchema, webinarLandingBrandSchema, defaultWebinarLandingTemplate,
-  landingImageUrlSchema, webinarLandingPageCanPublish,
+  landingImageUrlSchema, richTextBodySchema, webinarLandingPageCanPublish,
 } from "./webinarLandingPages";
 
 test("預設模板包含完整落地頁區塊", () => {
   const blocks = defaultWebinarLandingTemplate({ title: "測試說明會", description: "介紹" });
-  assert.deepEqual(blocks.map(block => block.type), ["hero", "intro", "audience", "agenda", "instructor", "faq", "countdown", "cta"]);
+  assert.deepEqual(blocks.map(block => block.type), ["hero", "intro", "audience", "agenda", "instructor", "faq", "countdown", "richText", "cta"]);
   assert.equal(webinarLandingBlocksSchema.safeParse(blocks).success, true);
+});
+
+test("richText AST accepts safe content and rejects unsafe or oversized content", () => {
+  const body = { type: "doc", content: [
+    { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Hello", marks: [{ type: "bold" }] }] },
+    { type: "paragraph", content: [{ type: "text", text: "read", marks: [{ type: "link", attrs: { href: "/about" } }] }] },
+    { type: "image", attrs: { src: "/uploads/hero.webp", alt: "hero" } },
+  ] };
+  assert.equal(richTextBodySchema.safeParse(body).success, true);
+  assert.equal(richTextBodySchema.safeParse({ ...body, content: [{ type: "script", attrs: {} }] }).success, false);
+  assert.equal(richTextBodySchema.safeParse({ ...body, content: [{ type: "image", attrs: { src: "javascript:alert(1)" } }] }).success, false);
+  assert.equal(richTextBodySchema.safeParse({ ...body, content: [{ type: "image", attrs: { src: "http://example.com/a.png" } }] }).success, false);
+  assert.equal(richTextBodySchema.safeParse({ ...body, content: [{ type: "image", attrs: { src: "/uploads/a.png", extra: "x" } }] }).success, false);
+  assert.equal(richTextBodySchema.safeParse({ ...body, content: Array.from({ length: 201 }, () => ({ type: "paragraph" })) }).success, false);
+});
+
+test("hero must be unique and remain at index zero", () => {
+  const template = defaultWebinarLandingTemplate({ title: "測試" });
+  assert.equal(webinarLandingBlocksSchema.safeParse(template).success, true);
+  assert.equal(webinarLandingBlocksSchema.safeParse([...template, template[0]]).success, false);
+  assert.equal(webinarLandingBlocksSchema.safeParse([template[1], ...template.slice(1)]).success, false);
 });
 
 test("區塊純文字 schema 拒絕 HTML 與重複 ID", () => {

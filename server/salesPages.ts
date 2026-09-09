@@ -5,6 +5,37 @@ const blockIdSchema = z.string().trim().min(1).max(64)
 const shortText = (max: number) => z.string().trim().min(1).max(max);
 const optionalText = (max: number) => z.string().trim().max(max).optional();
 
+/** Copy used for both editor validation and public rendering. Keep defaults
+ * deliberately generic so old pages can be read without a migration rewrite. */
+export const DEFAULT_CHECKOUT_SETTINGS = {
+  transitionTitle: "正在前往安全付款頁面",
+  transitionMessage: "請稍候，我們正在準備您的付款。",
+  successTitle: "付款成功，謝謝您的支持！",
+  successMessage: "您的購買已確認。",
+  successButtonLabel: "前往內容",
+  successButtonUrl: undefined as string | undefined,
+  cancelTitle: "付款尚未完成",
+  cancelMessage: "您可以返回優惠頁，再試一次。",
+};
+const safeCheckoutUrl = z.preprocess(value => value === "" ? undefined : value, z.string().trim().max(2048).refine(value => {
+  if (value.startsWith("/") && !value.startsWith("//")) return true;
+  try { return new URL(value).protocol === "https:"; } catch { return false; }
+}, "網址必須是 HTTPS 或同源相對路徑").optional());
+export const checkoutSettingsSchema = z.object({
+  transitionTitle: shortText(200).default(DEFAULT_CHECKOUT_SETTINGS.transitionTitle),
+  transitionMessage: shortText(600).default(DEFAULT_CHECKOUT_SETTINGS.transitionMessage),
+  successTitle: shortText(200).default(DEFAULT_CHECKOUT_SETTINGS.successTitle),
+  successMessage: shortText(600).default(DEFAULT_CHECKOUT_SETTINGS.successMessage),
+  successButtonLabel: shortText(80).default(DEFAULT_CHECKOUT_SETTINGS.successButtonLabel),
+  successButtonUrl: safeCheckoutUrl.optional(),
+  cancelTitle: shortText(200).default(DEFAULT_CHECKOUT_SETTINGS.cancelTitle),
+  cancelMessage: shortText(600).default(DEFAULT_CHECKOUT_SETTINGS.cancelMessage),
+}).strict();
+export type CheckoutSettings = z.infer<typeof checkoutSettingsSchema>;
+export function normalizeCheckoutSettings(value: unknown): CheckoutSettings {
+  return checkoutSettingsSchema.parse(value ?? {});
+}
+
 export const salesPageImageUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
   if (/^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) return true;
   try {
@@ -109,6 +140,7 @@ export const createSalesPageSchema = z.object({
   slug: salesPageSlugSchema,
   title: shortText(200),
   blocks: salesPageBlocksSchema.default([]),
+  checkoutSettings: checkoutSettingsSchema.default(DEFAULT_CHECKOUT_SETTINGS),
 }).strict();
 
 export const updateSalesPageSchema = z.object({
@@ -116,7 +148,8 @@ export const updateSalesPageSchema = z.object({
   slug: salesPageSlugSchema.optional(),
   title: shortText(200).optional(),
   blocks: salesPageBlocksSchema.optional(),
-}).strict().refine(value => value.slug !== undefined || value.title !== undefined || value.blocks !== undefined, {
+  checkoutSettings: checkoutSettingsSchema.optional(),
+}).strict().refine(value => value.slug !== undefined || value.title !== undefined || value.blocks !== undefined || value.checkoutSettings !== undefined, {
   message: "At least one of title, slug, or blocks is required",
 });
 
