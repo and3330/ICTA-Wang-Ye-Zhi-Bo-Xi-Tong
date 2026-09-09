@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 
 type Settings = { successTitle: string; successMessage: string; successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string };
 type Result = { status: "pending" | "paid" | "canceled" | "failed" | "unknown"; checkoutSettings?: Settings; offerSlug?: string };
@@ -29,7 +30,7 @@ export default function PurchaseResult() {
   const state = !identifier || !provider ? "unknown" : query.data?.status === "paid" ? "paid" : params.get("checkout") === "canceled" ? "canceled" : query.data?.status || (query.isError ? "failed" : "pending");
   const settings = query.data?.checkoutSettings;
   const returnUrl = query.data?.offerSlug ? `/sales/${encodeURIComponent(query.data.offerSlug)}` : "/";
-  return <main className="sales-page"><header><span>開賣啦 SELLCASE</span><span>訂單狀態</span></header><div className="studio-modal-card" style={{ maxWidth: 620, margin: "12vh auto", textAlign: "center" }}>
+  return <main className="sales-page"><header><SellCaseLogo style={{ width: 142, height: "auto" }} /><span>訂單狀態</span></header><div className="studio-modal-card" style={{ maxWidth: 620, margin: "12vh auto", textAlign: "center" }}>
     {state === "paid" ? <><h1>{settings?.successTitle || "付款成功，謝謝您的支持！"}</h1><p>{settings?.successMessage || "您的購買已確認。"}</p>{settings?.successButtonUrl && <a className="sales-cta" href={settings.successButtonUrl}>{settings.successButtonLabel || "前往內容"}</a>}</> :
       state === "pending" ? <><h1>正在確認付款</h1><p>我們正在等待付款服務通知，請不要關閉此頁面。</p><div className="sales-spinner" /></> :
       state === "canceled" ? <><h1>{settings?.cancelTitle || "付款尚未完成"}</h1><p>{settings?.cancelMessage || "您可以返回優惠頁，再試一次。"}</p><a className="sales-cta" href={returnUrl}>返回優惠頁</a></> :

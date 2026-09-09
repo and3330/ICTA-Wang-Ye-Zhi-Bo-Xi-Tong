@@ -1,4 +1,5 @@
-import { ArrowLeft, ShieldCheck } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 import { Link, useLocation } from "wouter";
 
 const sections = {
@@ -57,8 +58,7 @@ export default function Legal() {
       <header className="border-b border-[#c8dfdf] bg-white/90">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-5 py-4">
           <Link href="/" className="flex items-center gap-2 font-bold">
-            <ShieldCheck className="h-5 w-5 text-[#0c8f92]" />
-            開賣啦 SellCase
+            <SellCaseLogo className="h-auto w-[138px]" />
           </Link>
           <Link href="/" className="flex items-center gap-2 text-sm font-semibold text-[#39707a] hover:text-[#0c8f92]">
             <ArrowLeft className="h-4 w-4" />

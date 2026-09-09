@@ -9,15 +9,32 @@ export interface UploadStorage {
 }
 
 class ObjectUploadStorage implements UploadStorage {
-  private readonly client = new Client();
+  private client: Client | undefined;
+
+  constructor(private readonly createClient: () => Client) {}
+
+  private getClient() {
+    this.client ??= this.createClient();
+    return this.client;
+  }
+
+  private async withClient<T>(operation: (client: Client) => Promise<T>) {
+    const client = this.getClient();
+    try {
+      return await operation(client);
+    } catch (error) {
+      if (this.client === client) this.client = undefined;
+      throw error;
+    }
+  }
 
   async put(key: string, contents: Buffer) {
-    const result = await this.client.uploadFromBytes(key, contents);
+    const result = await this.withClient((client) => client.uploadFromBytes(key, contents));
     if (!result.ok) throw new Error(result.error.message);
   }
 
   async get(key: string) {
-    const result = await this.client.downloadAsBytes(key);
+    const result = await this.withClient((client) => client.downloadAsBytes(key));
     if (!result.ok) {
       if (result.error.statusCode === 404) return null;
       throw new Error(result.error.message);
@@ -26,9 +43,15 @@ class ObjectUploadStorage implements UploadStorage {
   }
 
   async delete(key: string) {
-    const result = await this.client.delete(key, { ignoreNotFound: true });
+    const result = await this.withClient((client) => client.delete(key, { ignoreNotFound: true }));
     if (!result.ok) throw new Error(result.error.message);
   }
+}
+
+export function createObjectUploadStorage(
+  createClient: () => Client = () => new Client(),
+): UploadStorage {
+  return new ObjectUploadStorage(createClient);
 }
 
 class LocalUploadStorage implements UploadStorage {
@@ -60,7 +83,7 @@ class LocalUploadStorage implements UploadStorage {
 /** Object Storage is the production default; local storage remains useful for dev and legacy files. */
 export function createUploadStorage(directory: string): UploadStorage {
   return process.env.NODE_ENV === "production"
-    ? new ObjectUploadStorage()
+    ? createObjectUploadStorage()
     : new LocalUploadStorage(directory);
 }
 

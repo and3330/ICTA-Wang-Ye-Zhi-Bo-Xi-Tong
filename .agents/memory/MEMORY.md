@@ -15,3 +15,5 @@
 - [Closed-loop sales insights](closed-loop-sales-insights.md) — 成交分數先用可解釋事件規則；退款依可信付款淨額；自動外聯必須由會員明確啟用。
 - [Webinar landing publication](webinar-landing-publication.md) — public registration pages read immutable publish snapshots; draft saves never change live content.
 - [Public webinar revocation](public-webinar-revocation.md) — entitlement, publication, and replay access must be revalidated across HTTP, WebSocket, and the active video player.
+- [Marketing responsive CSS order](marketing-responsive-css-order.md) — component CSS can load before global index styles; mobile overrides need stronger scope or later placement.
+- [App Storage startup safety](app-storage-startup-safety.md) — constructing the SDK client starts async discovery; create it only inside an awaited storage operation.

@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 
 const langLabels: Record<LangFull, string> = {
   "zh-TW": "繁體中文",
@@ -279,11 +280,9 @@ export default function AdminLogin() {
       </div>
 
       <div className="admin-login-brand mb-8 text-center">
-        <div className="flex items-center justify-center gap-3 mb-3">
-          <div className="grid h-11 w-11 place-items-center rounded-xl border border-teal-200/30 bg-teal-200/10 p-1">
-            <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
-          </div>
-           <h1 className="text-2xl font-bold text-white tracking-tight">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
+        <div className="admin-login-logo-panel mb-4">
+          <SellCaseLogo className="h-auto w-full" />
+          <h1 className="sr-only">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
         </div>
         <p className="text-slate-400 text-sm">{s.subtitle}</p>
       </div>

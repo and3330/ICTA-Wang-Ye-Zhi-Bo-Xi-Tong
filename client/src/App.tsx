@@ -4,6 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Landing from "@/pages/landing";
+import { FeatureDetail, FeaturesPage, SolutionDetail, SolutionsPage } from "@/pages/marketing-pages";
 import NotFound from "@/pages/not-found";
 import Registration from "@/pages/registration";
 import WebinarRoom from "@/pages/webinar-room";
@@ -35,6 +36,10 @@ function Router() {
       <Route path="/register/:id" component={Registration} />
       <Route path="/webinar/:id" component={WebinarRoom} />
       <Route path="/legal/:kind" component={Legal} />
+       <Route path="/features" component={FeaturesPage} />
+       <Route path="/features/:slug" component={FeatureDetail} />
+       <Route path="/solutions" component={SolutionsPage} />
+       <Route path="/solutions/:slug" component={SolutionDetail} />
        <Route path="/verify-email" component={VerifyEmail} />
        <Route path="/forgot-password" component={ForgotPassword} />
        <Route path="/reset-password" component={ResetPassword} />

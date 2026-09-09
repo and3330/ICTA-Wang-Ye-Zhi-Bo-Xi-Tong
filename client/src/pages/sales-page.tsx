@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { openSalesPageOfferCheckout, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 
 type Block =
   | { id: string; enabled: boolean; type: "hero"; headline: string; subheadline: string; imageUrl?: string; ctaLabel: string }
@@ -32,7 +33,7 @@ export default function SalesPage() {
   const settings = data.checkoutSettings;
   const blocks = data.blocks.filter((block) => block.enabled);
   return <main className="sales-page">
-     <header><span>開賣啦 SELLCASE</span><span>前往付款・查看商品內容</span></header>
+     <header><SellCaseLogo style={{ width: 142, height: "auto" }} /><span>前往付款・查看商品內容</span></header>
     <div className="studio-frame">
       {blocks.map((block) => {
         if (block.type === "hero") return <section className="studio-preview-hero" key={block.id}><span className="studio-kicker" style={{ color: "#99ead7" }}>為正在前進的你準備</span><h1>{block.headline}</h1><p>{block.subheadline}</p>{block.imageUrl && <img src={block.imageUrl} alt="" />}<button className="sales-cta" onClick={checkout}>{block.ctaLabel}</button></section>;

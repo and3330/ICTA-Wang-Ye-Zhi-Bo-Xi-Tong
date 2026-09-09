@@ -18,6 +18,7 @@ import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 
@@ -465,8 +466,10 @@ export default function EmbedRegister() {
                   ))}
                 </div>
               </ScrollArea>
-              <div className="border-t px-3 py-1.5 text-center">
-         <span className="text-[10px] text-muted-foreground opacity-60">Powered by 開賣啦 SellCase</span>
+              <div className="border-t px-3 py-1.5">
+                <span className="flex items-center justify-center gap-1.5 text-[9px] text-muted-foreground opacity-60">
+                  Powered by <SellCaseLogo className="h-auto w-[76px]" />
+                </span>
               </div>
             </div>
           )}
@@ -606,8 +609,8 @@ export default function EmbedRegister() {
         </form>
       </Form>
 
-      <p className="text-[10px] text-muted-foreground text-center mt-3 opacity-50">
-         Powered by 開賣啦 SellCase
+      <p className="mt-3 flex items-center justify-center gap-1.5 text-[9px] text-muted-foreground opacity-50">
+        Powered by <SellCaseLogo className="h-auto w-[82px]" />
       </p>
     </div>
   );

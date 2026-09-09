@@ -19,6 +19,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
+import { SellCaseLogo } from "@/components/sellcase-logo";
 import { 
   Plus, Video, Calendar, Crown,
   ExternalLink, Loader2, LogOut, Radio, Copy,
@@ -810,8 +811,8 @@ export default function AdminDashboard() {
       <header className="border-b bg-card sticky top-0 z-50">
           <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">
-            <img src="/favicon.png" alt="ICTA" className="w-8 h-8 object-contain" />
-            <h1 className="text-xl font-bold tracking-tight">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
+            <SellCaseLogo className="h-auto w-[148px] sm:w-[178px]" />
+            <h1 className="sr-only">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
           </div>
           <div className="flex items-center gap-1">
             <Button
