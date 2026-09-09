@@ -2054,11 +2054,11 @@ export default function AdminWebinarDetail() {
   return (
     <div className="admin-shell admin-webinar-detail">
       <header className="border-b bg-card sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
+        <div className="container mx-auto px-4 py-4 flex flex-wrap items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => setLocation("/admin/dashboard")}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div className="flex-1">
+          <div className="min-w-[240px] flex-1">
             {isEditingInfo ? (
               <div className="space-y-2">
                 <Input
@@ -2227,22 +2227,24 @@ export default function AdminWebinarDetail() {
               </div>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setLang(lang === "zh-TW" ? "zh-CN" : "zh-TW")}
-            data-testid="button-detail-lang-toggle"
-          >
-            <Languages className="h-4 w-4 mr-1" />
-            {lang === "zh-TW" ? "繁" : "简"}
-          </Button>
-          <Button onClick={() => setLocation(`/admin/webinar/${id}/control`)} data-testid="button-go-control">
-            <Radio className="h-4 w-4 mr-2" />
-            {s.btnLiveControl}
-          </Button>
-           <Button variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/landing-page`)} data-testid="button-edit-landing-page">
-             <Edit className="h-4 w-4 mr-2" />編輯落地頁
-           </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={() => setLocation(`/admin/webinar/${id}/landing-page`)} data-testid="button-edit-landing-page">
+              <Edit className="h-4 w-4 mr-2" />編輯報名頁
+            </Button>
+            <Button variant="outline" onClick={() => setLocation(`/admin/webinar/${id}/control`)} data-testid="button-go-control">
+              <Radio className="h-4 w-4 mr-2" />
+              {s.btnLiveControl}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setLang(lang === "zh-TW" ? "zh-CN" : "zh-TW")}
+              data-testid="button-detail-lang-toggle"
+            >
+              <Languages className="h-4 w-4 mr-1" />
+              {lang === "zh-TW" ? "繁" : "简"}
+            </Button>
+          </div>
         </div>
       </header>
 
