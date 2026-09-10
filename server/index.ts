@@ -205,9 +205,13 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (databaseUrl) {
-    log('Running application migrations...', 'db');
-    await runAppMigrations();
-    log('Application schema ready', 'db');
+    if (process.env.NODE_ENV === "production") {
+      log('Application schema is managed by publishing', 'db');
+    } else {
+      log('Running application migrations...', 'db');
+      await runAppMigrations();
+      log('Application schema ready', 'db');
+    }
 
     try {
       log('Initializing Stripe schema...', 'stripe');

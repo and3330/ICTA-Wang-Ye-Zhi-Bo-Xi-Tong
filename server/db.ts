@@ -16,5 +16,8 @@ export const pool = new pg.Pool({
 export const db = drizzle(pool, { schema });
 
 export async function runAppMigrations() {
+  // Publish applies the production schema independently of Drizzle's journal.
+  // Replaying SQL here can collide with already-published constraints.
+  if (process.env.NODE_ENV === "production") return;
   await migrate(db, { migrationsFolder: path.join(process.cwd(), "migrations") });
 }
