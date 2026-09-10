@@ -1,0 +1,16 @@
+---
+name: AI reply review semantics
+description: Product boundaries for webinar-specific instructions, knowledge, and corrected answers
+---
+
+人設與知識以每場直播為單位，不預設成會員共用或跨直播的聊天機器人。
+
+**Why:** 這次需求是在現有直播 AI 回覆上加入類似 Chatbase 的管理能力，而非建立另一套跨直播聊天產品；直播之間可能有不同商品、規則與受眾。
+
+**How to apply:** 擴充知識來源或檢索時，保持直播隔離；若要共享資料，先明確定義共享範圍。
+
+修正答案保留原始問題與回覆；只有人員確認並選擇加入知識後，才作為後續回答的參考。這不是模型重新訓練，也不會改寫觀眾已收到的訊息。
+
+**Why:** 原始紀錄是檢查錯答的依據；直接改寫歷史或把未確認的 AI 答案自動加入知識，會失去稽核依據並延續錯誤。
+
+**How to apply:** 介面與後端都區分原始回答、修正內容及知識更新；同一筆修正的重送應更新既有來源，不增加重複資料。

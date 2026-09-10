@@ -11,6 +11,7 @@ import WebinarRoom from "@/pages/webinar-room";
 import AdminLogin from "@/pages/admin-login";
 import AdminDashboard from "@/pages/admin-dashboard";
 import AdminWebinarDetail from "@/pages/admin-webinar-detail";
+import AdminAiAssistant from "@/pages/admin-ai-assistant";
 import AdminControl from "@/pages/admin-control";
 import EmbedRegister from "@/pages/embed-register";
 import EmbedWebinar from "@/pages/embed-webinar";
@@ -51,7 +52,8 @@ function Router() {
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />
       <Route path="/admin/dashboard" component={AdminDashboard} />
-      <Route path="/admin/webinar/:id" component={AdminWebinarDetail} />
+       <Route path="/admin/webinar/:id/ai" component={AdminAiAssistant} />
+       <Route path="/admin/webinar/:id" component={AdminWebinarDetail} />
       <Route path="/admin/webinar/:id/control" component={AdminControl} />
        <Route path="/admin/webinar/:id/landing-page" component={LandingPageEditor} />
        <Route path="/admin/webinar/:id/sales/:pageId" component={SalesPageEditor} />

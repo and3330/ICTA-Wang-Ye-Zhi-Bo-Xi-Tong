@@ -20,6 +20,3 @@ Insert the idempotency row (unique stripe_session_id, `onConflictDoNothing`) AND
 ## Rule: verify session ownership before the idempotency shortcut
 On confirm-recharge, look up the existing transaction's userId and 403 if it isn't the caller, before returning "alreadyProcessed".
 **Why:** returning success on any already-processed session (without owner check) leaks whether an arbitrary Stripe session id has been processed (session probing).
-
-## Defaults (adjustable, live in server/routes.ts constants)
-1 TWD = 1 point; 1 point per AI reply; packages 300/1000/3000 TWD; custom min 100; new tenant gets 20 trial points. Out-of-points sends a preset message (aiSettings.outOfPointsMessage, falls back to a default constant) instead of calling the LLM.

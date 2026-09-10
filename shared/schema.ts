@@ -63,6 +63,8 @@ export const webinars = pgTable("webinars", {
   aiSettings: jsonb("ai_settings").$type<{
     enabled: boolean;        // 是否啟用 AI 自動回覆
     teacherName: string;     // 回覆時顯示的老師名稱
+    instructions?: string;
+    knowledgeOnly?: boolean;
     fallbackMessage?: string; // 答不出來時的自訂回覆（空 = 用預設行為）
     outOfPointsMessage?: string; // AI 點數用完時顯示給觀眾的訊息（空 = 用預設）
   }>().default({ enabled: false, teacherName: "" }),
@@ -807,6 +809,35 @@ export const aiResponseArtifacts = pgTable("ai_response_artifacts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const aiReplyLogs = pgTable("ai_reply_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  sessionId: varchar("session_id"),
+  reservationId: varchar("reservation_id").references(() => aiCreditReservations.id, { onDelete: "set null" }),
+  chatMessageId: varchar("chat_message_id").references(() => chatMessages.id, { onDelete: "set null" }),
+  kind: text("kind").$type<"live" | "test">().notNull(),
+  question: text("question").notNull(),
+  answer: text("answer"),
+  status: text("status").$type<"answered" | "fallback" | "error" | "no_credits">().notNull(),
+  sources: jsonb("sources").$type<Array<{ id: string; title: string; excerpt: string }>>().notNull().default([]),
+  model: text("model"),
+  durationMs: integer("duration_ms").notNull().default(0),
+  pointsCharged: integer("points_charged").notNull().default(0),
+  errorMessage: text("error_message"),
+  reviewStatus: text("review_status").$type<"unreviewed" | "incorrect" | "corrected">().notNull().default("unreviewed"),
+  correctedAnswer: text("corrected_answer"),
+  reviewNotes: text("review_notes"),
+  correctionDocumentId: varchar("correction_document_id"),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  webinarCreatedIndex: index("ai_reply_logs_webinar_created_idx").on(table.webinarId, table.createdAt),
+  webinarReviewIndex: index("ai_reply_logs_webinar_review_idx").on(table.webinarId, table.reviewStatus),
+  webinarSessionIndex: index("ai_reply_logs_webinar_session_idx").on(table.webinarId, table.sessionId),
+}));
+export type AiReplyLog = typeof aiReplyLogs.$inferSelect;
+
 export const uploadedAssets = pgTable("uploaded_assets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -914,10 +945,17 @@ export const webinarDocuments = pgTable("webinar_documents", {
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
   title: text("title").notNull(),
   content: text("content").notNull(),
+  sourceType: text("source_type").$type<"text" | "qa" | "file" | "website" | "correction">().notNull().default("text"),
+  sourceUrl: text("source_url"),
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const insertWebinarDocumentSchema = createInsertSchema(webinarDocuments).omit({ id: true, createdAt: true });
+export const insertWebinarDocumentSchema = createInsertSchema(webinarDocuments)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    sourceType: z.enum(["text", "qa", "file", "website", "correction"]).optional(),
+  });
 export type InsertWebinarDocument = z.infer<typeof insertWebinarDocumentSchema>;
 export type WebinarDocument = typeof webinarDocuments.$inferSelect;
 

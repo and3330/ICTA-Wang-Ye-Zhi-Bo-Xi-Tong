@@ -1095,7 +1095,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateWebinar(id: string, data: Partial<InsertWebinar>): Promise<Webinar | undefined> {
-    const result = await db.update(webinars).set(data as any).where(eq(webinars.id, id)).returning();
+    const update: Record<string, unknown> = { ...data };
+    if (data.aiSettings !== undefined) {
+      update.aiSettings = sql`COALESCE(${webinars.aiSettings}, '{}'::jsonb) || ${JSON.stringify(data.aiSettings)}::jsonb`;
+    }
+    const result = await db.update(webinars).set(update as any).where(eq(webinars.id, id)).returning();
     return result[0];
   }
 

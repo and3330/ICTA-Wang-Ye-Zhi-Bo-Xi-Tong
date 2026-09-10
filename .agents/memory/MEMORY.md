@@ -20,3 +20,5 @@
 - [Autoscale startup probe](autoscale-startup-probe.md) — bind the HTTP port before database and provider initialization; gate traffic while booting but let GET / answer 200.
 - [Publish schema ownership](publish-schema-ownership.md) — Publish can apply schema without advancing Drizzle's journal; production must not replay application migrations at startup.
 - [Bunny media boundaries](bunny-media-boundaries.md) — distinguish upload keys from embed security keys; direct TUS admission quotas cannot guarantee a provider-cost ceiling.
+- [AI reply review semantics](ai-reply-review-semantics.md) — 每場直播獨立管理人設與知識；修正保留原始問答，確認後加入知識，不代表重新訓練模型。
+- [HTTP aborted-stream cleanup](http-aborted-stream-cleanup.md) — Node can emit an error after aborted; response error protection must survive promise settlement until close.

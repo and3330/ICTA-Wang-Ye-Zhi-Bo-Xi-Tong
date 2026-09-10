@@ -2313,7 +2313,13 @@ export default function AdminWebinarDetail() {
             .admin-webinar-detail .admin-detail-tabs [role=tab] svg{margin:0}
           }
         `}</style>
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <Tabs value={activeTab} onValueChange={value => {
+          if (value === "ai") {
+            setLocation(`/admin/webinar/${id}/ai`);
+            return;
+          }
+          setActiveTab(value);
+        }}>
           <TabsList className="admin-detail-tabs mb-5 flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/70 bg-card/80 p-1.5 shadow-sm">
             <TabsTrigger value="analytics" data-testid="tab-analytics">
               <TrendingUp className="h-4 w-4 mr-1" />

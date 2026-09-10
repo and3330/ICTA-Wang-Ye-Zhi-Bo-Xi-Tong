@@ -31,7 +31,6 @@ import {
   insertViewerProgressSchema,
   insertWebinarSessionSchema,
   insertWebhookSchema,
-  insertWebinarDocumentSchema,
   insertEmailSequenceSchema,
   insertSocialPostSchema,
   insertSupportFeedbackSchema,
@@ -45,7 +44,6 @@ import {
   ecpayConnections,
   webinarPayments,
   webhookDeliveries,
-  aiResponseArtifacts,
   webhooks,
   uploadedAssets,
   mediaAssets,
@@ -69,7 +67,12 @@ import { generateInteractions, generateEmailSequence, generateSocialPosts, gener
 
 import bcrypt from "bcryptjs";
 import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClient";
-import { looksLikeQuestion, answerViewerQuestion } from "./aiAssistant";
+import { looksLikeQuestion } from "./aiAssistant";
+import { runAiReply } from "./aiReplyService";
+import { aiReplyAdmission, executeAdmittedAiReply, validateViewerChatContent } from "./aiReplyAdmission";
+import { registerAiManagementRoutes } from "./aiManagementRoutes";
+import { registerAiKnowledgeRoutes } from "./aiKnowledgeRoutes";
+import { aiReplySettingsPatchSchema, aiReplySettingsSchema } from "@shared/aiAssistant";
 import {
   ADDON_LOOKUP_KEY,
   ANNUAL_ADDON_LOOKUP_KEY,
@@ -133,7 +136,6 @@ const AI_WEBINAR_WIZARD_POINTS = 30;
 const POINTS_PER_TWD = 1; // 1 元 = 1 點
 const RECHARGE_MIN_TWD = 100; // 自訂金額最低消費
 const RECHARGE_PACKAGES: Record<string, number> = { p300: 300, p1000: 1000, p3000: 3000 }; // 固定儲值包（元）
-const OUT_OF_POINTS_DEFAULT = "感謝您的提問！目前線上客服忙線中，主辦團隊將盡快親自回覆您 🙏";
 export const OFFER_CHECKOUT_RATE_LIMIT = { namespace: "offer-checkout", limit: 20, windowSeconds: 60 } as const;
 function createCheckoutStatusToken() {
   // 192-bit bearer capability; only its SHA-256 digest is persisted.
@@ -224,8 +226,15 @@ function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContain
   };
 }
 
-function publicWebinar<T extends { vimeoUrl?: string | null; videoAssetId?: string | null }>(webinar: T): Omit<T, "vimeoUrl" | "videoAssetId"> {
-  const { vimeoUrl: _vimeoUrl, videoAssetId: _videoAssetId, ...safe } = withSafeTrackingIds(webinar as any);
+function publicWebinar<T extends { vimeoUrl?: string | null; videoAssetId?: string | null; aiSettings?: unknown }>(
+  webinar: T,
+): Omit<T, "vimeoUrl" | "videoAssetId" | "aiSettings"> {
+  const {
+    vimeoUrl: _vimeoUrl,
+    videoAssetId: _videoAssetId,
+    aiSettings: _aiSettings,
+    ...safe
+  } = withSafeTrackingIds(webinar as any);
   return safe;
 }
 
@@ -774,6 +783,7 @@ export async function registerRoutes(
               break;
             }
             const isPrivilegedViewer = requestedWebinar.userId === sessionUserId || sessionActor?.isSuperAdmin === true;
+            let joinedRegistrationId: string | null = null;
             if (!isPrivilegedViewer) {
               const owner = requestedWebinar.userId ? await storage.getUser(requestedWebinar.userId) : undefined;
               if (!hasStoredPublicEntitlement(owner)) {
@@ -792,10 +802,11 @@ export async function registerRoutes(
                 ws.send(JSON.stringify({ type: "error", data: { message: "This webinar is not currently available" } }));
                 break;
               }
-              currentRegistrationId = registration.id;
+              joinedRegistrationId = registration.id;
             }
             currentWebinarId = webinarId;
             currentSessionId = sessionId;
+            currentRegistrationId = joinedRegistrationId;
             
             // Store session connection
             sessionConnections.set(sessionId, ws);
@@ -920,12 +931,18 @@ export async function registerRoutes(
             // Viewer: must have joined a session; session-tagged & always senderType "viewer"
             const sessionId = currentSessionId;
             if (!sessionId) break;
+            const validatedChat = validateViewerChatContent(chatMessage);
+            if (!validatedChat.ok) {
+              ws.send(JSON.stringify({ type: "error", data: { message: validatedChat.message } }));
+              break;
+            }
+            const viewerChatMessage = validatedChat.value;
 
             const savedMessage = await storage.createChatMessage({
               webinarId,
               sessionId,
               senderName,
-              message: chatMessage,
+              message: viewerChatMessage,
               senderType: "viewer",
               isPrivate: true
             });
@@ -944,7 +961,13 @@ export async function registerRoutes(
             }, ws);
 
             // AI 助教：只對「看起來像問題」的觀眾訊息回覆（省成本）
-            maybeAiReply(webinarId, sessionId, chatMessage).catch((err) =>
+            maybeAiReply(
+              webinarId,
+              sessionId,
+              currentRegistrationId || sessionId,
+              viewerChatMessage,
+              ws,
+            ).catch((err) =>
               console.error("AI reply failed:", err)
             );
             break;
@@ -1266,76 +1289,41 @@ export async function registerRoutes(
     }
   }
 
-  // AI 助教：判斷觀眾訊息是否為問題，是則用文檔回答，以老師名義私訊回覆該觀眾
-  // 把一則「以老師名義」的私訊送給觀眾並同步給主持人
-  async function sendAiMessage(webinarId: string, sessionId: string, teacherName: string, text: string) {
-    const savedMessage = await storage.createChatMessage({
-      webinarId,
-      sessionId,
-      senderName: teacherName,
-      message: text,
-      senderType: "host",
-      isPrivate: true,
-    });
-    const viewerWs = sessionConnections.get(sessionId);
-    if (viewerWs && viewerWs.readyState === WebSocket.OPEN) {
-      viewerWs.send(JSON.stringify({ type: "chat", data: savedMessage }));
-    }
-    broadcastToHosts(webinarId, { type: "chat", data: { ...savedMessage, sessionId } });
-  }
-
-  async function maybeAiReply(webinarId: string, sessionId: string, viewerMessage: string) {
+  async function maybeAiReply(
+    webinarId: string,
+    sessionId: string,
+    verifiedViewerId: string,
+    viewerMessage: string,
+    viewerSocket: WebSocket,
+  ) {
     const webinar = await storage.getWebinar(webinarId);
     const ai = webinar?.aiSettings;
     if (!webinar || !ai?.enabled) return;
     if (!looksLikeQuestion(viewerMessage)) return;
-
-    const teacherName = (ai.teacherName || "").trim() || "老師";
-
-    // 點數檢查：AI 回覆消耗「該直播間擁有廠商」的點數。
-    // 超級管理員/企業方案無限制；點數用完則顯示預設訊息、不呼叫 AI（省成本）。
-    const ownerId = webinar.userId;
-    const owner = ownerId ? await storage.getUser(ownerId) : undefined;
-    const unlimited = !!owner && (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise");
-    const outOfPointsMsg = (ai.outOfPointsMessage || "").trim() || OUT_OF_POINTS_DEFAULT;
-
-    // 先原子預扣（reserve）再呼叫 AI：避免「只剩 1 點 + 並發多題」時兩題都呼叫 Anthropic 浪費成本。
-    // 預扣失敗（不足）→ 顯示預設訊息、不呼叫 AI。
-    let reservationId: string | null = null;
-    if (!unlimited) {
-      const reservation = ownerId ? await storage.reserveAiCredits(ownerId, AI_POINTS_PER_REPLY) : null;
-      if (!reservation) {
-        await sendAiMessage(webinarId, sessionId, teacherName, outOfPointsMsg);
-        return;
-      }
-      reservationId = reservation.reservationId;
-    }
-
-    const answer = await answerViewerQuestion(
+    const admitted = await executeAdmittedAiReply(aiReplyAdmission, {
+      ownerId: webinar.userId || `unowned:${webinarId}`,
       webinarId,
-      webinar.title,
-      teacherName,
-      viewerMessage,
-      ai.fallbackMessage
-    );
-    if (!answer) {
-      // AI 失敗：退回預扣的點數（不向觀眾收費）
-      if (reservationId) await storage.refundAiCreditReservation(reservationId);
+      viewerId: verifiedViewerId,
+      question: viewerMessage,
+    }, () => runAiReply({
+        webinarId,
+        sessionId,
+        question: viewerMessage,
+        kind: "live",
+      }));
+    if (!admitted.accepted) {
+      if (viewerSocket.readyState === WebSocket.OPEN) {
+        viewerSocket.send(JSON.stringify({ type: "error", data: { message: admitted.message } }));
+      }
       return;
     }
-
-    if (reservationId && ownerId) {
-      const savedMessage = await storage.persistAiChatResponse({
-        reservationId, userId: ownerId, webinarId, sessionId, teacherName,
-        requestText: viewerMessage, responseText: answer,
-      });
+    const result = admitted.value;
+    if (result.chatMessage) {
       const viewerWs = sessionConnections.get(sessionId);
       if (viewerWs?.readyState === WebSocket.OPEN) {
-        viewerWs.send(JSON.stringify({ type: "chat", data: savedMessage }));
+        viewerWs.send(JSON.stringify({ type: "chat", data: result.chatMessage }));
       }
-      broadcastToHosts(webinarId, { type: "chat", data: { ...savedMessage, sessionId } });
-    } else {
-      await sendAiMessage(webinarId, sessionId, teacherName, answer);
+      broadcastToHosts(webinarId, { type: "chat", data: { ...result.chatMessage, sessionId } });
     }
   }
 
@@ -1653,8 +1641,12 @@ export async function registerRoutes(
       if (!user || !user.isActive) {
         return res.status(403).json({ message: "帳號已停用" });
       }
+      const validatedAiSettings = req.body?.aiSettings === undefined
+        ? undefined
+        : aiReplySettingsSchema.parse(req.body.aiSettings);
       const data = insertWebinarSchema.parse({
         ...req.body,
+        ...(validatedAiSettings ? { aiSettings: validatedAiSettings } : {}),
         userId: req.session.userId,
         publishStatus: "draft",
       });
@@ -1811,6 +1803,13 @@ export async function registerRoutes(
       }
       const existing = await storage.getWebinar(req.params.id as string);
       if (!existing) return res.status(404).json({ message: "Webinar not found" });
+      if ("aiSettings" in data) {
+        const patch = aiReplySettingsPatchSchema.parse(data.aiSettings);
+        // Storage applies this validated partial object with an atomic JSONB
+        // merge, preserving newer fields when the legacy editor submits only
+        // enabled/name/fallback settings.
+        data.aiSettings = patch as any;
+      }
       await verifyReferencedMediaUrls(data);
       if (["videoProvider", "videoAssetId", "vimeoUrl", "videoDuration"].some(key => key in data)) {
         if (!existing.userId) throw new Error("Webinar owner is missing");
@@ -4312,107 +4311,8 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
-  // ============ AI 助教知識文檔 ============
-  app.get("/api/webinars/:id/documents", requireWebinarOwner, async (req, res) => {
-    const docs = await storage.getWebinarDocuments(req.params.id as string);
-    res.json(docs);
-  });
-
-  app.post("/api/webinars/:id/documents", requireWebinarOwner, async (req, res) => {
-    try {
-      const data = insertWebinarDocumentSchema.parse({ ...req.body, webinarId: req.params.id });
-      const doc = await storage.createWebinarDocument(data);
-      res.json(doc);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.delete("/api/webinars/:id/documents/:docId", requireWebinarOwner, async (req, res) => {
-    await storage.deleteWebinarDocument(req.params.id as string, req.params.docId as string);
-    res.json({ success: true });
-  });
-
-  // 後台 AI 試問：不建立聊天室訊息，也不向任何 WebSocket 廣播。
-  app.post("/api/webinars/:id/ai/test-question", requireWebinarOwner, async (req, res) => {
-    const webinarId = req.params.id as string;
-    const parsed = z.object({
-      question: z.string().trim().min(1, "請輸入測試問題").max(2000, "測試問題不可超過 2000 字"),
-    }).safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: parsed.error.issues[0]?.message || "測試問題格式不正確" });
-    }
-
-    const webinar = await storage.getWebinar(webinarId);
-    if (!webinar) return res.status(404).json({ message: "找不到直播間" });
-    const documents = await storage.getWebinarDocuments(webinarId);
-    if (!documents.some(document => document.content.trim())) {
-      return res.status(400).json({ message: "尚未加入知識文檔，請先新增內容再試問" });
-    }
-
-    const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
-    const unlimited = !!owner && (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise");
-    let reservationId: string | null = null;
-    if (!unlimited) {
-      const reservation = webinar.userId
-        ? await storage.reserveAiCredits(webinar.userId, AI_POINTS_PER_REPLY)
-        : null;
-      if (!reservation) {
-        return res.status(402).json({
-          message: `AI 點數不足，本次試問需要 ${AI_POINTS_PER_REPLY} 點，請先儲值`,
-        });
-      }
-      reservationId = reservation.reservationId;
-    }
-
-    try {
-      const ai = webinar.aiSettings;
-      const teacherName = (ai?.teacherName || "").trim() || "老師";
-      const answer = await answerViewerQuestion(
-        webinarId,
-        webinar.title,
-        teacherName,
-        parsed.data.question,
-        ai?.fallbackMessage,
-        true,
-      );
-      if (!answer) {
-        if (reservationId) await storage.refundAiCreditReservation(reservationId);
-        return res.status(502).json({ message: "AI 暫時無法完成回答，點數已退回，請稍後再試" });
-      }
-      if (!owner) throw new Error("Webinar owner not found");
-      if (reservationId) {
-        await storage.persistAiArtifactAndConsume({
-          reservationId,
-          userId: owner.id,
-          webinarId,
-          kind: "test_question",
-          requestText: parsed.data.question,
-          responseText: answer,
-        });
-      } else {
-        await db.insert(aiResponseArtifacts).values({
-          reservationId: null,
-          userId: owner.id,
-          webinarId,
-          kind: "test_question",
-          requestText: parsed.data.question,
-          responseText: answer,
-        });
-      }
-      return res.json({ answer, pointsCharged: unlimited ? 0 : AI_POINTS_PER_REPLY, unlimited });
-    } catch (error) {
-      if (reservationId) {
-        try {
-          await storage.refundAiCreditReservation(reservationId);
-        } catch (refundError) {
-          console.error("Failed to refund AI test-question reservation:", refundError);
-        }
-      }
-      console.error("AI test question failed:", error);
-      return res.status(502).json({ message: "AI 暫時無法完成回答，點數已退回，請稍後再試" });
-    }
-  });
+  registerAiKnowledgeRoutes(app, requireWebinarOwner);
+  registerAiManagementRoutes(app, requireWebinarOwner);
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }
