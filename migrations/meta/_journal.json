@@ -120,6 +120,13 @@
       "when": 1788957000000,
       "tag": "0017_operations_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789043400000,
+      "tag": "0018_standalone_product_commerce",
+      "breakpoints": true
     }
   ]
 }

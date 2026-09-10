@@ -65,6 +65,19 @@ export function partitionCtasForReplacement(oldCtaIds: string[], paymentCtaIds: 
   };
 }
 
+function salesPageOwnedByWebinar(webinarId: string) {
+  return sql`COALESCE(
+    ${offerSalesPages.userId},
+    (SELECT owned_offer.user_id FROM webinar_offers owned_offer WHERE owned_offer.id = ${offerSalesPages.offerId}),
+    (SELECT owner_webinar.user_id
+       FROM webinar_offers owned_offer
+       JOIN webinars owner_webinar ON owner_webinar.id = owned_offer.webinar_id
+      WHERE owned_offer.id = ${offerSalesPages.offerId}),
+    (SELECT page_webinar.user_id FROM webinars page_webinar WHERE page_webinar.id = ${offerSalesPages.webinarId})
+  ) = (SELECT source_webinar.user_id FROM webinars source_webinar WHERE source_webinar.id = ${webinarId})
+  AND (SELECT source_webinar.user_id FROM webinars source_webinar WHERE source_webinar.id = ${webinarId}) IS NOT NULL`;
+}
+
 export interface IStorage {
   // Users (Admin)
   getUser(id: string): Promise<User | undefined>;
@@ -187,6 +200,7 @@ export interface IStorage {
   setWebinarLandingPageStatus(webinarId: string, version: number, status: "draft" | "published"): Promise<WebinarLandingPage | undefined>;
   getPublicWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined>;
   createCtaButton(data: InsertCtaButton): Promise<CtaButton>;
+  createLiveCtaButton(data: InsertCtaButton, expiresAt: Date): Promise<CtaButton>;
   getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]>;
   deleteCtaButton(webinarId: string, id: string): Promise<boolean>;
   
@@ -1095,8 +1109,6 @@ export class DatabaseStorage implements IStorage {
         publishStatus: "draft",
         status: "ended",
       }).where(and(eq(webinars.id, id), isNull(webinars.deletedAt)));
-      await tx.update(webinarOffers).set({ active: false }).where(eq(webinarOffers.webinarId, id));
-      await tx.update(offerSalesPages).set({ status: "draft", updatedAt: new Date() }).where(eq(offerSalesPages.webinarId, id));
       await tx.update(webinarLandingPages).set({ status: "draft", updatedAt: new Date() }).where(eq(webinarLandingPages.webinarId, id));
     });
   }
@@ -1246,7 +1258,15 @@ export class DatabaseStorage implements IStorage {
 
   async getWebinarOffers(webinarId: string): Promise<WebinarOffer[]> {
     return db.select().from(webinarOffers)
-      .where(and(eq(webinarOffers.webinarId, webinarId), eq(webinarOffers.active, true)))
+      .where(and(
+        eq(webinarOffers.webinarId, webinarId),
+        eq(webinarOffers.active, true),
+        sql`COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) = (SELECT source_webinar.user_id FROM webinars source_webinar WHERE source_webinar.id = ${webinarId})`,
+        sql`(SELECT source_webinar.user_id FROM webinars source_webinar WHERE source_webinar.id = ${webinarId}) IS NOT NULL`,
+      ))
       .orderBy(desc(webinarOffers.createdAt));
   }
 
@@ -1257,13 +1277,24 @@ export class DatabaseStorage implements IStorage {
 
   async deactivateWebinarOffer(webinarId: string, id: string): Promise<WebinarOffer | undefined> {
     const result = await db.update(webinarOffers).set({ active: false })
-      .where(and(eq(webinarOffers.id, id), eq(webinarOffers.webinarId, webinarId))).returning();
+      .where(and(
+        eq(webinarOffers.id, id),
+        eq(webinarOffers.webinarId, webinarId),
+        sql`COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) = (SELECT source_webinar.user_id FROM webinars source_webinar WHERE source_webinar.id = ${webinarId})`,
+      )).returning();
     return result[0];
   }
 
   async listOfferSalesPages(webinarId: string): Promise<OfferSalesPage[]> {
     return db.select().from(offerSalesPages)
-      .where(eq(offerSalesPages.webinarId, webinarId))
+      .where(and(
+        eq(offerSalesPages.webinarId, webinarId),
+        isNull(offerSalesPages.deletedAt),
+        salesPageOwnedByWebinar(webinarId),
+      ))
       .orderBy(desc(offerSalesPages.updatedAt));
   }
 
@@ -1271,6 +1302,8 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select().from(offerSalesPages).where(and(
       eq(offerSalesPages.id, pageId),
       eq(offerSalesPages.webinarId, webinarId),
+      isNull(offerSalesPages.deletedAt),
+      salesPageOwnedByWebinar(webinarId),
     )).limit(1);
     return result[0];
   }
@@ -1284,7 +1317,7 @@ export class DatabaseStorage implements IStorage {
     webinarId: string,
     pageId: string,
     version: number,
-    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks">>,
+    data: Partial<Pick<OfferSalesPage, "title" | "slug" | "orderedBlocks" | "checkoutSettings">>,
   ): Promise<OfferSalesPage | undefined> {
     const result = await db.update(offerSalesPages).set({
       ...data,
@@ -1294,6 +1327,8 @@ export class DatabaseStorage implements IStorage {
       eq(offerSalesPages.id, pageId),
       eq(offerSalesPages.webinarId, webinarId),
       eq(offerSalesPages.version, version),
+      isNull(offerSalesPages.deletedAt),
+      salesPageOwnedByWebinar(webinarId),
     )).returning();
     return result[0];
   }
@@ -1306,11 +1341,20 @@ export class DatabaseStorage implements IStorage {
   ): Promise<OfferSalesPage | undefined> {
     const publicationGuard = status === "published"
       ? sql`EXISTS (
-          SELECT 1 FROM ${webinars}
-          JOIN ${webinarOffers} ON ${webinarOffers.webinarId} = ${webinars.id}
-          WHERE ${webinars.id} = ${offerSalesPages.webinarId}
-            AND ${webinarOffers.id} = ${offerSalesPages.offerId}
-            AND ${webinars.publishStatus} = 'published'
+          SELECT 1 FROM ${webinarOffers}
+          WHERE ${webinarOffers.id} = ${offerSalesPages.offerId}
+            AND COALESCE(
+              ${offerSalesPages.userId},
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) = COALESCE(
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            )
+            AND COALESCE(
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) IS NOT NULL
             AND ${webinarOffers.active} = true
         )`
       : sql`true`;
@@ -1325,15 +1369,23 @@ export class DatabaseStorage implements IStorage {
       eq(offerSalesPages.id, pageId),
       eq(offerSalesPages.webinarId, webinarId),
       eq(offerSalesPages.version, version),
+      isNull(offerSalesPages.deletedAt),
+      salesPageOwnedByWebinar(webinarId),
       publicationGuard,
     )).returning();
     return result[0];
   }
 
   async deleteOfferSalesPage(webinarId: string, pageId: string): Promise<boolean> {
-    const result = await db.delete(offerSalesPages).where(and(
+    const result = await db.update(offerSalesPages).set({
+      status: "draft",
+      deletedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
       eq(offerSalesPages.id, pageId),
       eq(offerSalesPages.webinarId, webinarId),
+      isNull(offerSalesPages.deletedAt),
+      salesPageOwnedByWebinar(webinarId),
     )).returning({ id: offerSalesPages.id });
     return result.length > 0;
   }
@@ -1341,12 +1393,23 @@ export class DatabaseStorage implements IStorage {
   async getPublicOfferSalesPage(slug: string): Promise<{ page: OfferSalesPage; offer: WebinarOffer } | undefined> {
     const result = await db.select({ page: offerSalesPages, offer: webinarOffers })
       .from(offerSalesPages)
-      .innerJoin(webinars, eq(offerSalesPages.webinarId, webinars.id))
       .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
       .where(and(
         eq(offerSalesPages.slug, slug),
         eq(offerSalesPages.status, "published"),
-        eq(webinars.publishStatus, "published"),
+        isNull(offerSalesPages.deletedAt),
+        sql`COALESCE(
+          ${offerSalesPages.userId},
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) = COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        )`,
+        sql`COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) IS NOT NULL`,
         eq(webinarOffers.active, true),
       )).limit(1);
     return result[0];
@@ -1409,17 +1472,28 @@ export class DatabaseStorage implements IStorage {
     // before checkout work. Direct sales-page checkout must not inherit CTA trust.
     const result = await db.select({ page: offerSalesPages, offer: webinarOffers })
       .from(offerSalesPages)
-      .innerJoin(webinars, eq(offerSalesPages.webinarId, webinars.id))
       .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
       .where(and(
         eq(offerSalesPages.id, salesPageId),
         eq(offerSalesPages.webinarId, webinarId),
         eq(offerSalesPages.offerId, offerId),
         eq(offerSalesPages.status, "published"),
-        eq(webinars.publishStatus, "published"),
+        isNull(offerSalesPages.deletedAt),
+        sql`COALESCE(
+          ${offerSalesPages.userId},
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) = COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        )`,
+        sql`COALESCE(
+          ${webinarOffers.userId},
+          (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+        ) IS NOT NULL`,
         eq(webinarOffers.id, offerId),
-        eq(webinarOffers.webinarId, webinarId),
         eq(webinarOffers.active, true),
+        salesPageOwnedByWebinar(webinarId),
       )).limit(1);
     return result[0];
   }
@@ -1431,9 +1505,24 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
+  async createLiveCtaButton(data: InsertCtaButton, expiresAt: Date): Promise<CtaButton> {
+    const ctaKey = crypto.randomBytes(18).toString("base64url");
+    const result = await db.insert(ctaButtons).values({
+      ...data,
+      ctaKey,
+      liveOnly: true,
+      expiresAt,
+    }).returning();
+    return result[0];
+  }
+
   async getCtaButtonsByWebinar(webinarId: string): Promise<CtaButton[]> {
     return db.select().from(ctaButtons)
-      .where(and(eq(ctaButtons.webinarId, webinarId), isNull(ctaButtons.archivedAt)))
+      .where(and(
+        eq(ctaButtons.webinarId, webinarId),
+        eq(ctaButtons.liveOnly, false),
+        isNull(ctaButtons.archivedAt),
+      ))
       .orderBy(asc(ctaButtons.startTime));
   }
 
@@ -1613,6 +1702,7 @@ export class DatabaseStorage implements IStorage {
         target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
       }).returning();
     if (inserted[0]) return { event: inserted[0], deduplicated: false };
+    if (!data.webinarId) throw new Error("Funnel event idempotency conflict");
     const existing = await db.select().from(webinarFunnelEvents).where(and(
       eq(webinarFunnelEvents.webinarId, data.webinarId),
       eq(webinarFunnelEvents.dedupeKey, data.dedupeKey),

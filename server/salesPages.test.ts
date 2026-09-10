@@ -48,14 +48,11 @@ test("sales page image URLs allow only HTTPS and safe same-origin uploads", () =
   assert.equal(salesPageImageUrlSchema.safeParse("javascript:alert(1)").success, false);
 });
 
-test("publishing requires a published webinar, active offer, and exactly one enabled offer block", () => {
+test("publishing is webinar-independent but requires an active offer and one enabled offer block", () => {
   assert.equal(validatePublishableBlocks([offerBlock]).length, 1);
   assert.throws(() => validatePublishableBlocks([]), /exactly one enabled offer block/);
   assert.throws(() => validatePublishableBlocks([offerBlock, { ...offerBlock, id: "offer-second" }]), /exactly one/);
-  assert.deepEqual(
-    salesPageCanPublish({ publishStatus: "draft" }, { active: true }, [offerBlock]),
-    { ok: false, message: "Webinar must be published first" },
-  );
+  assert.equal(salesPageCanPublish({ publishStatus: "draft" }, { active: true }, [offerBlock]).ok, true);
   assert.deepEqual(
     salesPageCanPublish({ publishStatus: "published" }, { active: false }, [offerBlock]),
     { ok: false, message: "Offer is inactive" },

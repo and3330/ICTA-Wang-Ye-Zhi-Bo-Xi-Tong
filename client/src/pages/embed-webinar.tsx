@@ -237,7 +237,7 @@ export default function EmbedWebinar() {
   useEffect(() => {
     if (!id) return;
     visibleCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaId: cta.id }));
-    liveCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaKey: cta.id }));
+    liveCtas.forEach((cta) => trackWebinarEvent(id, "cta_view", { ctaId: cta.id }));
   }, [id, visibleCtas, liveCtas]);
 
   useEffect(() => {
@@ -370,7 +370,7 @@ export default function EmbedWebinar() {
                 else if (cta.url) openTrackedExternalUrl(
                   id,
                   cta.url,
-                  liveCtas.some((live) => live.id === cta.id) ? { ctaKey: cta.id } : { ctaId: cta.id },
+                  { ctaId: cta.id },
                 );
               }}
             >

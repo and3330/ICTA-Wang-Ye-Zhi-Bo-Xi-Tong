@@ -377,6 +377,12 @@ export default function AdminDashboard() {
   const [supportSubject, setSupportSubject] = useState("");
   const [supportMessage, setSupportMessage] = useState("");
   const [isEcpayOpen, setIsEcpayOpen] = useState(false);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("ecpay") === "1") {
+      setIsEcpayOpen(true);
+      window.history.replaceState({}, "", "/admin/dashboard");
+    }
+  }, []);
   const [ecpayForm, setEcpayForm] = useState({ merchantId: "", hashKey: "", hashIv: "", environment: "stage" as "stage" | "production", enabled: false });
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
@@ -823,6 +829,9 @@ export default function AdminDashboard() {
             <h1 className="sr-only">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
           </div>
           <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setLocation("/admin/products")} data-testid="button-products">
+              <ShoppingBag className="h-4 w-4 mr-1" />商品
+            </Button>
             <Button
               variant="ghost"
               size="sm"

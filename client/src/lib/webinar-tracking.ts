@@ -148,7 +148,6 @@ export function openTrackedExternalUrl(
       ? { ctaKey: data.ctaKey }
       : {};
   if ("ctaId" in cta || "ctaKey" in cta) trackWebinarEvent(webinarId, "cta_click", cta);
-  trackWebinarEvent(webinarId, "checkout_start", cta);
   return window.open(url, "_blank", "noopener,noreferrer");
 }
 

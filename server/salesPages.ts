@@ -158,11 +158,10 @@ export const salesPageVersionSchema = z.object({
 }).strict();
 
 export function salesPageCanPublish(
-  webinar: { publishStatus: string },
+  _webinar: { publishStatus: string },
   offer: { active: boolean },
   blocks: unknown,
 ): { ok: true; blocks: SalesPageBlock[] } | { ok: false; message: string } {
-  if (webinar.publishStatus !== "published") return { ok: false, message: "Webinar must be published first" };
   if (!offer.active) return { ok: false, message: "Offer is inactive" };
   try {
     return { ok: true, blocks: validatePublishableBlocks(blocks) };

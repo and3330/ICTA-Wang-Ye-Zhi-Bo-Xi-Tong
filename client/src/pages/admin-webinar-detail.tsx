@@ -96,12 +96,14 @@ interface WebinarOfferView {
   currency: string;
   checkoutMode: "payment";
   paymentProvider: "stripe" | "ecpay";
+  active?: boolean;
 }
 interface SalesPageView {
   id: string;
   offerId: string;
   slug: string;
   status: "draft" | "published";
+  title?: string;
 }
 
 interface LeadInsight {
@@ -1064,11 +1066,12 @@ function createSchemas(s: Record<string, string>) {
       text: z.string().min(1, s.valEnterButtonText),
       url: z.string().optional(),
       offerId: z.string().optional(),
+      salesPageId: z.string().optional(),
       startTime: z.string().min(1, s.valEnterStartTime),
       endTime: z.string().optional(),
       style: z.string().default("primary"),
     }).superRefine((value, context) => {
-      if (!value.offerId && !z.string().url().safeParse(value.url).success) {
+      if (!value.offerId && !value.salesPageId && !z.string().url().safeParse(value.url).success) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: s.valEnterValidUrl });
       }
     }),
@@ -1115,6 +1118,7 @@ export default function AdminWebinarDetail() {
   const [isFakeUserOpen, setIsFakeUserOpen] = useState(false);
   const [isMessageOpen, setIsMessageOpen] = useState(false);
   const [isCtaOpen, setIsCtaOpen] = useState(false);
+  const [editingCta, setEditingCta] = useState<CtaButton | null>(null);
   const [isOfferOpen, setIsOfferOpen] = useState(false);
   const [offerName, setOfferName] = useState("");
   const [offerAmountMinor, setOfferAmountMinor] = useState("");
@@ -1289,6 +1293,8 @@ export default function AdminWebinarDetail() {
     queryKey: ["/api/webinars", id, "sales-pages"],
     enabled: !!id,
   });
+  const { data: memberProducts } = useQuery<WebinarOfferView[]>({ queryKey: ["/api/products"] });
+  const { data: productSalesPages } = useQuery<SalesPageView[]>({ queryKey: ["/api/product-sales-pages"] });
 
   const { data: polls } = useQuery<Poll[]>({
     queryKey: ["/api/webinars", id, "polls"],
@@ -1608,7 +1614,7 @@ export default function AdminWebinarDetail() {
 
   const ctaForm = useForm({
     resolver: zodResolver(schemas.cta),
-    defaultValues: { text: "", url: "", offerId: "", startTime: "", endTime: "", style: "primary" },
+    defaultValues: { text: "", url: "", offerId: "", salesPageId: "", startTime: "", endTime: "", style: "primary" },
   });
 
   const pollForm = useForm({
@@ -1655,10 +1661,11 @@ export default function AdminWebinarDetail() {
         const [min, sec] = t.split(":").map(Number);
         return min * 60 + (sec || 0);
       };
-      return apiRequest("POST", `/api/webinars/${id}/ctas`, {
+      return apiRequest(editingCta ? "PATCH" : "POST", editingCta ? `/api/webinars/${id}/ctas/${editingCta.id}` : `/api/webinars/${id}/ctas`, {
         text: data.text,
-        url: data.offerId ? null : data.url,
+        url: data.offerId || data.salesPageId ? null : data.url,
         offerId: data.offerId || null,
+        salesPageId: data.salesPageId || null,
         startTime: parseTime(data.startTime),
         endTime: data.endTime ? parseTime(data.endTime) : null,
         style: data.style,
@@ -1667,6 +1674,7 @@ export default function AdminWebinarDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "ctas"] });
       setIsCtaOpen(false);
+      setEditingCta(null);
       ctaForm.reset();
       toast({ title: s.toastCtaCreated });
     },
@@ -3446,16 +3454,16 @@ export default function AdminWebinarDetail() {
                     <CardTitle className="text-base">{s.interCtaTitle}</CardTitle>
                     <CardDescription>{s.interCtaDesc}</CardDescription>
                   </div>
-                  <Dialog open={isCtaOpen} onOpenChange={setIsCtaOpen}>
+                    <Dialog open={isCtaOpen} onOpenChange={open => { setIsCtaOpen(open); if (!open) setEditingCta(null); }}>
                     <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-cta">
+                      <Button size="sm" data-testid="button-add-cta" onClick={() => { setEditingCta(null); ctaForm.reset(); }}>
                         <Plus className="h-4 w-4 mr-1" />
                         {s.interAddCta}
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{s.interCtaDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingCta ? "編輯 CTA 按鈕" : s.interCtaDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...ctaForm}>
                         <form onSubmit={ctaForm.handleSubmit((data) => createCta.mutate(data))} className="space-y-4">
@@ -3478,18 +3486,23 @@ export default function AdminWebinarDetail() {
                             render={({ field }) => (
                               <FormItem>
                                 <FormLabel>目的地</FormLabel>
-                                <Select value={field.value || "__external__"} onValueChange={(value) => field.onChange(value === "__external__" ? "" : value)}>
+                                <Select value={ctaForm.watch("salesPageId") ? `page:${ctaForm.watch("salesPageId")}` : field.value ? `offer:${field.value}` : "__external__"} onValueChange={(value) => {
+                                  ctaForm.setValue("url", "");
+                                  ctaForm.setValue("offerId", value.startsWith("offer:") ? value.slice(6) : "");
+                                  ctaForm.setValue("salesPageId", value.startsWith("page:") ? value.slice(5) : "");
+                                }}>
                                   <FormControl><SelectTrigger data-testid="select-cta-offer"><SelectValue /></SelectTrigger></FormControl>
                                   <SelectContent>
                                     <SelectItem value="__external__">外部網址</SelectItem>
-                                    {offers?.map((offer) => <SelectItem key={offer.id} value={offer.id}>{offer.name} · {offer.currency} {offer.amountMinor}</SelectItem>)}
+                                    {(productSalesPages || []).filter(page => page.status === "published").map(page => <SelectItem key={page.id} value={`page:${page.id}`}>站內商品頁：{page.title || page.slug}</SelectItem>)}
+                                    {(memberProducts || offers || []).filter(offer => offer.active !== false).map((offer) => <SelectItem key={offer.id} value={`offer:${offer.id}`}>直接購買：{offer.name}</SelectItem>)}
                                   </SelectContent>
                                 </Select>
                                 <FormMessage />
                               </FormItem>
                             )}
                           />
-                          {!ctaForm.watch("offerId") && <FormField
+                          {!ctaForm.watch("offerId") && !ctaForm.watch("salesPageId") && <FormField
                             control={ctaForm.control}
                             name="url"
                             render={({ field }) => (
@@ -3554,7 +3567,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createCta.isPending}>
                             {createCta.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {s.btnCreate}
+                            {editingCta ? "儲存" : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -3576,9 +3589,33 @@ export default function AdminWebinarDetail() {
                               </Badge>
                             </div>
                             <p className="text-xs text-muted-foreground mt-1 truncate">
-                              {cta.offerId ? `${offers?.find(offer => offer.id === cta.offerId)?.paymentProvider === "ecpay" ? "綠界" : "Stripe"} 優惠：${offers?.find(offer => offer.id === cta.offerId)?.name || cta.offerId}` : cta.url}
+                              {(cta as any).salesPageId
+                                ? `站內商品頁：${productSalesPages?.find(page => page.id === (cta as any).salesPageId)?.title || `目標已無法使用（${(cta as any).salesPageId}）`}`
+                                : cta.offerId
+                                  ? `直接購買：${memberProducts?.find(offer => offer.id === cta.offerId)?.name || offers?.find(offer => offer.id === cta.offerId)?.name || `目標已無法使用（${cta.offerId}）`}`
+                                  : cta.url || "外部網址已無法使用"}
                             </p>
                           </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="編輯 CTA"
+                            onClick={() => {
+                              setEditingCta(cta);
+                              ctaForm.reset({
+                                text: cta.text,
+                                url: cta.url || "",
+                                offerId: cta.offerId || "",
+                                salesPageId: (cta as any).salesPageId || "",
+                                startTime: formatTime(cta.startTime),
+                                endTime: cta.endTime ? formatTime(cta.endTime) : "",
+                                style: cta.style || "primary",
+                              });
+                              setIsCtaOpen(true);
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -4417,12 +4454,12 @@ export default function AdminWebinarDetail() {
                   ) : (
                     <div className="grid grid-cols-2 gap-2 pt-3 md:grid-cols-6">
                       {[
-                        { label: "本頁潛客", value: leadData?.summary.total || 0, tone: "text-foreground" },
-                        { label: "高意圖", value: leadData?.summary.hot || 0, tone: "text-rose-600" },
-                        { label: "觀望中", value: leadData?.summary.warm || 0, tone: "text-amber-600" },
-                        { label: "低意圖", value: leadData?.summary.cold || 0, tone: "text-slate-500" },
-                        { label: "已成交", value: leadData?.summary.customers || 0, tone: "text-teal-700" },
-                        { label: "已退款", value: leadData?.summary.refunded || 0, tone: "text-violet-600" },
+                        { label: "本頁潛客", value: leadData?.summary?.total || 0, tone: "text-foreground" },
+                        { label: "高意圖", value: leadData?.summary?.hot || 0, tone: "text-rose-600" },
+                        { label: "觀望中", value: leadData?.summary?.warm || 0, tone: "text-amber-600" },
+                        { label: "低意圖", value: leadData?.summary?.cold || 0, tone: "text-slate-500" },
+                        { label: "已成交", value: leadData?.summary?.customers || 0, tone: "text-teal-700" },
+                        { label: "已退款", value: leadData?.summary?.refunded || 0, tone: "text-violet-600" },
                       ].map((tile) => (
                         <div key={tile.label} className="rounded-lg border border-border/70 bg-background/70 px-3 py-2.5">
                           <div className="text-[11px] font-semibold text-muted-foreground">{tile.label}</div>
@@ -4493,14 +4530,14 @@ export default function AdminWebinarDetail() {
                       <p className="mt-1 text-xs text-muted-foreground">調整條件後，這裡會顯示事件規則找出的成交機會。</p>
                     </div>
                   )}
-                  {!leadInsightsQuery.isLoading && !leadInsightsQuery.isError && (leadData?.pagination.total || 0) > 50 && (
+                  {!leadInsightsQuery.isLoading && !leadInsightsQuery.isError && (leadData?.pagination?.total || 0) > 50 && (
                     <div className="flex items-center justify-between border-t px-4 py-3">
                       <p className="text-xs text-muted-foreground">
                         第 {leadData!.pagination.offset + 1}–{Math.min(leadData!.pagination.offset + leadData!.leads.length, leadData!.pagination.total)} 位，共 {leadData!.pagination.total} 位
                       </p>
                       <div className="flex gap-2">
                         <Button variant="outline" size="sm" disabled={leadPage === 0} onClick={() => setLeadPage(page => Math.max(0, page - 1))}>上一頁</Button>
-                        <Button variant="outline" size="sm" disabled={!leadData?.pagination.hasMore} onClick={() => setLeadPage(page => page + 1)}>下一頁</Button>
+                        <Button variant="outline" size="sm" disabled={!leadData?.pagination?.hasMore} onClick={() => setLeadPage(page => page + 1)}>下一頁</Button>
                       </div>
                     </div>
                   )}
@@ -4783,7 +4820,7 @@ export default function AdminWebinarDetail() {
                         <p className="text-xs text-muted-foreground mt-1">請確認日期範圍後再試一次。</p>
                         <Button variant="outline" size="sm" className="mt-3" onClick={() => funnelQuery.refetch()}>重試</Button>
                       </div>
-                    ) : !funnelQuery.data || funnelQuery.data.uniqueViewers === 0 ? (
+                    ) : !funnelQuery.data?.uniqueViewers ? (
                       <div className="rounded-lg border border-dashed p-6 text-center">
                         <BarChart className="h-8 w-8 mx-auto text-muted-foreground/50" />
                         <p className="text-sm font-medium mt-2">這段期間還沒有漏斗事件</p>

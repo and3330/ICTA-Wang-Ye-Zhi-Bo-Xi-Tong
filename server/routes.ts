@@ -45,6 +45,10 @@ import {
   webhooks,
   uploadedAssets,
   registrations,
+  offerSalesPages,
+  webinarOffers,
+  ctaButtons,
+  webinars,
 } from "@shared/schema";
 import {
   createWebinarLandingPageSchema,
@@ -55,7 +59,7 @@ import {
   webinarLandingPageCanPublish,
 } from "./webinarLandingPages";
 import { db } from "./db";
-import { and, eq, sql, lte, or } from "drizzle-orm";
+import { and, eq, isNull, sql, lte, or } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
@@ -78,7 +82,7 @@ import { appBaseUrl, emailVerificationMail, sendTransactionalMail } from "./mail
 import { createNumericVerificationCode, createRawToken, hashEmailVerificationCode, hashToken } from "./security";
 import { postgresRateLimit } from "./rateLimit";
 import { persistProductionError } from "./errorReporter";
-import { createLiveCtaKey, verifyLiveCtaKey } from "./liveCtaKeys";
+import { verifyLiveCtaKey } from "./liveCtaKeys";
 import {
   aggregateFunnelEvents,
   funnelDedupeKey,
@@ -96,6 +100,7 @@ import {
   validateEcpayCallback,
 } from "./ecpay";
 import { processVerifiedEcpayPayment } from "./offerPayments";
+import { productSalesPageTargetUrl, registerProductCommerceRoutes } from "./productCommerce";
 import {
   createSalesPageSchema,
   salesPageCanPublish,
@@ -226,6 +231,16 @@ function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storage.getU
   return !user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now();
 }
 
+async function resolveOfferOwnerId(offer: { userId: string | null; webinarId: string | null }): Promise<string | null> {
+  if (offer.userId) return offer.userId;
+  if (!offer.webinarId) return null;
+  const visibleWebinar = await storage.getWebinar(offer.webinarId);
+  if (visibleWebinar?.userId) return visibleWebinar.userId;
+  const [webinar] = await db.select({ userId: webinars.userId }).from(webinars)
+    .where(eq(webinars.id, offer.webinarId)).limit(1);
+  return webinar?.userId || null;
+}
+
 async function isWebinarAdministrator(webinarUserId: string | null, sessionUserId?: string): Promise<boolean> {
   if (!sessionUserId) return false;
   if (webinarUserId === sessionUserId) return true;
@@ -269,7 +284,8 @@ export async function registerRoutes(
       !req.path.includes('/stats/');
     const isPublicPostRoute =
       (req.method === 'POST' || req.method === 'OPTIONS') &&
-      (req.path === '/api/registrations' || /^\/api\/webinars\/[^/]+\/funnel-events$/.test(req.path));
+      (req.path === '/api/registrations' || /^\/api\/webinars\/[^/]+\/funnel-events$/.test(req.path) ||
+        /^\/api\/products\/[^/]+\/(?:checkout|events)$/.test(req.path));
     if (isPublicGetRoute || isPublicPostRoute) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -305,6 +321,7 @@ export async function registerRoutes(
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
+  registerProductCommerceRoutes(app, requireAdmin, funnelEventLimit, offerCheckoutLimit);
 
   // ============ Image Upload ============
   const uploadsDir = process.env.UPLOADS_DIR
@@ -802,29 +819,72 @@ export async function registerRoutes(
           case "liveCta": {
             // Host pushes a CTA button to ALL viewers immediately (no timecode wait)
             if (!isHost || !currentWebinarId) break;
-            if (!process.env.SESSION_SECRET) break;
-            const { text, url, style, durationSec } = message.data || {};
-            if (!text || !url) break;
-            // Use the same server-side CTA URL policy as persisted CTAs.
-            const parsedUrl = safeCtaUrlSchema.safeParse(String(url));
-            if (!parsedUrl.success) break;
-            const safeUrl = parsedUrl.data;
+            const { text, url, offerId, salesPageId, style, durationSec } = message.data || {};
+            if (!text || [url, offerId, salesPageId].filter(Boolean).length !== 1) break;
+            const webinar = await storage.getWebinar(currentWebinarId);
+            if (!webinar?.userId) break;
+            let safeUrl: string | null = null;
+            let linkedOfferId: string | null = null;
+            let linkedSalesPageId: string | null = null;
+            if (salesPageId) {
+              const [target] = await db.select({ page: offerSalesPages })
+                .from(offerSalesPages)
+                .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+                .where(and(
+                  eq(offerSalesPages.id, String(salesPageId)),
+                  sql`COALESCE(
+                    ${offerSalesPages.userId},
+                    ${webinarOffers.userId},
+                    (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+                  ) = ${webinar?.userId || ""}`,
+                  eq(offerSalesPages.status, "published"),
+                  isNull(offerSalesPages.deletedAt),
+                  sql`COALESCE(
+                    ${webinarOffers.userId},
+                    (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+                  ) = ${webinar?.userId || ""}`,
+                  eq(webinarOffers.active, true),
+                )).limit(1);
+              if (!target) break;
+              linkedSalesPageId = target.page.id;
+            } else if (offerId) {
+              const offer = await storage.getWebinarOffer(String(offerId));
+              if (!offer?.active || await resolveOfferOwnerId(offer) !== webinar.userId) break;
+              linkedOfferId = offer.id;
+            } else {
+              // Use the same server-side CTA URL policy as persisted CTAs.
+              const parsedUrl = safeCtaUrlSchema.safeParse(String(url));
+              if (!parsedUrl.success) break;
+              safeUrl = parsedUrl.data;
+            }
             const duration = Number.isFinite(Number(durationSec))
               ? Math.max(1, Math.min(2 * 60 * 60, Math.floor(Number(durationSec))))
               : 2 * 60 * 60;
-            const liveCtaKey = createLiveCtaKey(
-              currentWebinarId,
-              process.env.SESSION_SECRET || "",
-              { expiresAt: new Date(Date.now() + duration * 1000) },
-            );
-            const payload = {
-              // Live CTAs have no persisted UUID. This signed key is their sole tracking identity.
-              id: liveCtaKey,
-              ctaKey: liveCtaKey,
+            const expiresAt = new Date(Date.now() + duration * 1000);
+            const parsed = insertCtaButtonSchema.safeParse({
+              webinarId: currentWebinarId,
               text: String(text),
               url: safeUrl,
+              offerId: linkedOfferId,
+              salesPageId: linkedSalesPageId,
+              startTime: 0,
+              endTime: null,
               style: style || "primary",
-              expiresAt: Date.now() + duration * 1000,
+            });
+            if (!parsed.success) break;
+            const liveCta = await storage.createLiveCtaButton(parsed.data, expiresAt);
+            if (liveCta.salesPageId) {
+              safeUrl = productSalesPageTargetUrl(currentWebinarId, liveCta.id);
+            }
+            const payload = {
+              id: liveCta.id,
+              ctaKey: liveCta.ctaKey,
+              text: liveCta.text,
+              url: safeUrl,
+              salesPageId: liveCta.salesPageId,
+              offerId: liveCta.offerId,
+              style: liveCta.style || "primary",
+              expiresAt: expiresAt.getTime(),
             };
             broadcastToAllSessions(currentWebinarId, { type: "liveCta", data: payload });
             broadcastToHosts(currentWebinarId, { type: "liveCta", data: payload });
@@ -2262,7 +2322,10 @@ export async function registerRoutes(
   // ============ CTA Buttons Routes ============
   app.get("/api/webinars/:id/ctas", requirePublishedOrOwner, async (req, res) => {
     const ctas = await storage.getCtaButtonsByWebinar(req.params.id as string);
-    res.json(ctas);
+    res.json(ctas.map(cta => ({
+      ...cta,
+      ...(cta.salesPageId ? { url: productSalesPageTargetUrl(cta.webinarId, cta.id) } : {}),
+    })));
   });
 
   app.post("/api/webinars/:id/ctas", requireWebinarOwner, async (req, res) => {
@@ -2273,12 +2336,111 @@ export async function registerRoutes(
       });
       if (data.offerId) {
         const offer = await storage.getWebinarOffer(data.offerId);
-        if (!offer || !offer.active || offer.webinarId !== req.params.id) {
-          return res.status(400).json({ message: "offerId does not belong to this webinar" });
+        const webinar = await storage.getWebinar(req.params.id as string);
+        if (!offer || !offer.active || !webinar?.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
+          return res.status(400).json({ message: "offerId must be an available product owned by this member" });
         }
       }
+      if (data.salesPageId) {
+        const webinar = await storage.getWebinar(req.params.id as string);
+        const [target] = await db.select({ page: offerSalesPages, offer: webinarOffers })
+          .from(offerSalesPages)
+          .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+          .where(and(
+            eq(offerSalesPages.id, data.salesPageId),
+            eq(offerSalesPages.status, "published"),
+            sql`COALESCE(
+              ${offerSalesPages.userId},
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) = ${webinar?.userId || ""}`,
+            sql`COALESCE(
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) = ${webinar?.userId || ""}`,
+            eq(webinarOffers.active, true),
+            isNull(offerSalesPages.deletedAt),
+          )).limit(1);
+        if (!target) return res.status(400).json({ message: "salesPageId must be an available page owned by this member" });
+      }
       const cta = await storage.createCtaButton(data);
-      res.json(cta);
+      res.status(201).json({
+        ...cta,
+        ...(cta.salesPageId ? { url: productSalesPageTargetUrl(cta.webinarId, cta.id) } : {}),
+      });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  const ctaPatchSchema = z.object({
+    text: z.string().trim().min(1).optional(),
+    url: safeCtaUrlSchema.nullish(),
+    offerId: z.string().uuid().nullish(),
+    salesPageId: z.string().uuid().nullish(),
+    startTime: z.number().int().min(0).optional(),
+    endTime: z.number().int().min(0).nullish(),
+    style: z.string().trim().min(1).max(40).optional(),
+  }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required");
+
+  app.patch("/api/webinars/:id/ctas/:ctaId", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinarId = req.params.id as string;
+      const existing = (await storage.getCtaButtonsByWebinar(webinarId))
+        .find(item => item.id === req.params.ctaId);
+      if (!existing) return res.status(404).json({ message: "CTA not found" });
+      const patch = ctaPatchSchema.parse(req.body);
+      const data = insertCtaButtonSchema.parse({
+        webinarId,
+        text: patch.text ?? existing.text,
+        url: patch.url === undefined ? existing.url : patch.url,
+        offerId: patch.offerId === undefined ? existing.offerId : patch.offerId,
+        salesPageId: patch.salesPageId === undefined ? existing.salesPageId : patch.salesPageId,
+        startTime: patch.startTime ?? existing.startTime,
+        endTime: patch.endTime === undefined ? existing.endTime : patch.endTime,
+        style: patch.style ?? existing.style,
+      });
+      const webinar = await storage.getWebinar(webinarId);
+      if (data.offerId) {
+        const offer = await storage.getWebinarOffer(data.offerId);
+        if (!offer?.active || !webinar?.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
+          return res.status(400).json({ message: "offerId must be an available product owned by this member" });
+        }
+      }
+      if (data.salesPageId) {
+        const [target] = await db.select({ page: offerSalesPages })
+          .from(offerSalesPages)
+          .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+          .where(and(
+            eq(offerSalesPages.id, data.salesPageId),
+            sql`COALESCE(
+              ${offerSalesPages.userId},
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) = ${webinar?.userId || ""}`,
+            eq(offerSalesPages.status, "published"),
+            isNull(offerSalesPages.deletedAt),
+            sql`COALESCE(
+              ${webinarOffers.userId},
+              (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+            ) = ${webinar?.userId || ""}`,
+            eq(webinarOffers.active, true),
+          )).limit(1);
+        if (!target) return res.status(400).json({ message: "salesPageId must be an available page owned by this member" });
+      }
+      const [updated] = await db.update(ctaButtons).set({
+        text: data.text,
+        url: data.url || null,
+        offerId: data.offerId || null,
+        salesPageId: data.salesPageId || null,
+        startTime: data.startTime,
+        endTime: data.endTime ?? null,
+        style: data.style,
+      }).where(and(eq(ctaButtons.id, existing.id), eq(ctaButtons.webinarId, webinarId))).returning();
+      res.json({
+        ...updated,
+        ...(updated.salesPageId ? { url: productSalesPageTargetUrl(updated.webinarId, updated.id) } : {}),
+      });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -2431,10 +2593,12 @@ export async function registerRoutes(
       const webinarId = req.params.id as string;
       const input = createSalesPageSchema.parse(req.body);
       const offer = await storage.getWebinarOffer(input.offerId);
-      if (!offer || !offer.active || offer.webinarId !== webinarId) {
-        return res.status(400).json({ message: "Offer must be active and belong to this webinar" });
+      const webinar = await storage.getWebinar(webinarId);
+      if (!offer || !offer.active || !webinar?.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
+        return res.status(400).json({ message: "Offer must be active and owned by this member" });
       }
       const page = await storage.createOfferSalesPage({
+        userId: webinar.userId,
         webinarId,
         offerId: offer.id,
         slug: input.slug,
@@ -2458,6 +2622,12 @@ export async function registerRoutes(
       const input = updateSalesPageSchema.parse(req.body);
       const existing = await storage.getOfferSalesPage(webinarId, pageId);
       if (!existing) return res.status(404).json({ message: "Sales page not found" });
+      if (existing.status === "published" && (
+        (input.title !== undefined && input.title !== existing.title) ||
+        (input.slug !== undefined && input.slug !== existing.slug)
+      )) {
+        return res.status(409).json({ message: "Unpublish the sales page before changing its public title or slug" });
+      }
       if (existing.status === "published" && input.blocks !== undefined) {
         validatePublishableBlocks(input.blocks);
       }
@@ -2486,8 +2656,12 @@ export async function registerRoutes(
       ]);
       if (!page || !webinar) return res.status(404).json({ message: "Sales page not found" });
       const offer = await storage.getWebinarOffer(page.offerId);
-      if (!offer || offer.webinarId !== webinarId) {
+      if (!offer || !webinar.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
         return res.status(409).json({ message: "Linked offer is unavailable" });
+      }
+      const owner = await storage.getUser(webinar.userId);
+      if (!hasStoredPublicEntitlement(owner)) {
+        return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       const allowed = salesPageCanPublish(webinar, offer, page.orderedBlocks);
       if (!allowed.ok) return res.status(409).json({ message: allowed.message });
@@ -2526,9 +2700,9 @@ export async function registerRoutes(
       const result = await storage.getPublicOfferSalesPage(slug);
       if (!result) return res.status(404).json({ message: "Sales page not found" });
        const { page, offer } = result;
-       const webinar = await storage.getWebinar(page.webinarId);
-       const owner = webinar?.userId ? await storage.getUser(webinar.userId) : undefined;
-       if (!webinar || !hasStoredPublicEntitlement(owner) || offer.paymentProvider !== "ecpay") {
+       const ownerId = page.userId || await resolveOfferOwnerId(offer);
+       const owner = ownerId ? await storage.getUser(ownerId) : undefined;
+       if (!hasStoredPublicEntitlement(owner)) {
          return res.status(404).json({ message: "Sales page not found" });
        }
        const publicCheckout = normalizeCheckoutSettings(page.publishedCheckoutSettings);
@@ -2650,6 +2824,7 @@ export async function registerRoutes(
       )).limit(1);
       if (!connection) return res.status(409).json({ message: "請先設定並啟用 ECPay 金流" });
       const offer = await storage.createWebinarOffer({
+        userId: webinar.userId,
         webinarId,
         paymentProvider: "ecpay",
         ecpayItemName: input.name,
@@ -2699,18 +2874,40 @@ export async function registerRoutes(
       if (input.ctaId) {
         // A persisted CTA is the established webinar-room attribution flow.
         cta = (await storage.getCtaButtonsByWebinar(webinarId)).find(item => item.id === input.ctaId);
+        if (!cta) {
+          const [persistedLiveCta] = await db.select().from(ctaButtons).where(and(
+            eq(ctaButtons.id, input.ctaId),
+            eq(ctaButtons.webinarId, webinarId),
+            eq(ctaButtons.liveOnly, true),
+            isNull(ctaButtons.archivedAt),
+            sql`${ctaButtons.expiresAt} > now()`,
+          )).limit(1);
+          cta = persistedLiveCta;
+        }
         if (!cta?.offerId) return res.status(400).json({ message: "CTA is not linked to an offer" });
         offer = await storage.getWebinarOffer(cta.offerId);
-        if (!offer || !offer.active || offer.webinarId !== webinarId) {
+        if (!offer || !offer.active || !webinar.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
           return res.status(400).json({ message: "Offer is unavailable" });
         }
-        const linkedPage = (await storage.listOfferSalesPages(webinarId))
-          .find(page => page.offerId === offer!.id && page.status === "published" && page.publishedCheckoutSettings);
-        if (!linkedPage) return res.status(409).json({ message: "Linked sales page is not published" });
-        salesPageId = linkedPage.id;
-        salesPageVersion = linkedPage.version;
-        checkoutSettingsSnapshot = normalizeCheckoutSettings(linkedPage.publishedCheckoutSettings);
-        offerSlugSnapshot = linkedPage.slug;
+        const [linkedPageRow] = await db.select({ page: offerSalesPages }).from(offerSalesPages)
+          .innerJoin(webinarOffers, eq(offerSalesPages.offerId, webinarOffers.id))
+          .where(and(
+          eq(offerSalesPages.offerId, offer.id),
+          sql`COALESCE(
+            ${offerSalesPages.userId},
+            ${webinarOffers.userId},
+            (SELECT owner_webinar.user_id FROM webinars owner_webinar WHERE owner_webinar.id = ${webinarOffers.webinarId})
+          ) = ${webinar.userId}`,
+          eq(offerSalesPages.status, "published"),
+          isNull(offerSalesPages.deletedAt),
+          )).limit(1);
+        const linkedPage = linkedPageRow?.page;
+        if (linkedPage) {
+          salesPageId = linkedPage.id;
+          salesPageVersion = linkedPage.version;
+          checkoutSettingsSnapshot = normalizeCheckoutSettings(linkedPage.publishedCheckoutSettings);
+          offerSlugSnapshot = linkedPage.slug;
+        }
       } else {
         // Public page IDs are untrusted: bind page, offer, and current publication
         // state in one storage query immediately before any provider/DB work.
@@ -2752,6 +2949,7 @@ export async function registerRoutes(
         const clientBackUrl = `${appBaseUrl()}/purchase-result?p=e&t=${statusToken}`;
         if (clientBackUrl.length > 200) return res.status(409).json({ message: "ECPay return URL exceeds the 200 character provider limit; configure a shorter APP_BASE_URL" });
         const [payment] = await db.insert(webinarPayments).values({
+          userId: webinar.userId,
           webinarId,
           offerId: offer.id,
           ctaId: cta?.id,
@@ -2809,6 +3007,7 @@ export async function registerRoutes(
       }
       const statusToken = createCheckoutStatusToken();
       const [pendingPayment] = await db.insert(webinarPayments).values({
+        userId: webinar.userId!,
         webinarId,
         offerId: offer.id,
         ctaId: cta?.id,
@@ -3159,6 +3358,16 @@ export async function registerRoutes(
         const ctas = await storage.getCtaButtonsByWebinar(webinarId);
         persistedCta = ctas.find(cta => cta.id === input.ctaId);
         if (!persistedCta) {
+          const [liveCta] = await db.select().from(ctaButtons).where(and(
+            eq(ctaButtons.id, input.ctaId),
+            eq(ctaButtons.webinarId, webinarId),
+            eq(ctaButtons.liveOnly, true),
+            isNull(ctaButtons.archivedAt),
+            sql`${ctaButtons.expiresAt} > now()`,
+          )).limit(1);
+          persistedCta = liveCta;
+        }
+        if (!persistedCta) {
           return res.status(400).json({ message: "ctaId does not belong to this webinar" });
         }
         if (input.ctaKey && input.ctaKey !== persistedCta.ctaKey) {
@@ -3354,6 +3563,7 @@ export async function registerRoutes(
       for (const offer of sourceOffers) {
         if (offer.paymentProvider !== "ecpay" || !offer.ecpayItemName || !offer.ecpayAmountTwd) continue;
         const copied = await storage.createWebinarOffer({
+          userId: newWebinar.userId!,
           webinarId: newWebinar.id,
           paymentProvider: "ecpay",
           ecpayItemName: offer.ecpayItemName,
@@ -3368,6 +3578,7 @@ export async function registerRoutes(
           text: cta.text,
           url: cta.url,
           offerId: cta.offerId ? offerIdMap.get(cta.offerId) : undefined,
+          salesPageId: cta.salesPageId,
           startTime: cta.startTime,
           endTime: cta.endTime ?? undefined,
           style: cta.style || undefined,

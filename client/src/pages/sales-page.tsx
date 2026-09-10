@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { openSalesPageOfferCheckout, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { SellCaseLogo } from "@/components/sellcase-logo";
+import { useMarketingConsent } from "@/components/marketing-consent";
 
 type Block =
   | { id: string; enabled: boolean; type: "hero"; headline: string; subheadline: string; imageUrl?: string; ctaLabel: string }
@@ -12,7 +12,59 @@ type Block =
   | { id: string; enabled: boolean; type: "offer"; headline: string; priceLabel?: string; buttonLabel: string }
   | { id: string; enabled: boolean; type: "faq"; items: { question: string; answer: string }[] };
 type CheckoutSettings = { transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string; successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string };
-type PublicPage = { id: string; title: string; webinarId: string; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string; paymentProvider: "stripe" | "ecpay" } };
+type PublicPage = { id: string; title: string; webinarId: string | null; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string; paymentProvider: "stripe" | "ecpay" } };
+
+const getProductVisitorToken = () => {
+  const key = "sellcase.product-visitor.v1";
+  let token = localStorage.getItem(key);
+  if (!token) { token = crypto.randomUUID(); localStorage.setItem(key, token); }
+  return token;
+};
+
+async function openDirectCheckout(page: PublicPage) {
+  const params = new URLSearchParams(location.search);
+  const sourceCtaId = params.get("sourceCtaId");
+  const sourceWebinarId = params.get("sourceWebinarId");
+  const body = {
+    salesPageId: page.id,
+    visitorToken: getProductVisitorToken(),
+    ...(params.get("sessionId") ? { sessionId: params.get("sessionId") } : {}),
+    ...(sourceCtaId && sourceWebinarId ? { sourceCtaId, sourceWebinarId } : {}),
+  };
+  const popup = window.open("", "_blank");
+  try {
+    const response = await fetch(`/api/products/${encodeURIComponent(page.offerId)}/checkout`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify(body) });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(result?.message || "無法建立付款，請稍後再試。");
+    if (result.provider === "ecpay") {
+      if (!result.action || !result.fields) throw new Error("綠界付款資料不完整。");
+      const target = popup || window; const form = target.document.createElement("form"); form.method = "POST"; form.action = result.action;
+      Object.entries(result.fields as Record<string, string | number>).forEach(([name, value]) => { const input = target.document.createElement("input"); input.type = "hidden"; input.name = name; input.value = String(value); form.appendChild(input); });
+      target.document.body.appendChild(form); form.submit(); return;
+    }
+    if (!result.url) throw new Error("付款網址無法使用。");
+    if (popup) popup.location.href = result.url; else window.location.href = result.url;
+  } catch (error) { popup?.close(); throw error; }
+}
+
+function trackProductPageView(page: PublicPage) {
+  const params = new URLSearchParams(location.search);
+  const sourceCtaId = params.get("sourceCtaId");
+  const sourceWebinarId = params.get("sourceWebinarId");
+  const visitorToken = getProductVisitorToken();
+  void fetch(`/api/products/${encodeURIComponent(page.offerId)}/events`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      eventType: "landing_view",
+      pageId: page.id,
+      visitorToken,
+      dedupeKey: `landing:${page.id}:${visitorToken}`,
+      ...(sourceCtaId && sourceWebinarId ? { sourceCtaId, sourceWebinarId } : {}),
+    }),
+  }).catch(() => {});
+}
 
 function price(offer: PublicPage["offer"]) {
   if (offer.amountMinor === null) return "價格請洽詢";
@@ -25,11 +77,12 @@ export default function SalesPage() {
   const { slug } = useParams<{ slug: string }>();
   const [checkoutError, setCheckoutError] = useState("");
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const marketingConsent = useMarketingConsent();
   const { data, isLoading } = useQuery<PublicPage>({ queryKey: ["/api/sales-pages", slug], enabled: !!slug });
-  useEffect(() => { if (data) trackWebinarEvent(data.webinarId, "landing_view"); }, [data]);
+  useEffect(() => { if (data && marketingConsent === "granted") trackProductPageView(data); }, [data, marketingConsent]);
   if (isLoading) return <div className="sales-loading"><div className="sales-skeleton" /></div>;
   if (!data) return <div className="sales-loading"><div className="studio-modal-card"><b>此銷售頁目前無法開啟</b><p>請確認網址，或稍後再試。</p></div></div>;
-  const checkout = async () => { if (checkoutBusy) return; setCheckoutError(""); setCheckoutBusy(true); try { await openSalesPageOfferCheckout(data.webinarId, data.id, data.offerId); } catch (e) { setCheckoutBusy(false); setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。"); } };
+  const checkout = async () => { if (checkoutBusy) return; setCheckoutError(""); setCheckoutBusy(true); try { await openDirectCheckout(data); } catch (e) { setCheckoutBusy(false); setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。若手機阻擋新視窗，請允許彈出式視窗後重試。"); } };
   const settings = data.checkoutSettings;
   const blocks = data.blocks.filter((block) => block.enabled);
   return <main className="sales-page">
@@ -40,7 +93,7 @@ export default function SalesPage() {
         if (block.type === "richText") return <section className="studio-preview-section" key={block.id}><p>{block.content}</p></section>;
         if (block.type === "image") return <figure className="studio-preview-section" key={block.id}><img src={block.url} alt={block.alt} style={{ width: "100%" }} />{block.caption && <figcaption style={{ color: "#66808a", fontSize: 12, marginTop: 9 }}>{block.caption}</figcaption>}</figure>;
         if (block.type === "benefits") return <section className="studio-preview-section" key={block.id}><h2>{block.headline}</h2>{block.items.map((item) => <div className="studio-benefit" key={item}>{item}</div>)}</section>;
-        if (block.type === "offer") return <section className="studio-offer" key={block.id}><span className="studio-kicker">現在加入</span><h2>{block.headline}</h2><div className="studio-price">{block.priceLabel || price(data.offer)}</div><p style={{ color: "#4b6970" }}>{data.offer.name}</p><button className="sales-cta" onClick={checkout}>{block.buttonLabel}</button></section>;
+         if (block.type === "offer") return <section className="studio-offer" key={block.id}><span className="studio-kicker">現在加入</span><h2>{block.headline}</h2><div className="studio-price">{price(data.offer)}</div><p style={{ color: "#4b6970" }}>{data.offer.name}</p><button className="sales-cta" onClick={checkout}>{block.buttonLabel}</button><p style={{ fontSize: 12, color: "#66808a" }}>點擊後將離開 SellCase，前往安全的 {data.offer.paymentProvider === "ecpay" ? "綠界 ECPay" : "Stripe"} 付款頁面。本頁不含購物車或物流配送。</p></section>;
         return <section className="studio-faq" key={block.id}><h2>常見問題</h2>{block.items.map((item) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
       })}
     </div>

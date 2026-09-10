@@ -192,6 +192,8 @@ export default function AdminControl() {
 
   const [ctaTextInput, setCtaTextInput] = useState("");
   const [ctaUrlInput, setCtaUrlInput] = useState("");
+  const [ctaTargetType, setCtaTargetType] = useState<"external" | "page" | "offer">("external");
+  const [ctaTargetId, setCtaTargetId] = useState("");
   const [ctaStyleInput, setCtaStyleInput] = useState("primary");
   const [ctaDurInput, setCtaDurInput] = useState("");
   const [tipTitleInput, setTipTitleInput] = useState("");
@@ -219,6 +221,8 @@ export default function AdminControl() {
     queryKey: ["/api/webinars", id, "polls"],
     enabled: !!id,
   });
+  const { data: products } = useQuery<Array<{ id: string; name: string; active: boolean }>>({ queryKey: ["/api/products"] });
+  const { data: productPages } = useQuery<Array<{ id: string; title: string; status: string }>>({ queryKey: ["/api/product-sales-pages"] });
 
   const { data: fakeUsers } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["/api/webinars", id, "fake-users"],
@@ -420,7 +424,7 @@ export default function AdminControl() {
   };
 
   const pushLiveCta = () => {
-    if (!wsRef.current || !ctaTextInput.trim() || !ctaUrlInput.trim()) {
+    if (!wsRef.current || !ctaTextInput.trim() || (ctaTargetType === "external" ? !ctaUrlInput.trim() : !ctaTargetId)) {
       toast({ title: s.fillRequired, variant: "destructive" });
       return;
     }
@@ -428,7 +432,9 @@ export default function AdminControl() {
       type: "liveCta",
       data: {
         text: ctaTextInput.trim(),
-        url: ctaUrlInput.trim(),
+        url: ctaTargetType === "external" ? ctaUrlInput.trim() : null,
+        offerId: ctaTargetType === "offer" ? ctaTargetId : null,
+        salesPageId: ctaTargetType === "page" ? ctaTargetId : null,
         style: ctaStyleInput,
         durationSec: ctaDurInput ? Number(ctaDurInput) : undefined,
       },
@@ -831,12 +837,18 @@ export default function AdminControl() {
                       onChange={(e) => setCtaTextInput(e.target.value)}
                       data-testid="input-studio-cta-text"
                     />
-                    <Input
+                    <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" value={ctaTargetType} onChange={e => { setCtaTargetType(e.target.value as "external" | "page" | "offer"); setCtaTargetId(""); }}>
+                      <option value="external">外部網址</option><option value="page">站內商品頁</option><option value="offer">直接購買</option>
+                    </select>
+                    {ctaTargetType === "external" ? <Input
                       placeholder={s.ctaUrl}
                       value={ctaUrlInput}
                       onChange={(e) => setCtaUrlInput(e.target.value)}
                       data-testid="input-studio-cta-url"
-                    />
+                    /> : <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" value={ctaTargetId} onChange={e => setCtaTargetId(e.target.value)}>
+                      <option value="">請選擇目標</option>
+                      {ctaTargetType === "page" ? productPages?.filter(page => page.status === "published").map(page => <option key={page.id} value={page.id}>{page.title}</option>) : products?.filter(product => product.active).map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
+                    </select>}
                     <div className="flex gap-2">
                       <select
                         className="flex-1 h-9 rounded-md border bg-background px-2 text-sm"

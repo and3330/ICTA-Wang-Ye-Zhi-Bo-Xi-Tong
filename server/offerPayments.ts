@@ -9,6 +9,7 @@ import {
   webinarOffers,
   webinarPayments,
   webinarPendingRefunds,
+  webinars,
 } from "@shared/schema";
 import { sha256 } from "./funnelAnalytics";
 
@@ -17,7 +18,7 @@ const metadataId = (value: string | undefined) =>
 
 export function assertOfferAttribution(input: {
   webinarId: string;
-  offer: { webinarId: string; stripePriceId: string | null };
+  offer: { webinarId: string | null; stripePriceId: string | null };
   cta?: { webinarId: string; offerId: string | null };
   offerId: string;
   stripePriceId: string | undefined;
@@ -26,8 +27,7 @@ export function assertOfferAttribution(input: {
   if (
     input.offer.webinarId !== input.webinarId ||
     (input.cta !== undefined && (
-      input.cta.webinarId !== input.webinarId ||
-      input.cta.offerId !== input.offerId
+      input.cta.webinarId !== input.webinarId
     )) ||
     input.offer.stripePriceId !== input.stripePriceId ||
     (input.registrationWebinarId !== undefined && input.registrationWebinarId !== input.webinarId)
@@ -70,6 +70,42 @@ async function lockPaymentIntent(tx: any, paymentIntentId: string) {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${paymentIntentId}))`);
 }
 
+async function resolveOfferOwnerId(
+  tx: any,
+  offer: Pick<typeof webinarOffers.$inferSelect, "userId" | "webinarId">,
+): Promise<string> {
+  if (offer.userId) return offer.userId;
+  if (offer.webinarId) {
+    const [webinar] = await tx.select({ userId: webinars.userId }).from(webinars)
+      .where(eq(webinars.id, offer.webinarId)).limit(1);
+    if (webinar?.userId) return webinar.userId;
+  }
+  throw new Error("Offer owner could not be resolved");
+}
+
+async function resolvePaymentOwnerId(
+  tx: any,
+  payment: Pick<typeof webinarPayments.$inferSelect, "userId" | "webinarId" | "offerId">,
+): Promise<string> {
+  const [offer] = await tx.select({
+    userId: webinarOffers.userId,
+    webinarId: webinarOffers.webinarId,
+  }).from(webinarOffers).where(eq(webinarOffers.id, payment.offerId)).limit(1);
+  if (!offer) throw new Error("Payment offer not found");
+  let offerOwnerId: string | null = null;
+  try {
+    offerOwnerId = await resolveOfferOwnerId(tx, offer);
+  } catch {
+    if (!payment.userId) throw new Error("Payment owner could not be resolved");
+  }
+  if (payment.userId && payment.userId !== offerOwnerId) {
+    if (!offerOwnerId) return payment.userId;
+    throw new Error("Payment owner does not match offer owner");
+  }
+  if (!payment.userId && !offerOwnerId) throw new Error("Payment owner could not be resolved");
+  return payment.userId || offerOwnerId!;
+}
+
 async function reconcilePendingRefunds(tx: any, paymentIntentId: string, payment: typeof webinarPayments.$inferSelect) {
   const pending: Array<typeof webinarPendingRefunds.$inferSelect> = await tx.select().from(webinarPendingRefunds).where(and(
     eq(webinarPendingRefunds.stripePaymentIntentId, paymentIntentId),
@@ -82,12 +118,15 @@ async function reconcilePendingRefunds(tx: any, paymentIntentId: string, payment
     pending.map(item => item.cumulativeRefundMinor),
   );
   if (transition.refundDelta > 0) {
+    const ownerId = await resolvePaymentOwnerId(tx, payment);
     await tx.update(webinarPayments).set({
+      userId: ownerId,
       refundedMinor: transition.refundedMinor,
       status: transition.status,
       updatedAt: new Date(),
     }).where(eq(webinarPayments.id, payment.id));
     await tx.insert(webinarFunnelEvents).values({
+      userId: ownerId,
       webinarId: payment.webinarId,
       eventType: "refund",
       registrationId: payment.registrationId,
@@ -139,9 +178,10 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
         .where(and(eq(webinarOffers.id, offerId), eq(webinarOffers.webinarId, webinarId)));
       const [cta] = ctaId
         ? await tx.select().from(ctaButtons)
-          .where(and(eq(ctaButtons.id, ctaId), eq(ctaButtons.webinarId, webinarId), eq(ctaButtons.offerId, offerId)))
+          .where(and(eq(ctaButtons.id, ctaId), eq(ctaButtons.webinarId, webinarId)))
         : [undefined];
       if (!offer || (ctaId && !cta)) throw new Error("Cross-webinar or mismatched offer attribution");
+      const ownerId = await resolveOfferOwnerId(tx, offer);
       let registrationWebinarId: string | undefined;
       if (registrationId) {
         const [registration] = await tx.select({ id: registrations.id, webinarId: registrations.webinarId }).from(registrations)
@@ -170,6 +210,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
       const precreatedChanged = precreated?.status === "pending"
         ? await tx.update(webinarPayments).set({
             stripeCheckoutSessionId: session.id,
+             userId: ownerId,
             stripePaymentIntentId: paymentIntentId,
             status: "paid",
             purchasedAt: new Date(),
@@ -178,6 +219,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
           .returning({ id: webinarPayments.id })
         : [];
       const inserted = precreated ? [] : await tx.insert(webinarPayments).values({
+        userId: ownerId,
         webinarId,
         offerId,
         ctaId,
@@ -205,6 +247,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
           .limit(1);
         if (pending?.status === "pending") {
           const changed = await tx.update(webinarPayments).set({
+            userId: ownerId,
             stripePaymentIntentId: paymentIntentId,
             amountMinor: amountMinor!,
             currency,
@@ -218,6 +261,7 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
       }
       if (paidApplied) {
         await tx.insert(webinarFunnelEvents).values({
+          userId: ownerId,
           webinarId,
           eventType: "purchase",
           registrationId,
@@ -269,39 +313,44 @@ export async function processVerifiedEcpayPayment(providerOrderId: string): Prom
     if (payment.status === "paid") return { duplicate: true };
     if (payment.status !== "pending") throw new Error("ECPay order is not payable");
     const [cta] = payment.ctaId
-      ? await tx.select().from(ctaButtons).where(and(
-        eq(ctaButtons.id, payment.ctaId),
-        eq(ctaButtons.webinarId, payment.webinarId),
-        eq(ctaButtons.offerId, payment.offerId),
-      ))
+      ? await tx.select().from(ctaButtons).where(eq(ctaButtons.id, payment.ctaId))
       : [undefined];
-    const [offer] = await tx.select({ id: webinarOffers.id }).from(webinarOffers).where(and(
-      eq(webinarOffers.id, payment.offerId),
-      eq(webinarOffers.webinarId, payment.webinarId),
-    ));
-    if (!offer || (payment.ctaId && !cta)) throw new Error("Invalid persisted ECPay attribution");
+    const [offer] = await tx.select({
+      id: webinarOffers.id,
+      userId: webinarOffers.userId,
+      webinarId: webinarOffers.webinarId,
+    }).from(webinarOffers).where(eq(webinarOffers.id, payment.offerId));
+    const ownerId = offer ? await resolvePaymentOwnerId(tx, payment) : null;
+    const ctaMatches = !payment.ctaId || (
+      cta &&
+      cta.webinarId === payment.webinarId
+    );
+    if (!offer || !ownerId || (payment.userId && payment.userId !== ownerId) || !ctaMatches) {
+      throw new Error("Invalid persisted ECPay attribution");
+    }
     const changed = await tx.update(webinarPayments).set({
       status: "paid",
+      userId: ownerId,
       purchasedAt: new Date(),
       updatedAt: new Date(),
     }).where(and(eq(webinarPayments.id, payment.id), eq(webinarPayments.status, "pending")))
       .returning({ id: webinarPayments.id });
     if (!changed[0]) return { duplicate: true };
     await tx.insert(webinarFunnelEvents).values({
+      userId: ownerId,
       webinarId: payment.webinarId,
       eventType: "purchase",
       registrationId: payment.registrationId,
       ctaId: payment.ctaId,
       ctaKey: cta?.ctaKey,
       offerId: payment.offerId,
+      salesPageId: payment.salesPageId,
       visitorTokenHash: payment.visitorTokenHash,
       amountMinor: payment.amountMinor,
       currency: payment.currency,
       dedupeKey: sha256(`ecpay:${providerOrderId}`),
       metadata: { serverRecorded: true },
-    }).onConflictDoNothing({
-      target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
-    });
+    }).onConflictDoNothing();
     return { duplicate: false };
   });
 }

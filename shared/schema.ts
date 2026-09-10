@@ -250,7 +250,8 @@ export type ScheduledMessage = typeof scheduledMessages.$inferSelect;
 
 export const webinarOffers = pgTable("webinar_offers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "restrict" }),
+  webinarId: varchar("webinar_id").references(() => webinars.id, { onDelete: "set null" }),
   paymentProvider: text("payment_provider").notNull().default("stripe"),
   stripeProductId: text("stripe_product_id"),
   stripePriceId: text("stripe_price_id"),
@@ -260,12 +261,14 @@ export const webinarOffers = pgTable("webinar_offers", {
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
+  userIndex: index("webinar_offers_user_idx").on(table.userId),
   webinarIndex: index("webinar_offers_webinar_idx").on(table.webinarId),
 }));
 
 export const offerSalesPages = pgTable("offer_sales_pages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "restrict" }),
+  webinarId: varchar("webinar_id").references(() => webinars.id, { onDelete: "set null" }),
   offerId: varchar("offer_id").notNull().references(() => webinarOffers.id, { onDelete: "restrict" }),
   slug: varchar("slug", { length: 80 }).notNull().unique(),
   title: varchar("title", { length: 200 }).notNull(),
@@ -288,8 +291,10 @@ export const offerSalesPages = pgTable("offer_sales_pages", {
   publishedAt: timestamp("published_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at"),
 }, (table) => ({
-  offerUnique: uniqueIndex("offer_sales_pages_offer_uniq").on(table.offerId),
+  offerUnique: uniqueIndex("offer_sales_pages_offer_uniq").on(table.offerId).where(sql`deleted_at IS NULL`),
+  userIndex: index("offer_sales_pages_user_idx").on(table.userId),
   webinarIndex: index("offer_sales_pages_webinar_idx").on(table.webinarId),
 }));
 export type OfferSalesPage = typeof offerSalesPages.$inferSelect;
@@ -325,12 +330,18 @@ export const ctaButtons = pgTable("cta_buttons", {
   text: text("text").notNull(),
   url: text("url"),
   offerId: varchar("offer_id").references(() => webinarOffers.id, { onDelete: "restrict" }),
+  salesPageId: varchar("sales_page_id").references(() => offerSalesPages.id, { onDelete: "restrict" }),
   startTime: integer("start_time").notNull(), // seconds when to show
   endTime: integer("end_time"), // seconds when to hide (null = until end)
   style: text("style").default("primary"), // primary, secondary, danger
+  liveOnly: boolean("live_only").notNull().default(false),
+  expiresAt: timestamp("expires_at"),
   ctaKey: varchar("cta_key", { length: 64 }).notNull().unique(), // server-generated stable tracking key
   archivedAt: timestamp("archived_at"),
-});
+}, (table) => ({
+  liveExpiryIndex: index("cta_buttons_live_expiry_idx").on(table.webinarId, table.expiresAt)
+    .where(sql`live_only = true`),
+}));
 
 export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
   try {
@@ -341,11 +352,20 @@ export const safeCtaUrlSchema = z.string().trim().min(1).max(2048).refine((value
   }
 }, "CTA URL must be an absolute HTTP or HTTPS URL");
 export const insertCtaButtonSchema = createInsertSchema(ctaButtons)
-  .omit({ id: true, ctaKey: true, archivedAt: true })
-  .extend({ url: safeCtaUrlSchema.nullish(), offerId: z.string().uuid().nullish() })
+  .omit({ id: true, ctaKey: true, archivedAt: true, liveOnly: true, expiresAt: true })
+  .extend({
+    url: safeCtaUrlSchema.nullish(),
+    offerId: z.string().uuid().nullish(),
+    salesPageId: z.string().uuid().nullish(),
+  })
   .superRefine((value, context) => {
-    if (!value.offerId && !value.url) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "CTA URL is required when no offer is linked" });
+    const targets = [value.url, value.offerId, value.salesPageId].filter(Boolean);
+    if (targets.length !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message: "CTA must specify exactly one of url, offerId, or salesPageId",
+      });
     }
   });
 export type InsertCtaButton = z.infer<typeof insertCtaButtonSchema>;
@@ -540,13 +560,15 @@ export type WebinarFunnelMetadata = {
 // Append-only event stream. Application code intentionally exposes insert/read only.
 export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "restrict" }),
+  webinarId: varchar("webinar_id").references(() => webinars.id, { onDelete: "set null" }),
   eventType: text("event_type").$type<WebinarFunnelEventType>().notNull(),
   registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
   sessionId: varchar("session_id", { length: 128 }),
   ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "set null" }),
   ctaKey: varchar("cta_key", { length: 64 }),
   offerId: varchar("offer_id").references(() => webinarOffers.id, { onDelete: "set null" }),
+  salesPageId: varchar("sales_page_id").references(() => offerSalesPages.id, { onDelete: "set null" }),
   visitorTokenHash: varchar("visitor_token_hash", { length: 64 }),
   positionSeconds: integer("position_seconds"),
   value: numeric("value", { precision: 14, scale: 2 }),
@@ -557,6 +579,9 @@ export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
   occurredAt: timestamp("occurred_at").notNull().defaultNow(),
 }, (table) => ({
   dedupeUnique: uniqueIndex("webinar_funnel_events_webinar_dedupe_uniq").on(table.webinarId, table.dedupeKey),
+  offerDedupeUnique: uniqueIndex("webinar_funnel_events_offer_dedupe_uniq")
+    .on(table.offerId, table.dedupeKey)
+    .where(sql`webinar_id IS NULL AND offer_id IS NOT NULL`),
   webinarOccurredIndex: index("webinar_funnel_events_webinar_occurred_idx").on(table.webinarId, table.occurredAt),
   webinarTypeIndex: index("webinar_funnel_events_webinar_type_idx").on(table.webinarId, table.eventType),
   webinarCtaKeyIndex: index("webinar_funnel_events_webinar_cta_key_idx").on(table.webinarId, table.ctaKey),
@@ -891,7 +916,8 @@ export type WebinarOffer = typeof webinarOffers.$inferSelect;
 
 export const webinarPayments = pgTable("webinar_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "restrict" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "restrict" }),
+  webinarId: varchar("webinar_id").references(() => webinars.id, { onDelete: "set null" }),
   offerId: varchar("offer_id").notNull().references(() => webinarOffers.id, { onDelete: "restrict" }),
   ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "restrict" }),
   registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
@@ -919,6 +945,7 @@ export const webinarPayments = pgTable("webinar_payments", {
   currency: varchar("currency", { length: 3 }).notNull(),
   status: text("status").notNull().default("paid"),
   purchasedAt: timestamp("purchased_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
