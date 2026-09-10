@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  createSalesPageTemplate,
+  salesPageVideoEmbedUrl,
+} from "../shared/salesPageTemplates";
 
 const blockIdSchema = z.string().trim().min(1).max(64)
   .regex(/^[A-Za-z0-9_-]+$/, "Block IDs may contain only letters, numbers, underscores, and hyphens");
@@ -87,6 +91,30 @@ export const salesPageBlockSchema = z.discriminatedUnion("type", [
     headline: shortText(200),
     priceLabel: optionalText(100),
     buttonLabel: shortText(80),
+    layout: z.enum(["standard", "ecommerce"]).optional(),
+    images: z.array(z.object({
+      url: salesPageImageUrlSchema,
+      alt: shortText(300),
+    }).strict()).max(8).optional(),
+    summary: optionalText(1_200),
+    features: z.array(shortText(300)).max(8).optional(),
+  }).strict(),
+  z.object({
+    ...base,
+    type: z.literal("video"),
+    url: z.string().trim().min(1).max(2_048)
+      .refine(value => salesPageVideoEmbedUrl(value) !== null, "Video must use a supported HTTPS YouTube or Vimeo URL"),
+    title: shortText(200),
+  }).strict(),
+  z.object({
+    ...base,
+    type: z.literal("testimonials"),
+    headline: shortText(200),
+    items: z.array(z.object({
+      name: shortText(200),
+      quote: shortText(2_000),
+      role: optionalText(300),
+    }).strict()).min(1).max(8),
   }).strict(),
   z.object({
     ...base,
@@ -139,9 +167,15 @@ export const createSalesPageSchema = z.object({
   offerId: z.string().uuid(),
   slug: salesPageSlugSchema,
   title: shortText(200),
-  blocks: salesPageBlocksSchema.default([]),
+  template: z.enum(["ecommerce", "free"]).default("ecommerce"),
+  blocks: salesPageBlocksSchema.optional(),
   checkoutSettings: checkoutSettingsSchema.default(DEFAULT_CHECKOUT_SETTINGS),
-}).strict();
+}).strict().transform(input => ({
+  ...input,
+  blocks: input.blocks ?? salesPageBlocksSchema.parse(
+    createSalesPageTemplate(input.template, { name: input.title }),
+  ),
+}));
 
 export const updateSalesPageSchema = z.object({
   version: z.number().int().positive(),

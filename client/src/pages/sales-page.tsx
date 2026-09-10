@@ -3,14 +3,17 @@ import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import { useMarketingConsent } from "@/components/marketing-consent";
+import { EcommerceContent, EcommerceProductSection, type EcommerceBlock } from "@/components/sales-ecommerce";
 
 type Block =
   | { id: string; enabled: boolean; type: "hero"; headline: string; subheadline: string; imageUrl?: string; ctaLabel: string }
   | { id: string; enabled: boolean; type: "richText"; content: string }
   | { id: string; enabled: boolean; type: "image"; url: string; alt: string; caption?: string }
   | { id: string; enabled: boolean; type: "benefits"; headline: string; items: string[] }
-  | { id: string; enabled: boolean; type: "offer"; headline: string; priceLabel?: string; buttonLabel: string }
-  | { id: string; enabled: boolean; type: "faq"; items: { question: string; answer: string }[] };
+  | { id: string; enabled: boolean; type: "offer"; headline: string; priceLabel?: string; buttonLabel: string; layout?: "standard" | "ecommerce"; images?: { url: string; alt: string }[]; summary?: string; features?: string[] }
+  | { id: string; enabled: boolean; type: "faq"; items: { question: string; answer: string }[] }
+  | { id: string; enabled: boolean; type: "video"; url: string; title: string }
+  | { id: string; enabled: boolean; type: "testimonials"; headline: string; items: { name: string; quote: string; role?: string }[] };
 type CheckoutSettings = { transitionTitle: string; transitionMessage: string; successTitle: string; successMessage: string; successButtonLabel: string; successButtonUrl?: string; cancelTitle: string; cancelMessage: string };
 type PublicPage = { id: string; title: string; webinarId: string | null; offerId: string; blocks: Block[]; checkoutSettings?: CheckoutSettings; offer: { name: string; amountMinor: number | null; currency: string; paymentProvider: "stripe" | "ecpay" } };
 
@@ -85,6 +88,14 @@ export default function SalesPage() {
   const checkout = async () => { if (checkoutBusy) return; setCheckoutError(""); setCheckoutBusy(true); try { await openDirectCheckout(data); } catch (e) { setCheckoutBusy(false); setCheckoutError(e instanceof Error ? e.message : "無法開啟付款頁面，請稍後再試。若手機阻擋新視窗，請允許彈出式視窗後重試。"); } };
   const settings = data.checkoutSettings;
   const blocks = data.blocks.filter((block) => block.enabled);
+  const productBlock = blocks.find((block): block is Extract<Block, { type: "offer" }> => block.type === "offer");
+  if (productBlock?.layout === "ecommerce") return <main className="sales-page ecommerce-page">
+    <header><SellCaseLogo style={{ width: 142, height: "auto" }} /><span>安全付款・數位內容</span></header>
+    <div className="studio-frame"><EcommerceProductSection offer={data.offer} images={productBlock.images} summary={productBlock.summary} features={productBlock.features} buttonLabel={productBlock.buttonLabel || "立即取得"} onCheckout={checkout} /><EcommerceContent blocks={blocks.filter((block): block is EcommerceBlock => ["hero", "richText", "image", "benefits", "faq", "video", "testimonials"].includes(block.type))} /></div>
+    {checkoutBusy && <div className="studio-modal" role="dialog" aria-live="polite"><div className="studio-modal-card"><div className="sales-spinner" aria-hidden="true" /><b>{settings?.transitionTitle || "正在前往安全付款頁面"}</b><p>{settings?.transitionMessage || "請稍候，我們正在準備您的付款。"}</p></div></div>}
+    {checkoutError && <div className="studio-modal" role="alert"><div className="studio-modal-card"><b>付款頁面尚未開啟</b><p>{checkoutError}</p><button className="sales-cta" onClick={checkout}>再試一次</button><button className="studio-icon-btn" onClick={() => setCheckoutError("")}>返回優惠頁</button></div></div>}
+    <footer className="sales-footer">{data.offer.paymentProvider === "ecpay" ? "本商品由主辦會員販售，並由其自有綠界 ECPay 商店收款；商品履約、發票及退款由主辦會員依其政策與適用法律負責。SellCase 提供頁面與技術串接。" : "付款將由 Stripe 處理。商品內容、履約及退款條件請以本頁賣方揭露與適用法律為準。"} <a href="/legal/refunds">退款與取消說明</a></footer>
+  </main>;
   return <main className="sales-page">
      <header><SellCaseLogo style={{ width: 142, height: "auto" }} /><span>前往付款・查看商品內容</span></header>
     <div className="studio-frame">
@@ -94,7 +105,8 @@ export default function SalesPage() {
         if (block.type === "image") return <figure className="studio-preview-section" key={block.id}><img src={block.url} alt={block.alt} style={{ width: "100%" }} />{block.caption && <figcaption style={{ color: "#66808a", fontSize: 12, marginTop: 9 }}>{block.caption}</figcaption>}</figure>;
         if (block.type === "benefits") return <section className="studio-preview-section" key={block.id}><h2>{block.headline}</h2>{block.items.map((item) => <div className="studio-benefit" key={item}>{item}</div>)}</section>;
          if (block.type === "offer") return <section className="studio-offer" key={block.id}><span className="studio-kicker">現在加入</span><h2>{block.headline}</h2><div className="studio-price">{price(data.offer)}</div><p style={{ color: "#4b6970" }}>{data.offer.name}</p><button className="sales-cta" onClick={checkout}>{block.buttonLabel}</button><p style={{ fontSize: 12, color: "#66808a" }}>點擊後將離開 SellCase，前往安全的 {data.offer.paymentProvider === "ecpay" ? "綠界 ECPay" : "Stripe"} 付款頁面。本頁不含購物車或物流配送。</p></section>;
-        return <section className="studio-faq" key={block.id}><h2>常見問題</h2>{block.items.map((item) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
+         if (block.type === "faq") return <section className="studio-faq" key={block.id}><h2>常見問題</h2>{block.items.map((item) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
+         return null;
       })}
     </div>
      {checkoutBusy && <div className="studio-modal" role="dialog" aria-live="polite"><div className="studio-modal-card"><div className="sales-spinner" aria-hidden="true" /><b>{settings?.transitionTitle || "正在前往安全付款頁面"}</b><p>{settings?.transitionMessage || "請稍候，我們正在準備您的付款。"}</p></div></div>}

@@ -12,6 +12,7 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
   const webinarId = "webinar-owned";
   const pageId = "page-owned";
   const offerId = "7780bedb-f243-4f24-98ef-d97d0107ca42";
+  const ownedOfferId = "6680bedb-f243-4f24-98ef-d97d0107ca42";
   const webinar = {
     id: webinarId, userId: ownerId, publishStatus: "draft", title: "Draft webinar",
   } as Webinar;
@@ -30,7 +31,11 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
   const crossWebinarOffer = {
     id: offerId, webinarId: "another-webinar", active: true, paymentProvider: "ecpay",
   } as WebinarOffer;
+  const ownedOffer = {
+    id: ownedOfferId, webinarId, userId: ownerId, active: true, paymentProvider: "ecpay",
+  } as WebinarOffer;
   let statusMutationCalled = false;
+  let createdInput: any;
 
   const originals = {
     getWebinar: storage.getWebinar,
@@ -41,12 +46,25 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
     setOfferSalesPageStatus: storage.setOfferSalesPageStatus,
   };
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
-  storage.getWebinarOffer = async id => id === offerId ? crossWebinarOffer : undefined;
+  storage.getWebinarOffer = async id => id === offerId
+    ? crossWebinarOffer
+    : id === ownedOfferId
+      ? ownedOffer
+      : undefined;
   storage.getOfferSalesPage = async (requestedWebinar, requestedPage) =>
     requestedWebinar === webinarId && requestedPage === pageId ? page : undefined;
   storage.getPublicOfferSalesPage = async () => undefined;
-  storage.createOfferSalesPage = async () => {
-    throw new Error("cross-webinar offer must not be inserted");
+  storage.createOfferSalesPage = async input => {
+    if (input.offerId !== ownedOfferId) throw new Error("cross-webinar offer must not be inserted");
+    createdInput = input;
+    return {
+      ...page,
+      id: "created-default-template",
+      offerId: ownedOfferId,
+      slug: input.slug,
+      title: input.title,
+      orderedBlocks: input.orderedBlocks,
+    } as OfferSalesPage;
   };
   storage.setOfferSalesPageStatus = async () => {
     statusMutationCalled = true;
@@ -75,6 +93,16 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
 
   const anonymousOwnerRead = await fetch(`${baseUrl}/api/webinars/${webinarId}/sales-pages/${pageId}`);
   assert.equal(anonymousOwnerRead.status, 401);
+
+  const defaultTemplateCreate = await fetch(`${baseUrl}/api/webinars/${webinarId}/sales-pages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-test-user-id": ownerId },
+    body: JSON.stringify({ offerId: ownedOfferId, slug: "default-template", title: "HTTP template" }),
+  });
+  assert.equal(defaultTemplateCreate.status, 201, await defaultTemplateCreate.text());
+  assert.equal(createdInput.orderedBlocks[0].type, "offer");
+  assert.equal(createdInput.orderedBlocks[0].layout, "ecommerce");
+  assert.deepEqual(createdInput.orderedBlocks[0].images, []);
 
   const crossOfferCreate = await fetch(`${baseUrl}/api/webinars/${webinarId}/sales-pages`, {
     method: "POST",

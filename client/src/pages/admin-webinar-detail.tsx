@@ -43,6 +43,8 @@ import {
   type TrackingWebinar,
 } from "@/components/webinar-tracking-provider";
 import { VideoSourcePicker } from "@/components/media-picker";
+import { SalesTemplateChooser, type SalesTemplate } from "@/components/sales-template-chooser";
+import { createSalesPageTemplate } from "@shared/salesPageTemplates";
 
 function toLocalDateTimeInput(value: Date | string) {
   const date = new Date(value);
@@ -1298,6 +1300,7 @@ export default function AdminWebinarDetail() {
   });
   const { data: memberProducts } = useQuery<WebinarOfferView[]>({ queryKey: ["/api/products"] });
   const { data: productSalesPages } = useQuery<SalesPageView[]>({ queryKey: ["/api/product-sales-pages"] });
+  const [salesTemplateOffer, setSalesTemplateOffer] = useState<WebinarOfferView | null>(null);
 
   const { data: polls } = useQuery<Poll[]>({
     queryKey: ["/api/webinars", id, "polls"],
@@ -1710,16 +1713,10 @@ export default function AdminWebinarDetail() {
     onError: (error: any) => toast({ title: error.message, variant: "destructive" }),
   });
   const createSalesPage = useMutation({
-    mutationFn: async (offer: WebinarOfferView) => {
+    mutationFn: async ({ offer, template }: { offer: WebinarOfferView; template: SalesTemplate }) => {
       const safe = offer.name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
       const slug = `${safe.slice(0, 58)}-${Date.now().toString(36)}`;
-      const blocks = [
-        { id: "hero_main", enabled: true, type: "hero", headline: `讓「${offer.name}」帶你走得更遠`, subheadline: webinar?.description || "一套專為實作設計的方法，現在就開始建立你的下一步。", imageUrl: webinar?.coverImage || undefined, ctaLabel: "立即加入" },
-        { id: "benefits_main", enabled: true, type: "benefits", headline: "這次，你會帶走什麼", items: ["清楚的行動框架", "可以立即套用的方法", "更篤定的下一步"] },
-        { id: "offer_main", enabled: true, type: "offer", headline: "現在加入完整方案", priceLabel: "", buttonLabel: "立即取得課程" },
-        { id: "faq_main", enabled: true, type: "faq", items: [{ question: "我適合參加嗎？", answer: "如果你正在尋找更清楚、更能落地的方法，這個方案很適合你。" }] },
-      ];
-      const response = await apiRequest("POST", `/api/webinars/${id}/sales-pages`, { offerId: offer.id, slug, title: `${offer.name} 銷售頁`, blocks });
+      const response = await apiRequest("POST", `/api/webinars/${id}/sales-pages`, { offerId: offer.id, slug, title: `${offer.name} 銷售頁`, template, blocks: createSalesPageTemplate(template, { name: offer.name }) });
       return response.json() as Promise<SalesPageView>;
     },
     onSuccess: (page) => {
@@ -3390,7 +3387,7 @@ export default function AdminWebinarDetail() {
                             <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(publicUrl)}><Copy className="h-3.5 w-3.5 mr-1" />複製下單網址</Button>
                             <Button size="sm" variant="ghost" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3.5 w-3.5 mr-1" />開啟商品頁</Button>
                           </>}
-                        </> : <Button size="sm" variant="outline" onClick={() => createSalesPage.mutate(offer)} disabled={createSalesPage.isPending}><FileText className="h-3.5 w-3.5 mr-1" />建立成交頁</Button>}
+                        </> : <Button size="sm" variant="outline" onClick={() => setSalesTemplateOffer(offer)} disabled={createSalesPage.isPending}><FileText className="h-3.5 w-3.5 mr-1" />建立成交頁</Button>}
                       </div>
                     </div>
                   })}</div> : <div className="rounded-lg border border-dashed py-12 text-center">
@@ -6134,6 +6131,7 @@ export default function AdminWebinarDetail() {
           </TabsContent>
         </Tabs>
       </main>
+      <SalesTemplateChooser open={!!salesTemplateOffer} onOpenChange={open => !open && setSalesTemplateOffer(null)} pending={createSalesPage.isPending} onChoose={template => salesTemplateOffer && createSalesPage.mutate({ offer: salesTemplateOffer, template })} />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
+import { updateSalesPageSchema } from "../server/salesPages";
 
 const tinyPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -55,6 +56,10 @@ async function dismissCookieConsent(page: Page) {
 }
 
 test.describe("Standalone products local mocked behavior", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/products", route => route.fulfill({ json: [product] }));
+  });
+
   test("creates a zero-webinar product and its sales page with the documented payloads", async ({ page }) => {
     const products: typeof product[] = [];
     const pages: Array<typeof salesPage> = [];
@@ -97,6 +102,8 @@ test.describe("Standalone products local mocked behavior", () => {
     expect(productPost?.postDataJSON()).not.toHaveProperty("webinarId");
 
     await page.getByRole("button", { name: "建立商品頁" }).click();
+    await page.getByTestId("template-choice-free").click();
+    await page.getByTestId("template-create-submit").click();
     await expect(page).toHaveURL(/\/admin\/products\/sales\/page-local-1$/);
     expect(pagePost?.postDataJSON()).toMatchObject({
       offerId: product.id,
@@ -121,6 +128,7 @@ test.describe("Standalone products local mocked behavior", () => {
         return route.fulfill({ status: 500, json: { message: "後端拒絕儲存" } });
       }
       const body = request.postDataJSON();
+      expect(updateSalesPageSchema.safeParse(body).success).toBe(true);
       patches.push(body);
       current = { ...current, ...body, orderedBlocks: body.blocks, version: current.version + 1 };
       return route.fulfill({ json: current });
@@ -191,6 +199,7 @@ test.describe("Standalone products local mocked behavior", () => {
       const request = route.request();
       if (request.method() === "GET") return route.fulfill({ json: current });
       const body = request.postDataJSON();
+      expect(updateSalesPageSchema.safeParse(body).success).toBe(true);
       requests.push({ method: request.method(), url: request.url(), body });
       current = { ...current, ...body, orderedBlocks: body.blocks, version: current.version + 1 };
       return route.fulfill({ json: current });

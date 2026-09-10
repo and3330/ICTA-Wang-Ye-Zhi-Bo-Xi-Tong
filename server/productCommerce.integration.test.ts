@@ -89,18 +89,31 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   assert.equal((await db.select().from(webinars).where(eq(webinars.userId, ownerId))).length, 0);
   const other = await jsonOk(await request("/api/products", "POST", { name: "其他會員商品", amountTwd: 120 }, otherId), 201);
   offerIds.push(other.id);
+  const freeProduct = await jsonOk(await request("/api/products", "POST", { name: "免費版型商品", amountTwd: 360 }, ownerId), 201);
+  offerIds.push(freeProduct.id);
   const owned = await jsonOk(await request("/api/products", "GET", undefined, ownerId));
-  assert.deepEqual(owned.map((item: any) => item.id), [product.id]);
+  assert.deepEqual(new Set(owned.map((item: any) => item.id)), new Set([product.id, freeProduct.id]));
   assert.ok([403, 404].includes((await request(`/api/products/${product.id}`, "PATCH", { amountTwd: 1 }, otherId)).status));
   assert.ok([403, 404].includes((await request(`/api/products/${product.id}/orders`, "GET", undefined, otherId)).status));
   assert.ok([400, 403, 404].includes((await request("/api/product-sales-pages", "POST", {
     offerId: product.id, slug: `${slug}-stolen`, title: "Cross tenant", blocks: [block],
   }, otherId)).status));
 
+  const freePage = await jsonOk(await request("/api/product-sales-pages", "POST", {
+    offerId: freeProduct.id, slug: `${slug}-free`, title: "免費版型商品", template: "free",
+  }, ownerId), 201);
+  assert.deepEqual(freePage.orderedBlocks.map((item: any) => item.type), ["hero", "benefits", "offer", "faq"]);
+  assert.equal(freePage.orderedBlocks[0].headline, "讓「免費版型商品」帶你走得更遠");
+  assert.equal(freePage.orderedBlocks[2].layout, undefined);
+
   let page = await jsonOk(await request("/api/product-sales-pages", "POST", {
-    offerId: product.id, slug, title: "獨立成交頁", blocks: [block],
+    offerId: product.id, slug, title: "獨立成交頁",
     checkoutSettings: { successTitle: "原始付款成功文案", successButtonUrl: "https://example.test/original-delivery" },
   }, ownerId), 201);
+  assert.equal(page.orderedBlocks[0].type, "offer");
+  assert.equal(page.orderedBlocks[0].layout, "ecommerce");
+  assert.deepEqual(page.orderedBlocks[0].images, []);
+  assert.equal(page.orderedBlocks.some((item: any) => item.type === "testimonials"), false);
   assert.equal((await request(`/api/sales-pages/${slug}`)).status, 404);
   assert.ok([403, 409].includes((await request(`/api/product-sales-pages/${page.id}/publish`, "POST", { version: page.version }, ownerId)).status));
   await db.update(users).set({
@@ -115,18 +128,35 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   let publicPage = await jsonOk(await request(`/api/sales-pages/${slug}`));
   assert.equal(publicPage.webinarId, null);
   assert.equal(publicPage.offer.amountMinor, 88000);
-  assert.equal(publicPage.blocks[0].headline, "原始商品內容");
+  assert.equal(publicPage.blocks[0].headline, "獨立成交頁");
+  assert.equal(publicPage.blocks[0].layout, "ecommerce");
+  assert.deepEqual(publicPage.blocks[0].images, []);
   assert.equal(publicPage.checkoutSettings?.successButtonUrl, undefined);
   assert.equal((await request(`/api/product-sales-pages/${page.id}`, "PATCH", {
     version: page.version - 1 || 999, title: "Stale overwrite",
   }, ownerId)).status, 409);
+  const ecommerceDraftOffer = {
+    ...page.orderedBlocks[0],
+    headline: "尚未發布的商品草稿",
+    images: [{ url: "https://cdn.example.test/product.webp", alt: "商品正面" }],
+    summary: "只有草稿目前看得到的新商品摘要。",
+    features: ["由 API 商品價格決定結帳金額", "安全交付"],
+  };
+  assert.equal((await request(`/api/product-sales-pages/${page.id}`, "PATCH", {
+    version: page.version,
+    blocks: [{ ...ecommerceDraftOffer, amountMinor: 1 }, ...page.orderedBlocks.slice(1)],
+  }, ownerId)).status, 400);
   page = await jsonOk(await request(`/api/product-sales-pages/${page.id}`, "PATCH", {
     version: page.version, title: page.title, slug: page.slug,
-    blocks: [{ ...block, headline: "尚未發布的草稿" }],
+    blocks: [ecommerceDraftOffer, ...page.orderedBlocks.slice(1)],
     checkoutSettings: { successTitle: "新的付款文案", successButtonUrl: "https://example.test/new-delivery" },
   }, ownerId));
+  assert.deepEqual(page.orderedBlocks[0].images, ecommerceDraftOffer.images);
+  assert.equal(page.orderedBlocks[0].summary, ecommerceDraftOffer.summary);
   publicPage = await jsonOk(await request(`/api/sales-pages/${slug}`));
-  assert.equal(publicPage.blocks[0].headline, "原始商品內容");
+  assert.equal(publicPage.blocks[0].headline, "獨立成交頁");
+  assert.deepEqual(publicPage.blocks[0].images, []);
+  assert.equal(publicPage.offer.amountMinor, 88000);
 
   const checkoutBody = { salesPageId: page.id, sessionId: `buyer-${crypto.randomUUID()}` };
   assert.ok([400, 404, 409].includes((await request(`/api/products/${other.id}/checkout`, "POST", checkoutBody)).status));
@@ -174,7 +204,11 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   }
   page = await jsonOk(await request(`/api/product-sales-pages/${page.id}/publish`, "POST", { version: page.version }, ownerId));
   publicPage = await jsonOk(await request(`/api/sales-pages/${slug}`));
-  assert.equal(publicPage.blocks[0].headline, "尚未發布的草稿");
+  assert.equal(publicPage.blocks[0].headline, "尚未發布的商品草稿");
+  assert.deepEqual(publicPage.blocks[0].images, ecommerceDraftOffer.images);
+  assert.equal(publicPage.blocks[0].summary, ecommerceDraftOffer.summary);
+  assert.deepEqual(publicPage.blocks[0].features, ecommerceDraftOffer.features);
+  assert.equal(publicPage.offer.amountMinor, 99900);
   assert.equal((await jsonOk(await request(statusPath))).checkoutSettings.successButtonUrl, "https://example.test/original-delivery");
 
   await db.insert(webinars).values({
@@ -256,7 +290,10 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   await db.update(webinarPayments).set({ userId: null }).where(eq(webinarPayments.id, payment.id));
   await db.update(webinars).set({ deletedAt: new Date(), publishStatus: "draft" }).where(eq(webinars.id, webinarId));
   assert.equal((await request(`/api/sales-pages/${slug}`)).status, 200);
-  assert.equal((await jsonOk(await request("/api/products", "GET", undefined, ownerId)))[0].id, product.id);
+  assert.equal(
+    (await jsonOk(await request("/api/products", "GET", undefined, ownerId))).some((item: any) => item.id === product.id),
+    true,
+  );
   await jsonOk(await request(`/api/products/${product.id}/checkout`, "POST", checkoutBody));
   await db.update(users).set({ planExpiresAt: new Date(Date.now() - 1000) }).where(eq(users.id, ownerId));
   assert.equal((await request(`/api/sales-pages/${slug}`)).status, 404);
