@@ -14,6 +14,9 @@ import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, ver
 import crypto from "crypto";
 import { safeUploadContentType, verifyImageUpload } from "./safeImageUpload";
 import { getUploadStorage, uploadObjectKey } from "./uploadStorage";
+import { getBunnyMediaClient, MAX_IMAGE_BYTES, type BunnyMediaClient } from "./bunnyMedia";
+import { deleteOwnedMediaAsset, registerBunnyMediaRoutes, resolveReadyOwnedVideoAsset } from "./bunnyMediaRoutes";
+import { withMediaReferenceLock } from "./mediaReferenceLock";
 import {
   insertWebinarSchema,
   insertRegistrationSchema,
@@ -45,6 +48,7 @@ import {
   aiResponseArtifacts,
   webhooks,
   uploadedAssets,
+  mediaAssets,
   registrations,
   offerSalesPages,
   webinarOffers,
@@ -60,7 +64,7 @@ import {
   webinarLandingPageCanPublish,
 } from "./webinarLandingPages";
 import { db } from "./db";
-import { and, eq, isNull, sql, lte, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, lte, or } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
@@ -220,9 +224,87 @@ function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContain
   };
 }
 
-function publicWebinar<T extends { vimeoUrl?: string | null }>(webinar: T): Omit<T, "vimeoUrl"> {
-  const { vimeoUrl: _vimeoUrl, ...safe } = withSafeTrackingIds(webinar as any);
+function publicWebinar<T extends { vimeoUrl?: string | null; videoAssetId?: string | null }>(webinar: T): Omit<T, "vimeoUrl" | "videoAssetId"> {
+  const { vimeoUrl: _vimeoUrl, videoAssetId: _videoAssetId, ...safe } = withSafeTrackingIds(webinar as any);
   return safe;
+}
+
+async function verifiedWebinarVideo(
+  userId: string,
+  input: { videoProvider?: unknown; videoAssetId?: unknown; vimeoUrl?: unknown; videoDuration?: unknown },
+  requireSource = false,
+) {
+  const provider = input.videoProvider === "bunny" ? "bunny" : "vimeo";
+  if (provider === "bunny") {
+    const parsedId = z.string().uuid().safeParse(input.videoAssetId);
+    if (!parsedId.success) throw new Error("Bunny videoAssetId is required");
+    const asset = await resolveReadyOwnedVideoAsset(userId, parsedId.data);
+    if (!asset) throw new Error("videoAssetId must be a ready video owned by this member");
+    return {
+      videoProvider: "bunny" as const,
+      videoAssetId: asset.id,
+      vimeoUrl: "",
+      videoDuration: asset.durationSeconds ?? 0,
+    };
+  }
+  if (!input.vimeoUrl && !requireSource) {
+    return {
+      videoProvider: "vimeo" as const,
+      videoAssetId: null,
+      vimeoUrl: "",
+      videoDuration: Number.isInteger(input.videoDuration) ? Number(input.videoDuration) : 0,
+    };
+  }
+  const parsedUrl = z.string().url().refine(url => /^https:\/\/(?:www\.)?vimeo\.com\//i.test(url)).safeParse(input.vimeoUrl);
+  if (!parsedUrl.success) throw new Error("A valid Vimeo URL is required");
+  if (input.videoAssetId) throw new Error("Vimeo webinars cannot reference a Bunny asset");
+  return {
+    videoProvider: "vimeo" as const,
+    videoAssetId: null,
+    vimeoUrl: parsedUrl.data,
+    videoDuration: Number.isInteger(input.videoDuration) ? Number(input.videoDuration) : 0,
+  };
+}
+
+async function verifyOwnedLandingBunnyVideos(userId: string, blocks: unknown) {
+  await verifyReferencedMediaUrls(blocks);
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || (block as any).type !== "video" || (block as any).provider !== "bunny") continue;
+    const asset = await resolveReadyOwnedVideoAsset(userId, (block as any).videoId);
+    if (!asset) throw new Error("Landing page Bunny videos must be ready assets owned by this member");
+  }
+}
+
+async function verifyReferencedMediaUrls(payload: unknown) {
+  const serialized = JSON.stringify(payload ?? null);
+  const invalid = await db.execute(sql`
+    SELECT 1 FROM media_assets
+     WHERE url IS NOT NULL
+       AND position(url in ${serialized}) > 0
+       AND (deleting_at IS NOT NULL OR status <> 'ready')
+    UNION ALL
+    SELECT 1 FROM deleted_media_urls
+     WHERE position(url in ${serialized}) > 0
+    LIMIT 1
+  `);
+  if (invalid.rows.length) throw new Error("Referenced media is unavailable or being deleted");
+}
+
+async function landingMediaPlayback(userId: string, blocks: unknown) {
+  const playback: Record<string, ReturnType<BunnyMediaClient["playback"]>> = {};
+  if (!Array.isArray(blocks)) return playback;
+  const ids = Array.from(new Set(blocks.flatMap(block =>
+    block && typeof block === "object" && (block as any).type === "video" && (block as any).provider === "bunny"
+      ? [(block as any).videoId]
+      : [])));
+  const client = getBunnyMediaClient();
+  for (const id of ids) {
+    if (typeof id !== "string") continue;
+    const asset = await resolveReadyOwnedVideoAsset(userId, id);
+    if (asset?.providerId) playback[id] = client.playback(asset.providerId);
+  }
+  return playback;
 }
 
 function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storage.getUser>>): boolean {
@@ -306,6 +388,7 @@ export async function registerRoutes(
   const offerCheckoutLimit = postgresRateLimit(OFFER_CHECKOUT_RATE_LIMIT);
   const supportLimit = postgresRateLimit({ namespace: "support", limit: 5, windowSeconds: 10 * 60 });
   const funnelEventLimit = postgresRateLimit({ namespace: "funnel-event", limit: 120, windowSeconds: 60 });
+  const mediaLimit = postgresRateLimit({ namespace: "media", limit: 120, windowSeconds: 60 });
   app.use("/api/admin/login", authLimit);
   app.use("/api/admin/register", authLimit);
   app.use("/api/admin/forgot-password", resetLimit);
@@ -322,7 +405,27 @@ export async function registerRoutes(
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
-  registerProductCommerceRoutes(app, requireAdmin, funnelEventLimit, offerCheckoutLimit);
+  registerProductCommerceRoutes(
+    app,
+    requireAdmin,
+    funnelEventLimit,
+    offerCheckoutLimit,
+    withMediaReferenceLock,
+    verifyReferencedMediaUrls,
+  );
+  // registerBunnyMediaRoutes owns its final handlers. Intercept its DELETE
+  // registration so the media lock wraps the returned handler Promise rather
+  // than relying on an early app.use response-lifecycle middleware.
+  const lockMediaDeletesApp = new Proxy(app, {
+    get(target, property, receiver) {
+      if (property !== "delete") return Reflect.get(target, property, receiver);
+      return (routePath: string, ...handlers: any[]) => {
+        const handler = handlers.pop();
+        return target.delete(routePath, ...handlers, withMediaReferenceLock(handler));
+      };
+    },
+  }) as Express;
+  registerBunnyMediaRoutes(lockMediaDeletesApp, requireAdmin, mediaLimit);
 
   // ============ Image Upload ============
   const uploadsDir = process.env.UPLOADS_DIR
@@ -335,55 +438,181 @@ export async function registerRoutes(
 
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: MAX_IMAGE_BYTES },
   });
 
-  app.post("/api/upload", requireAdmin, upload.single("file"), async (req: Request, res: Response) => {
+  app.post("/api/upload", requireAdmin, mediaLimit, upload.single("file"), async (req: Request, res: Response) => {
     if (!req.file) {
       return res.status(400).json({ message: "未選擇檔案" });
     }
     try {
       const verified = await verifyImageUpload(req.file.buffer);
-      await uploadStorage.put(uploadObjectKey(verified.filename), req.file.buffer);
-      const url = `/uploads/${verified.filename}`;
+      const ownerId = req.session.userId!;
+      if (!z.string().uuid().safeParse(ownerId).success) {
+        return res.status(400).json({ message: "Invalid account identifier" });
+      }
+      const storageKey = `${ownerId}/images/${verified.filename}`;
+      const client = getBunnyMediaClient();
+      const [pending] = await db.insert(mediaAssets).values({
+        userId: ownerId,
+        kind: "image",
+        provider: "bunny_storage",
+        storageKey,
+        name: req.file.originalname.slice(0, 200) || verified.filename,
+        status: "uploading",
+        sizeBytes: req.file.buffer.byteLength,
+        contentType: verified.mime,
+      }).returning();
       try {
-        await db.insert(uploadedAssets).values({
-          userId: req.session.userId!,
-          url,
-          filename: verified.filename,
+        const url = await client.putImage(storageKey, req.file.buffer, verified.mime);
+        await db.transaction(async tx => {
+          await tx.insert(uploadedAssets).values({
+            userId: ownerId,
+            url,
+            filename: verified.filename,
+            storageBackend: "bunny_storage",
+            storageKey,
+            contentType: verified.mime,
+            sizeBytes: req.file!.buffer.byteLength,
+          });
+          await tx.update(mediaAssets).set({ url, status: "ready", updatedAt: new Date() })
+            .where(and(eq(mediaAssets.id, pending.id), eq(mediaAssets.userId, ownerId)));
         });
+        return res.json({ url, filename: verified.filename });
       } catch (error) {
-        await uploadStorage.delete(uploadObjectKey(verified.filename)).catch(() => undefined);
+        await db.update(mediaAssets).set({
+          status: "failed",
+          errorCode: "IMAGE_UPLOAD_FAILED",
+          updatedAt: new Date(),
+        }).where(eq(mediaAssets.id, pending.id));
+        await client.deleteImage(storageKey).catch(() => undefined);
         throw error;
       }
-      res.json({ url, filename: verified.filename });
-    } catch (error) {
-      res.status(400).json({ message: error instanceof Error ? error.message : "圖片格式無效" });
+    } catch (error: any) {
+      const invalidImage = typeof error?.message === "string" && error.message.startsWith("只允許");
+      res.status(invalidImage ? 400 : 502).json({ message: invalidImage ? error.message : "圖片上傳失敗，請稍後再試" });
     }
   });
 
-  app.delete("/api/upload", requireAdmin, async (req: Request, res: Response) => {
+  app.delete("/api/upload", requireAdmin, mediaLimit, withMediaReferenceLock(async (req: Request, res: Response) => {
     const { url } = req.body;
-    if (url && url.startsWith("/uploads/")) {
-      const filename = url.replace("/uploads/", "");
-      if (filename && !filename.includes("/") && !filename.includes("..")) {
-        const [owned] = await db.select({ id: uploadedAssets.id }).from(uploadedAssets).where(and(
-          eq(uploadedAssets.userId, req.session.userId!),
-          eq(uploadedAssets.url, url),
-          eq(uploadedAssets.filename, filename),
-        )).limit(1);
-        // Legacy files have no trustworthy ownership metadata and are retained.
-        if (!owned) return res.status(404).json({ message: "Upload not found" });
-        await uploadStorage.delete(uploadObjectKey(filename));
-        // Keep deletion compatible with assets uploaded before App Storage migration.
-        fs.rmSync(path.join(uploadsDir, filename), { force: true });
-        await db.delete(uploadedAssets).where(and(
-          eq(uploadedAssets.id, owned.id),
-          eq(uploadedAssets.userId, req.session.userId!),
-        ));
+    if (typeof url !== "string") return res.status(400).json({ message: "Invalid upload URL" });
+    const [owned] = await db.select().from(uploadedAssets).where(and(
+      eq(uploadedAssets.userId, req.session.userId!),
+      eq(uploadedAssets.url, url),
+    )).limit(1);
+    // Legacy files without trustworthy ownership metadata are retained.
+    if (!owned) return res.status(404).json({ message: "Upload not found" });
+    const [linkedMedia] = await db.select().from(mediaAssets).where(and(
+      eq(mediaAssets.userId, req.session.userId!),
+      or(eq(mediaAssets.url, url), eq(mediaAssets.storageKey, owned.storageKey || "")),
+    )).limit(1);
+    if (linkedMedia) {
+      try {
+        const result = await deleteOwnedMediaAsset(req.session.userId!, linkedMedia.id, async () => {
+          await uploadStorage.delete(uploadObjectKey(owned.filename));
+          fs.rmSync(path.join(uploadsDir, owned.filename), { force: true });
+        });
+        if (result.outcome === "referenced") return res.status(409).json({ message: "Upload is referenced and cannot be deleted" });
+        if (result.outcome === "not_found") return res.status(404).json({ message: "Upload not found" });
+        return res.json({ success: true });
+      } catch {
+        return res.status(502).json({ message: "圖片刪除失敗，請稍後再試" });
       }
     }
+    try {
+      if (owned.storageBackend === "bunny_storage" && !owned.storageKey) {
+        return res.status(409).json({ message: "Upload metadata is incomplete" });
+      }
+      const [fence] = await db.insert(mediaAssets).values({
+        userId: req.session.userId!,
+        kind: "image",
+        provider: owned.storageBackend === "bunny_storage" ? "bunny_storage" : "legacy",
+        storageKey: owned.storageKey,
+        name: owned.filename,
+        status: "ready",
+        sizeBytes: owned.sizeBytes || 0,
+        contentType: owned.contentType,
+        url,
+      }).returning();
+      const result = await deleteOwnedMediaAsset(req.session.userId!, fence.id, async () => {
+        await uploadStorage.delete(uploadObjectKey(owned.filename));
+        fs.rmSync(path.join(uploadsDir, owned.filename), { force: true });
+      });
+      if (result.outcome === "referenced") return res.status(409).json({ message: "Upload is referenced and cannot be deleted" });
+      if (result.outcome === "not_found") return res.status(404).json({ message: "Upload not found" });
+    } catch {
+      return res.status(502).json({ message: "圖片刪除失敗，請稍後再試" });
+    }
     res.json({ success: true });
+  }));
+
+  // Explicit, owner-scoped copy migration. It is never run at startup and
+  // deliberately leaves the original object in place. Existing /uploads URLs
+  // continue to resolve through the backend discriminator below.
+  app.post("/api/media/migrate-images", requireAdmin, async (req: Request, res: Response) => {
+    const ownerId = req.session.userId!;
+    if (!z.string().uuid().safeParse(ownerId).success) return res.status(400).json({ message: "Invalid account identifier" });
+    const limit = Math.min(50, Math.max(1, Number(req.body?.limit) || 20));
+    const candidates = await db.select().from(uploadedAssets).where(and(
+      eq(uploadedAssets.userId, ownerId),
+      inArray(uploadedAssets.storageBackend, ["legacy", "app_storage"]),
+    )).limit(limit);
+    let migrated = 0;
+    const errors: Array<{ id: string; name: string; message: string }> = [];
+    for (const asset of candidates) {
+      if (!/^[A-Za-z0-9._-]+$/.test(asset.filename)) {
+        errors.push({ id: asset.id, name: asset.filename, message: "檔名格式無效，已保留原始圖片" });
+        continue;
+      }
+      let storageKey: string | undefined;
+      const client = getBunnyMediaClient();
+      try {
+        const contents = await uploadStorage.get(uploadObjectKey(asset.filename));
+        if (!contents) {
+          errors.push({ id: asset.id, name: asset.filename, message: "找不到原始圖片，未進行遷移" });
+          continue;
+        }
+        if (contents.byteLength > MAX_IMAGE_BYTES) {
+          errors.push({ id: asset.id, name: asset.filename, message: "圖片超過大小限制，已保留原始圖片" });
+          continue;
+        }
+        const verified = await verifyImageUpload(contents);
+        storageKey = `${ownerId}/images/migrated-${asset.id}.${verified.extension}`;
+        await client.putImage(storageKey, contents, verified.mime);
+        const copied = await client.getImage(storageKey);
+        if (!copied || copied.byteLength !== contents.byteLength ||
+            !crypto.timingSafeEqual(crypto.createHash("sha256").update(copied).digest(), crypto.createHash("sha256").update(contents).digest())) {
+          throw new Error("Copy verification failed");
+        }
+        await db.transaction(async tx => {
+          await tx.update(uploadedAssets).set({
+            storageBackend: "bunny_storage",
+            storageKey,
+            contentType: verified.mime,
+            sizeBytes: contents.byteLength,
+          }).where(and(eq(uploadedAssets.id, asset.id), eq(uploadedAssets.userId, ownerId)));
+          await tx.insert(mediaAssets).values({
+            userId: ownerId,
+            kind: "image",
+            provider: "bunny_storage",
+            storageKey,
+            name: asset.filename,
+            status: "ready",
+            sizeBytes: contents.byteLength,
+            contentType: verified.mime,
+            url: asset.url,
+          });
+        });
+        migrated++;
+      } catch {
+        // Best-effort cleanup only; metadata remains on the old backend unless
+        // the copy and byte verification both completed.
+        if (storageKey) await client.deleteImage(storageKey).catch(() => undefined);
+        errors.push({ id: asset.id, name: asset.filename, message: "圖片遷移或驗證失敗，已保留原始圖片" });
+      }
+    }
+    res.json({ migrated, examined: candidates.length, errors });
   });
 
   // Uploaded objects are private; all reads go through this route so storage
@@ -392,6 +621,19 @@ export async function registerRoutes(
     const filename = req.params.filename;
     if (typeof filename !== "string" || !filename || filename.includes("/") || filename.includes("..")) return res.status(404).end();
     try {
+      const [asset] = await db.select().from(uploadedAssets).where(eq(uploadedAssets.filename, filename)).limit(1);
+      if (asset?.storageBackend === "bunny_storage" && asset.storageKey) {
+        try {
+          const migrated = await getBunnyMediaClient().getImage(asset.storageKey);
+          if (!migrated) return res.status(404).end();
+          res.setHeader("Content-Type", asset.contentType || safeUploadContentType(filename));
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+          return res.send(migrated);
+        } catch {
+          return res.status(502).json({ message: "圖片暫時無法讀取" });
+        }
+      }
       const contents = await uploadStorage.get(uploadObjectKey(filename));
       if (!contents) return next();
       res.setHeader("Content-Type", safeUploadContentType(filename));
@@ -1405,7 +1647,7 @@ export async function registerRoutes(
     res.json(isAdministrator ? withSafeTrackingIds(webinar) : publicWebinar(webinar));
   });
 
-  app.post("/api/webinars", requireAdmin, async (req, res) => {
+  app.post("/api/webinars", requireAdmin, withMediaReferenceLock(async (req, res) => {
     try {
       const user = await storage.getUser(req.session.userId!);
       if (!user || !user.isActive) {
@@ -1416,12 +1658,14 @@ export async function registerRoutes(
         userId: req.session.userId,
         publishStatus: "draft",
       });
-      const webinar = await storage.createWebinar(data);
+      await verifyReferencedMediaUrls(data);
+      const video = await verifiedWebinarVideo(req.session.userId!, data);
+      const webinar = await storage.createWebinar({ ...data, ...video });
       res.json(webinar);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   const aiWebinarWizardSchema = z.object({
     title: z.string().trim().min(2).max(160),
@@ -1432,18 +1676,24 @@ export async function registerRoutes(
     coverImage: z.union([z.literal(""), z.string().url().refine((url) => /^https:\/\//i.test(url), "Banner 網址只允許 HTTPS"), z.string().regex(/^\/uploads\/[A-Za-z0-9._-]+$/, "Banner 路徑無效")]).default(""),
     sourceContent: z.string().max(40000).default(""),
     vimeoUrl: z.union([z.literal(""), z.string().url().refine((url) => /^https:\/\/(?:www\.)?vimeo\.com\//i.test(url), "請輸入有效的 Vimeo 網址")]).default(""),
+    videoProvider: z.enum(["vimeo", "bunny"]).default("vimeo"),
+    videoAssetId: z.string().uuid().optional().nullable(),
     startTime: z.coerce.date(),
     videoDuration: z.coerce.number().int().min(0).max(86400).default(0),
   }).strict();
 
-  app.post("/api/webinars/ai-wizard", requireAdmin, async (req, res) => {
+  app.post("/api/webinars/ai-wizard", requireAdmin, withMediaReferenceLock(async (req, res) => {
     const ownerId = req.session.userId!;
     const owner = await storage.getUser(ownerId);
     if (!owner) return res.status(401).json({ message: "Unauthorized" });
     if (!owner.isActive) return res.status(403).json({ message: "Account is suspended" });
     let input: z.infer<typeof aiWebinarWizardSchema>;
+    let video: Awaited<ReturnType<typeof verifiedWebinarVideo>>;
     try {
       input = aiWebinarWizardSchema.parse(req.body);
+      await verifyReferencedMediaUrls(input);
+      video = await verifiedWebinarVideo(ownerId, input);
+      input.videoDuration = video.videoDuration;
     } catch (error: any) {
       return res.status(400).json({ message: error.message });
     }
@@ -1476,6 +1726,8 @@ export async function registerRoutes(
         description: plan.description,
         coverImage: input.coverImage || undefined,
         vimeoUrl: input.vimeoUrl,
+        videoProvider: video.videoProvider,
+        videoAssetId: video.videoAssetId,
         startTime: input.startTime,
         status: "scheduled",
         publishStatus: "draft",
@@ -1533,14 +1785,14 @@ export async function registerRoutes(
           : "AI 建立失敗，點數退款處理異常，系統已通知客服協助處理",
       });
     }
-  });
+  }));
 
   app.delete("/api/webinars/:id", requireWebinarOwner, async (req, res) => {
     await storage.deleteWebinar(req.params.id as string);
     res.json({ success: true });
   });
 
-  app.patch("/api/webinars/:id", requireWebinarOwner, async (req, res) => {
+  app.patch("/api/webinars/:id", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const data = { ...req.body };
       delete data.publishStatus;
@@ -1557,6 +1809,19 @@ export async function registerRoutes(
         if ("metaPixelId" in data) data.metaPixelId = tracking.metaPixelId;
         if ("gtmContainerId" in data) data.gtmContainerId = tracking.gtmContainerId;
       }
+      const existing = await storage.getWebinar(req.params.id as string);
+      if (!existing) return res.status(404).json({ message: "Webinar not found" });
+      await verifyReferencedMediaUrls(data);
+      if (["videoProvider", "videoAssetId", "vimeoUrl", "videoDuration"].some(key => key in data)) {
+        if (!existing.userId) throw new Error("Webinar owner is missing");
+        const video = await verifiedWebinarVideo(existing.userId, {
+          videoProvider: data.videoProvider ?? existing.videoProvider,
+          videoAssetId: data.videoAssetId === undefined ? existing.videoAssetId : data.videoAssetId,
+          vimeoUrl: data.vimeoUrl === undefined ? existing.vimeoUrl : data.vimeoUrl,
+          videoDuration: data.videoDuration === undefined ? existing.videoDuration : data.videoDuration,
+        });
+        Object.assign(data, video);
+      }
       const webinar = await storage.updateWebinar(req.params.id as string, data);
       if (!webinar) {
         return res.status(404).json({ message: "Webinar not found" });
@@ -1565,10 +1830,10 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   // ============ Publish / Unpublish Webinar ============
-  app.post("/api/webinars/:id/publish", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/publish", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const targetWebinar = await storage.getWebinar(req.params.id as string);
       if (!targetWebinar?.userId) return res.status(404).json({ message: "Webinar not found" });
@@ -1580,6 +1845,8 @@ export async function registerRoutes(
       if (!entitlement.active) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
+      await verifyReferencedMediaUrls(targetWebinar);
+      await verifiedWebinarVideo(targetWebinar.userId, targetWebinar, true);
       const maxPublished = entitlement.maxWebinars;
       const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string, maxPublished);
       if (publishResult.limitExceeded) {
@@ -1593,7 +1860,7 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   app.post("/api/webinars/:id/unpublish", requireWebinarOwner, async (req, res) => {
     try {
@@ -1619,7 +1886,16 @@ export async function registerRoutes(
         blocks: defaultWebinarLandingTemplate(webinar), brandSettings: DEFAULT_WEBINAR_LANDING_BRAND,
       });
     }
-    res.json({ webinar: withSafeTrackingIds(webinar), landingPage: page, preview: true });
+    try {
+      res.json({
+        webinar: withSafeTrackingIds(webinar),
+        landingPage: page,
+        mediaPlayback: await landingMediaPlayback(webinar.userId!, page.blocks),
+        preview: true,
+      });
+    } catch {
+      return res.status(503).json({ message: "Secure video playback is unavailable", code: "MEDIA_PLAYBACK_NOT_CONFIGURED" });
+    }
   });
 
   app.get("/api/webinars/:id/landing-page", async (req, res) => {
@@ -1629,10 +1905,19 @@ export async function registerRoutes(
     if (!hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "找不到說明會" });
     const page = await storage.getPublicWebinarLandingPage(webinar.id);
     if (!page) return res.status(404).json({ message: "說明會落地頁尚未發布" });
-    res.json({ webinar: publicWebinar(webinar), landingPage: page, preview: false });
+    try {
+      res.json({
+        webinar: publicWebinar(webinar),
+        landingPage: page,
+        mediaPlayback: await landingMediaPlayback(webinar.userId!, page.blocks),
+        preview: false,
+      });
+    } catch {
+      return res.status(503).json({ message: "Secure video playback is unavailable", code: "MEDIA_PLAYBACK_NOT_CONFIGURED" });
+    }
   });
 
-  app.post("/api/webinars/:id/landing-page", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/landing-page", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const webinar = await storage.getWebinar(req.params.id as string);
       if (!webinar) return res.status(404).json({ message: "找不到說明會" });
@@ -1641,15 +1926,19 @@ export async function registerRoutes(
       const input = req.body && Object.keys(req.body).length
         ? createWebinarLandingPageSchema.parse(req.body)
         : { title: webinar.title, blocks: defaultWebinarLandingTemplate(webinar), brandSettings: DEFAULT_WEBINAR_LANDING_BRAND };
+      await verifyOwnedLandingBunnyVideos(webinar.userId!, input.blocks);
       res.status(201).json(await storage.createWebinarLandingPage({ webinarId: webinar.id, ...input }));
     } catch (error: any) {
       res.status(400).json({ message: error.message || "落地頁資料格式錯誤" });
     }
-  });
+  }));
 
-  app.patch("/api/webinars/:id/landing-page", requireWebinarOwner, async (req, res) => {
+  app.patch("/api/webinars/:id/landing-page", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const input = updateWebinarLandingPageSchema.parse(req.body);
+      const targetWebinar = await storage.getWebinar(req.params.id as string);
+      if (!targetWebinar?.userId) return res.status(404).json({ message: "找不到說明會" });
+      if (input.blocks) await verifyOwnedLandingBunnyVideos(targetWebinar.userId, input.blocks);
       const page = await storage.updateWebinarLandingPage(req.params.id as string, input.version, {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.blocks !== undefined ? { blocks: input.blocks } : {}),
@@ -1658,9 +1947,9 @@ export async function registerRoutes(
       if (!page) return res.status(409).json({ message: "版本已更新，請重新載入後再儲存", code: "VERSION_CONFLICT" });
       res.json(page);
     } catch (error: any) { res.status(400).json({ message: error.message || "落地頁資料格式錯誤" }); }
-  });
+  }));
 
-  app.post("/api/webinars/:id/landing-page/publish", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/landing-page/publish", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const input = webinarLandingVersionSchema.parse(req.body);
       const webinar = await storage.getWebinar(req.params.id as string);
@@ -1668,11 +1957,12 @@ export async function registerRoutes(
       if (!webinar || !page) return res.status(404).json({ message: "找不到落地頁" });
       const allowed = webinarLandingPageCanPublish(webinar, page.blocks);
       if (!allowed.ok) return res.status(409).json({ message: allowed.message });
+      await verifyOwnedLandingBunnyVideos(webinar.userId!, allowed.blocks);
       const published = await storage.setWebinarLandingPageStatus(webinar.id, input.version, "published");
       if (!published) return res.status(409).json({ message: "版本衝突或說明會已取消發布", code: "VERSION_CONFLICT" });
       res.json(published);
     } catch (error: any) { res.status(400).json({ message: error.message || "發布資料格式錯誤" }); }
-  });
+  }));
 
   app.post("/api/webinars/:id/landing-page/unpublish", requireWebinarOwner, async (req, res) => {
     try {
@@ -1681,6 +1971,24 @@ export async function registerRoutes(
       if (!page) return res.status(409).json({ message: "版本衝突，請重新載入後再試", code: "VERSION_CONFLICT" });
       res.json(page);
     } catch (error: any) { res.status(400).json({ message: error.message || "取消發布資料格式錯誤" }); }
+  });
+
+  app.get("/api/webinars/:id/landing-media/:assetId/playback", mediaLimit, async (req, res) => {
+    const webinar = await storage.getWebinar(req.params.id as string);
+    if (!webinar?.userId || webinar.publishStatus !== "published") return res.status(404).json({ message: "Media not found" });
+    const owner = await storage.getUser(webinar.userId);
+    if (!hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "Media not found" });
+    const page = await storage.getPublicWebinarLandingPage(webinar.id);
+    const referenced = Array.isArray(page?.blocks) && page.blocks.some(block =>
+      block.type === "video" && block.provider === "bunny" && block.videoId === req.params.assetId);
+    if (!referenced) return res.status(404).json({ message: "Media not found" });
+    const asset = await resolveReadyOwnedVideoAsset(webinar.userId, req.params.assetId as string);
+    if (!asset?.providerId) return res.status(404).json({ message: "Media not found" });
+    try {
+      return res.json(getBunnyMediaClient().playback(asset.providerId));
+    } catch {
+      return res.status(503).json({ message: "Secure video playback is unavailable", code: "MEDIA_PLAYBACK_NOT_CONFIGURED" });
+    }
   });
 
   // ============ Stripe Routes ============
@@ -2266,18 +2574,19 @@ export async function registerRoutes(
     res.json(fakeUsers);
   });
 
-  app.post("/api/webinars/:id/fake-users", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/fake-users", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const data = insertFakeUserSchema.parse({
         ...req.body,
         webinarId: req.params.id
       });
+      await verifyReferencedMediaUrls(data.avatar);
       const fakeUser = await storage.createFakeUser(data);
       res.json(fakeUser);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   app.delete("/api/webinars/:id/fake-users/:userId", requireWebinarOwner, async (req, res) => {
     const deleted = await storage.deleteFakeUser(req.params.id as string, req.params.userId as string);
@@ -2589,10 +2898,11 @@ export async function registerRoutes(
     res.json(page);
   });
 
-  app.post("/api/webinars/:id/sales-pages", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/sales-pages", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const webinarId = req.params.id as string;
       const input = createSalesPageSchema.parse(req.body);
+      await verifyReferencedMediaUrls(input.blocks);
       const offer = await storage.getWebinarOffer(input.offerId);
       const webinar = await storage.getWebinar(webinarId);
       if (!offer || !offer.active || !webinar?.userId || await resolveOfferOwnerId(offer) !== webinar.userId) {
@@ -2614,13 +2924,14 @@ export async function registerRoutes(
       }
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
-  app.patch("/api/webinars/:id/sales-pages/:pageId", requireWebinarOwner, async (req, res) => {
+  app.patch("/api/webinars/:id/sales-pages/:pageId", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const webinarId = req.params.id as string;
       const pageId = req.params.pageId as string;
       const input = updateSalesPageSchema.parse(req.body);
+      if (input.blocks) await verifyReferencedMediaUrls(input.blocks);
       const existing = await storage.getOfferSalesPage(webinarId, pageId);
       if (!existing) return res.status(404).json({ message: "Sales page not found" });
       if (existing.status === "published" && (
@@ -2644,9 +2955,9 @@ export async function registerRoutes(
       if (error?.code === "23505") return res.status(409).json({ message: "Slug is already in use" });
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
-  app.post("/api/webinars/:id/sales-pages/:pageId/publish", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/sales-pages/:pageId/publish", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const webinarId = req.params.id as string;
       const pageId = req.params.pageId as string;
@@ -2666,13 +2977,14 @@ export async function registerRoutes(
       }
       const allowed = salesPageCanPublish(webinar, offer, page.orderedBlocks);
       if (!allowed.ok) return res.status(409).json({ message: allowed.message });
+      await verifyReferencedMediaUrls(allowed.blocks);
       const published = await storage.setOfferSalesPageStatus(webinarId, pageId, input.version, "published");
       if (!published) return res.status(409).json({ message: "Version conflict or publication requirements changed", code: "VERSION_CONFLICT" });
       res.json(published);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   app.post("/api/webinars/:id/sales-pages/:pageId/unpublish", requireWebinarOwner, async (req, res) => {
     try {
@@ -3508,17 +3820,20 @@ export async function registerRoutes(
   });
 
   // ============ Webinar Duplication ============
-  app.post("/api/webinars/:id/duplicate", requireWebinarOwner, async (req, res) => {
+  app.post("/api/webinars/:id/duplicate", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
     try {
       const sourceWebinar = await storage.getWebinar(req.params.id as string);
       if (!sourceWebinar) {
         return res.status(404).json({ message: "Webinar not found" });
       }
+      await verifyReferencedMediaUrls(sourceWebinar);
 
       const newWebinar = await storage.createWebinar({
         title: `${sourceWebinar.title} (副本)`,
         description: sourceWebinar.description || undefined,
         vimeoUrl: sourceWebinar.vimeoUrl,
+        videoProvider: sourceWebinar.videoProvider,
+        videoAssetId: sourceWebinar.videoAssetId,
         coverImage: sourceWebinar.coverImage || undefined,
         startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         videoDuration: sourceWebinar.videoDuration || undefined,
@@ -3543,6 +3858,7 @@ export async function registerRoutes(
 
       const fakeUserIdMap = new Map<string, string>();
       for (const fu of sourceFakeUsers) {
+        await verifyReferencedMediaUrls(fu.avatar);
         const newFu = await storage.createFakeUser({
           webinarId: newWebinar.id,
           name: fu.name,
@@ -3610,7 +3926,7 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
-  });
+  }));
 
   // ============ Public: Available Sessions ============
   app.get("/api/webinars/:id/registration-count", requirePublishedOrOwner, async (req, res) => {
@@ -3659,6 +3975,24 @@ export async function registerRoutes(
     if (!webinar) return res.status(404).json({ message: "Webinar not found" });
     const eligibility = webinarWatchEligibility(webinar, registration);
     const { selectedSession, replayEndsAt, canWatch } = eligibility;
+    let playback: Record<string, unknown> | undefined;
+    if (canWatch) {
+      if (webinar.videoProvider === "bunny") {
+        if (!webinar.videoAssetId || !webinar.userId) return res.status(409).json({ message: "Webinar video is unavailable" });
+        const asset = await resolveReadyOwnedVideoAsset(webinar.userId, webinar.videoAssetId);
+        if (!asset?.providerId) return res.status(409).json({ message: "Webinar video is unavailable" });
+        try {
+          playback = getBunnyMediaClient().playback(asset.providerId);
+        } catch {
+          return res.status(503).json({
+            message: "Secure video playback is unavailable",
+            code: "MEDIA_PLAYBACK_NOT_CONFIGURED",
+          });
+        }
+      } else {
+        playback = { provider: "vimeo", url: webinar.vimeoUrl };
+      }
+    }
     res.json({
       registrationId: registration.id,
       selectedSession,
@@ -3667,7 +4001,10 @@ export async function registerRoutes(
       liveEndsAt: eligibility.liveEndsAt,
       replayEndsAt,
       mode: selectedSession ? "scheduled" : "onDemand",
-      ...(canWatch ? { vimeoUrl: webinar.vimeoUrl } : {}),
+      ...(canWatch ? {
+        playback,
+        ...(webinar.videoProvider === "vimeo" ? { vimeoUrl: webinar.vimeoUrl } : {}),
+      } : {}),
     });
   });
 

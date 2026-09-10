@@ -21,6 +21,8 @@ import { isPlaybackPermitted, resolveViewerAccessState } from "@/lib/watch-acces
 import { ViewerAccessState } from "@/components/viewer-access-state";
 import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { ProviderPlayer } from "@/components/provider-player";
+import type { PlaybackSource } from "@/lib/media";
 
 interface WebSocketMessage {
   type: string;
@@ -50,7 +52,6 @@ export default function WebinarRoom() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
   const playerRef = useRef<any>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -111,6 +112,8 @@ export default function WebinarRoom() {
   });
   const canWatch = isPlaybackPermitted(accessKind);
   const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
+  const effectivePlayback = canWatch && watchToken ? watchState?.playback : undefined;
+  const hasPlayback = !!(effectivePlayback?.url || effectivePlayback?.embedUrl || effectiveVimeoUrl);
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -218,72 +221,6 @@ export default function WebinarRoom() {
     const player = playerRef.current;
     if (player) player.pause().catch(() => {});
   }, [canWatch]);
-
-  useEffect(() => {
-    if (!effectiveVimeoUrl || !isJoined || waitingForStart || !canWatch || watchStateLoading) return;
-
-    const script = document.createElement("script");
-    script.src = "https://player.vimeo.com/api/player.js";
-    script.async = true;
-    document.body.appendChild(script);
-
-    script.onload = () => {
-      if (iframeRef.current && (window as any).Vimeo) {
-        const player = new (window as any).Vimeo.Player(iframeRef.current);
-        playerRef.current = player;
-
-        // Simulated-live: seek to where the show would be NOW based on the viewer's
-        // first-join time. Leaving & returning lands at the live-equivalent position
-        // (the show kept "airing" while they were away), not back at the start.
-        try {
-          const startKey = `liveStart_${id}_${sessionId}`;
-          let startedAt = Number(localStorage.getItem(startKey) || 0);
-          if (!startedAt) {
-            startedAt = Date.now();
-            localStorage.setItem(startKey, String(startedAt));
-          }
-          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-          if (elapsed > 1) {
-            player.getDuration().then((dur: number) => {
-              const target = dur > 0 ? Math.min(elapsed, Math.max(0, dur - 2)) : elapsed;
-              player.setCurrentTime(target).catch(() => {});
-            }).catch(() => {
-              player.setCurrentTime(elapsed).catch(() => {});
-            });
-          }
-        } catch {}
-
-        player.on("timeupdate", (data: { seconds: number; duration?: number }) => {
-          setCurrentTime(Math.floor(data.seconds));
-          if (data.duration) setVideoDuration(data.duration);
-        });
-
-        player.on("play", () => setIsPlaying(true));
-        player.on("pause", () => setIsPlaying(false));
-        player.on("ended", () => {
-          setVideoEnded(true);
-          setIsPlaying(false);
-          Promise.all([player.getCurrentTime(), player.getDuration()])
-            .then(([position, duration]: [number, number]) => {
-              trackWebinarEvent(id, "video_progress", {
-                positionSeconds: duration || position,
-                metadata: { progressPercent: 100 },
-              });
-            })
-            .catch(() => {});
-          if (feedbackSurvey && feedbackSurvey.isActive && !surveySubmitted) {
-            setShowSurvey(true);
-          }
-        });
-      }
-    };
-
-    return () => {
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-    };
-  }, [effectiveVimeoUrl, isJoined, waitingForStart, savedProgress, canWatch, watchStateLoading]);
 
   useEffect(() => {
     if (!id || !isJoined || !videoDuration) return;
@@ -583,6 +520,30 @@ export default function WebinarRoom() {
     return pathMatch ? pathMatch[1] : null;
   };
 
+  const playbackSource: PlaybackSource | undefined = effectivePlayback || (effectiveVimeoUrl ? {
+    provider: "vimeo",
+    url: `https://player.vimeo.com/video/${extractVimeoId(effectiveVimeoUrl)}?${extractVimeoHash(effectiveVimeoUrl) ? `h=${extractVimeoHash(effectiveVimeoUrl)}&` : ""}autoplay=0&title=0&byline=0&portrait=0&controls=0`,
+  } : undefined);
+
+  const handlePlayerReady = (player: any) => {
+    playerRef.current = player;
+    try {
+      const startKey = `liveStart_${id}_${sessionId}`;
+      let startedAt = Number(localStorage.getItem(startKey) || 0);
+      if (!startedAt) {
+        startedAt = Date.now();
+        localStorage.setItem(startKey, String(startedAt));
+      }
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      if (elapsed > 1) {
+        Promise.resolve(player.getDuration()).then((duration: number) => {
+          const target = duration > 0 ? Math.min(elapsed, Math.max(0, duration - 2)) : elapsed;
+          return player.setCurrentTime(target);
+        }).catch(() => {});
+      }
+    } catch {}
+  };
+
   const formatStartTime = (date: Date | string) => {
     return new Date(date).toLocaleString("zh-TW", {
       month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
@@ -624,7 +585,7 @@ export default function WebinarRoom() {
   );
 
   if (!isJoined) {
-    if (!canWatch || !effectiveVimeoUrl) {
+    if (!canWatch || !hasPlayback) {
       return (
         <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || {}}>
           {trackingProvider}
@@ -703,8 +664,6 @@ export default function WebinarRoom() {
   const surveyQuestions = feedbackSurvey?.questions as { id: string; type: string; question: string; options?: string[]; required: boolean }[] || [];
 
   const brandAccentStyle = brandSettings?.primaryColor ? { borderColor: brandSettings.primaryColor } : {};
-  const autoplayParam = "0";
-
   return (
     <div className="min-h-screen bg-background">
       {trackingProvider}
@@ -717,14 +676,25 @@ export default function WebinarRoom() {
       <div className={`flex flex-col lg:flex-row ${brandSettings?.logo ? "h-[calc(100dvh-2.5rem)]" : "h-[100dvh]"}`}>
         <div className="relative bg-black w-full aspect-video lg:aspect-auto lg:flex-1 lg:h-full lg:min-h-0">
           <div className="relative w-full h-full">
-            <iframe
-              ref={iframeRef}
-              src={`https://player.vimeo.com/video/${extractVimeoId(effectiveVimeoUrl!)}?${extractVimeoHash(effectiveVimeoUrl!) ? `h=${extractVimeoHash(effectiveVimeoUrl!)}&` : ""}autoplay=${autoplayParam}&title=0&byline=0&portrait=0&controls=0`}
+            {playbackSource && <ProviderPlayer
+              source={playbackSource}
+              renewSource={effectivePlayback?.provider === "bunny" ? async () => {
+                const result = await refetchWatchState();
+                if (!result.data?.playback) throw new Error("403: 播放授權已失效");
+                return result.data.playback;
+              } : undefined}
               className="absolute inset-0 w-full h-full"
-              allow="autoplay; fullscreen; picture-in-picture"
-              allowFullScreen
-              data-testid="video-player"
-            />
+              onReady={handlePlayerReady}
+              onTimeUpdate={(seconds, duration) => { setCurrentTime(Math.floor(seconds)); if (duration) setVideoDuration(duration); }}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => {
+                setVideoEnded(true);
+                setIsPlaying(false);
+                trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } });
+                if (feedbackSurvey?.isActive && !surveySubmitted) setShowSurvey(true);
+              }}
+            />}
             {isPlaying ? (
               <div
                 className="absolute inset-0 cursor-default"

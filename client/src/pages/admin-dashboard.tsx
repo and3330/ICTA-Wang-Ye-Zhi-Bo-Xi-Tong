@@ -24,10 +24,11 @@ import {
   Plus, Video, Calendar, Crown,
   ExternalLink, Loader2, LogOut, Radio, Copy,
   BarChart3, Users, Pencil, Share2, MessageCircle,
-  Eye, Code, Trash2, MoreVertical, Languages, Sparkles, ImagePlus, Upload, X, ShoppingBag
+  Eye, Code, Trash2, MoreVertical, Languages, Sparkles, ImagePlus, Upload, X, ShoppingBag, FolderOpen
 } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
+import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
 
 type WebinarStats = Record<string, {
   registered: number;
@@ -338,7 +339,9 @@ function createWebinarSchema(s: typeof t["zh-TW"]) {
   return z.object({
     title: z.string().min(1, s.validationTitle),
     description: z.string().optional(),
-    vimeoUrl: z.string().url(s.validationVimeoUrl),
+    vimeoUrl: z.union([z.string().url(s.validationVimeoUrl), z.literal("")]),
+    videoProvider: z.enum(["vimeo", "bunny"]).default("vimeo"),
+    videoAssetId: z.string().uuid().optional(),
     startTime: z.string().min(1, s.validationStartTime),
     coverImage: z.string().optional(),
   });
@@ -354,6 +357,7 @@ export default function AdminDashboard() {
   const [isUploadingCreateCover, setIsUploadingCreateCover] = useState(false);
   const createCoverFileRef = useRef<HTMLInputElement>(null);
   const [isUploadingWizardBanner, setIsUploadingWizardBanner] = useState(false);
+  const [imagePickerTarget, setImagePickerTarget] = useState<"create" | "wizard" | null>(null);
   const wizardBannerFileRef = useRef<HTMLInputElement>(null);
   const [aiWizardStep, setAiWizardStep] = useState(1);
   const [aiWizard, setAiWizard] = useState({
@@ -364,6 +368,8 @@ export default function AdminDashboard() {
     coverImage: "",
     sourceContent: "",
     vimeoUrl: "",
+    videoProvider: "vimeo" as "vimeo" | "bunny",
+    videoAssetId: undefined as string | undefined,
     startTime: "",
     videoDurationMinutes: "",
   });
@@ -498,6 +504,8 @@ export default function AdminDashboard() {
       title: "",
       description: "",
       vimeoUrl: "",
+      videoProvider: "vimeo",
+      videoAssetId: undefined,
       startTime: "",
       coverImage: "",
     },
@@ -543,10 +551,12 @@ export default function AdminDashboard() {
         coverImage: aiWizard.coverImage,
         sourceContent: aiWizard.sourceContent,
         vimeoUrl: aiWizard.vimeoUrl,
+        videoProvider: aiWizard.videoProvider,
+        videoAssetId: aiWizard.videoAssetId,
         startTime: new Date(aiWizard.startTime).toISOString(),
-        videoDuration: aiWizard.videoDurationMinutes
+        videoDuration: aiWizard.videoProvider === "vimeo" && aiWizard.videoDurationMinutes
           ? Math.round(Number(aiWizard.videoDurationMinutes) * 60)
-          : 0,
+          : undefined,
       });
       return response.json() as Promise<{
         webinar: Webinar;
@@ -569,6 +579,8 @@ export default function AdminDashboard() {
         coverImage: "",
         sourceContent: "",
         vimeoUrl: "",
+        videoProvider: "vimeo",
+        videoAssetId: undefined,
         startTime: "",
         videoDurationMinutes: "",
       });
@@ -833,6 +845,9 @@ export default function AdminDashboard() {
             <Button variant="ghost" size="sm" onClick={() => setLocation("/admin/products")} data-testid="button-products">
               <ShoppingBag className="h-4 w-4 mr-1" />商品
             </Button>
+            <Button variant="ghost" size="sm" onClick={() => setLocation("/admin/media")} data-testid="button-media-library">
+              <FolderOpen className="h-4 w-4 mr-1" />素材庫
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -864,6 +879,16 @@ export default function AdminDashboard() {
       </header>
 
       <main className="container mx-auto px-4 py-8 space-y-6">
+        <MediaPicker
+          open={!!imagePickerTarget}
+          onOpenChange={(open) => !open && setImagePickerTarget(null)}
+          kind="image"
+          onSelect={(asset) => {
+            if (!asset.url) return;
+            if (imagePickerTarget === "create") form.setValue("coverImage", asset.url);
+            if (imagePickerTarget === "wizard") setAiWizard((current) => ({ ...current, coverImage: asset.url! }));
+          }}
+        />
         <Dialog open={isEcpayOpen} onOpenChange={setIsEcpayOpen}>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
@@ -1264,6 +1289,9 @@ export default function AdminDashboard() {
                         <Upload className="mr-2 h-4 w-4" />更換 Banner
                       </Button>
                     )}
+                    <Button type="button" variant="outline" size="sm" onClick={() => setImagePickerTarget("wizard")} data-testid="button-ai-wizard-pick-banner">
+                      <FolderOpen className="mr-2 h-4 w-4" />從素材庫選擇
+                    </Button>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="ai-wizard-audience">目標受眾 *</Label>
@@ -1337,14 +1365,19 @@ export default function AdminDashboard() {
                       {aiWizard.sourceContent.length.toLocaleString()} / 40,000 字
                     </p>
                   </div>
-                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="grid sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label htmlFor="ai-wizard-vimeo">Vimeo 網址（選填）</Label>
-                      <Input
-                        id="ai-wizard-vimeo"
-                        value={aiWizard.vimeoUrl}
-                        onChange={(event) => setAiWizard((current) => ({ ...current, vimeoUrl: event.target.value }))}
-                        placeholder="https://vimeo.com/..."
+                      <Label>影片來源（選填）</Label>
+                      <VideoSourcePicker
+                        vimeoUrl={aiWizard.vimeoUrl}
+                        videoAssetId={aiWizard.videoAssetId}
+                        onChange={(source) => setAiWizard((current) => ({
+                          ...current,
+                          vimeoUrl: source.vimeoUrl,
+                          videoProvider: source.videoProvider,
+                          videoAssetId: source.videoAssetId,
+                          videoDurationMinutes: source.durationSeconds ? String(Math.ceil(source.durationSeconds / 60)) : current.videoDurationMinutes,
+                        }))}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1357,7 +1390,9 @@ export default function AdminDashboard() {
                         value={aiWizard.videoDurationMinutes}
                         onChange={(event) => setAiWizard((current) => ({ ...current, videoDurationMinutes: event.target.value }))}
                         placeholder="例如：45"
+                        disabled={aiWizard.videoProvider === "bunny"}
                       />
+                      {aiWizard.videoProvider === "bunny" && <p className="text-xs text-muted-foreground">自有影片長度由伺服器處理完成後提供。</p>}
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -1546,19 +1581,19 @@ export default function AdminDashboard() {
                       </FormItem>
                     )}
                   />
-                  <FormField
-                    control={form.control}
-                    name="vimeoUrl"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{s.labelVimeoUrl}</FormLabel>
-                        <FormControl>
-                          <Input placeholder="https://vimeo.com/123456789" {...field} data-testid="input-vimeo-url" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <FormItem>
+                    <FormLabel>影片來源</FormLabel>
+                    <VideoSourcePicker
+                      vimeoUrl={form.watch("vimeoUrl")}
+                      videoAssetId={form.watch("videoAssetId")}
+                      onChange={(source) => {
+                        form.setValue("videoProvider", source.videoProvider);
+                        form.setValue("vimeoUrl", source.vimeoUrl, { shouldValidate: true });
+                        form.setValue("videoAssetId", source.videoAssetId);
+                      }}
+                    />
+                    <FormMessage>{form.formState.errors.vimeoUrl?.message}</FormMessage>
+                  </FormItem>
                   <FormField
                     control={form.control}
                     name="startTime"
@@ -1636,6 +1671,9 @@ export default function AdminDashboard() {
                             <Upload className="mr-2 h-4 w-4" />更換 Banner
                           </Button>
                         )}
+                        <Button type="button" variant="outline" size="sm" onClick={() => setImagePickerTarget("create")} data-testid="button-pick-create-cover">
+                          <FolderOpen className="mr-2 h-4 w-4" />從素材庫選擇
+                        </Button>
                         <FormMessage />
                       </FormItem>
                     )}

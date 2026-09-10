@@ -32,7 +32,7 @@ export function resolveViewerAccessState({
   if (verificationFailed) return "verification-failed";
   if (isInitialLoading && !watchState) return "verifying";
   if (watchState?.accessRevoked) return "revoked";
-  if (watchState?.canWatch && watchState.vimeoUrl) return "verified";
+  if (watchState?.canWatch && (watchState.vimeoUrl || watchState.playback?.url || watchState.playback?.embedUrl)) return "verified";
 
   const availableAt = watchState?.waitUntil || watchState?.selectedSession || scheduledStart;
   if (availableAt && new Date(availableAt).getTime() > now.getTime()) return "upcoming";

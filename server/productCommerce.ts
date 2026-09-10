@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Express, Request } from "express";
+import type { Express, Request, RequestHandler } from "express";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -305,6 +305,8 @@ export function registerProductCommerceRoutes(
   requireAdmin: (req: any, res: any, next: any) => void,
   eventRateLimit: (req: any, res: any, next: any) => void,
   checkoutRateLimit: (req: any, res: any, next: any) => void,
+  withMediaReferenceLock: (handler: RequestHandler) => RequestHandler,
+  verifyReferencedMediaUrls: (payload: unknown) => Promise<void>,
 ) {
   app.get("/api/products", requireAdmin, async (req: SessionRequest, res) => {
     try {
@@ -438,9 +440,10 @@ export function registerProductCommerceRoutes(
     res.json(page);
   });
 
-  app.post("/api/product-sales-pages", requireAdmin, async (req: SessionRequest, res) => {
+  app.post("/api/product-sales-pages", requireAdmin, withMediaReferenceLock(async (req: SessionRequest, res) => {
     try {
       const input = createSalesPageSchema.parse(req.body);
+      await verifyReferencedMediaUrls(input.blocks);
       const offer = await ownedOffer(req.session.userId!, input.offerId);
       if (!offer?.active) return res.status(400).json({ message: "Product is unavailable" });
       const [page] = await db.insert(offerSalesPages).values({
@@ -457,11 +460,12 @@ export function registerProductCommerceRoutes(
       if (error?.code === "23505") return res.status(409).json({ message: "Slug or product already has a sales page" });
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
-  app.patch("/api/product-sales-pages/:pageId", requireAdmin, async (req: SessionRequest, res) => {
+  app.patch("/api/product-sales-pages/:pageId", requireAdmin, withMediaReferenceLock(async (req: SessionRequest, res) => {
     try {
       const input = updateSalesPageSchema.parse(req.body);
+      if (input.blocks !== undefined) await verifyReferencedMediaUrls(input.blocks);
       const existing = await ownedPage(req.session.userId!, String(req.params.pageId));
       if (!existing) return res.status(404).json({ message: "Sales page not found" });
       if (existing.status === "published" && (
@@ -495,9 +499,9 @@ export function registerProductCommerceRoutes(
       if (error?.code === "23505") return res.status(409).json({ message: "Slug is already in use" });
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
-  app.post("/api/product-sales-pages/:pageId/publish", requireAdmin, async (req: SessionRequest, res) => {
+  app.post("/api/product-sales-pages/:pageId/publish", requireAdmin, withMediaReferenceLock(async (req: SessionRequest, res) => {
     try {
       const input = salesPageVersionSchema.parse(req.body);
       const page = await ownedPage(req.session.userId!, String(req.params.pageId));
@@ -510,6 +514,7 @@ export function registerProductCommerceRoutes(
       if (!storedEntitlement(owner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
+      await verifyReferencedMediaUrls(page.orderedBlocks);
       validatePublishableBlocks(page.orderedBlocks);
       const [published] = await db.update(offerSalesPages).set({
         userId: req.session.userId!,
@@ -543,7 +548,7 @@ export function registerProductCommerceRoutes(
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
-  });
+  }));
 
   app.post("/api/product-sales-pages/:pageId/unpublish", requireAdmin, async (req: SessionRequest, res) => {
     try {

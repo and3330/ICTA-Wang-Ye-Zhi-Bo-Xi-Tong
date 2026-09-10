@@ -42,6 +42,7 @@ import {
   isValidMetaPixelId,
   type TrackingWebinar,
 } from "@/components/webinar-tracking-provider";
+import { VideoSourcePicker } from "@/components/media-picker";
 
 function toLocalDateTimeInput(value: Date | string) {
   const date = new Date(value);
@@ -1144,6 +1145,8 @@ export default function AdminWebinarDetail() {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editVimeoUrl, setEditVimeoUrl] = useState("");
+  const [editVideoProvider, setEditVideoProvider] = useState<"vimeo" | "bunny">("vimeo");
+  const [editVideoAssetId, setEditVideoAssetId] = useState<string | undefined>();
   const [editStartTime, setEditStartTime] = useState("");
   const [editCoverImage, setEditCoverImage] = useState("");
   const [uploadingCover, setUploadingCover] = useState(false);
@@ -1494,6 +1497,8 @@ export default function AdminWebinarDetail() {
       setEditTitle(webinar.title);
       setEditDescription(webinar.description || "");
       setEditVimeoUrl(webinar.vimeoUrl);
+      setEditVideoProvider(((webinar as any).videoProvider || "vimeo") as "vimeo" | "bunny");
+      setEditVideoAssetId((webinar as any).videoAssetId || undefined);
       setEditStartTime(toLocalDateTimeInput(webinar.startTime));
       setEditCoverImage(webinar.coverImage || "");
       setMetaPixelId(webinar.metaPixelId || "");
@@ -2092,14 +2097,14 @@ export default function AdminWebinarDetail() {
                   placeholder={s.placeholderTitle}
                   data-testid="input-edit-title"
                 />
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Input
-                    value={editVimeoUrl}
-                    onChange={(e) => setEditVimeoUrl(e.target.value)}
-                    placeholder={s.placeholderVimeoUrl}
-                    className="flex-1 min-w-[200px]"
-                    data-testid="input-edit-vimeo"
-                  />
+                <div className="flex items-start gap-2 flex-wrap">
+                  <div className="min-w-[260px] flex-1">
+                    <VideoSourcePicker vimeoUrl={editVimeoUrl} videoAssetId={editVideoAssetId} onChange={(source) => {
+                      setEditVimeoUrl(source.vimeoUrl);
+                      setEditVideoProvider(source.videoProvider);
+                      setEditVideoAssetId(source.videoAssetId);
+                    }} />
+                  </div>
                   <Input
                     type="datetime-local"
                     value={editStartTime}
@@ -2217,11 +2222,13 @@ export default function AdminWebinarDetail() {
                         title: editTitle,
                         description: editDescription || null,
                         vimeoUrl: editVimeoUrl,
+                        videoProvider: editVideoProvider,
+                        videoAssetId: editVideoAssetId || null,
                         startTime: new Date(editStartTime).toISOString(),
                         coverImage: newCover,
                       });
                     }}
-                    disabled={updateWebinar.isPending || !editTitle || !editVimeoUrl}
+                    disabled={updateWebinar.isPending || !editTitle || (editVideoProvider === "vimeo" ? !editVimeoUrl : !editVideoAssetId)}
                     data-testid="button-save-info"
                   >
                     <Save className="h-4 w-4 mr-1" />
@@ -5442,12 +5449,11 @@ export default function AdminWebinarDetail() {
                   </div>
                   <div className="space-y-2">
                     <Label>{s.settingsVimeoUrl}</Label>
-                    <Input
-                      value={editVimeoUrl}
-                      onChange={(e) => setEditVimeoUrl(e.target.value)}
-                      placeholder={s.placeholderVimeoUrl}
-                      data-testid="input-settings-vimeo"
-                    />
+                    <VideoSourcePicker vimeoUrl={editVimeoUrl} videoAssetId={editVideoAssetId} onChange={(source) => {
+                      setEditVimeoUrl(source.vimeoUrl);
+                      setEditVideoProvider(source.videoProvider);
+                      setEditVideoAssetId(source.videoAssetId);
+                    }} />
                   </div>
                   <div className="space-y-2">
                     <Label>{s.settingsStartTime}</Label>
@@ -5519,11 +5525,13 @@ export default function AdminWebinarDetail() {
                         title: editTitle,
                         description: editDescription || null,
                         vimeoUrl: editVimeoUrl,
+                        videoProvider: editVideoProvider,
+                        videoAssetId: editVideoAssetId || null,
                         startTime: new Date(editStartTime).toISOString(),
                         coverImage: newCover,
                       });
                     }}
-                    disabled={updateWebinar.isPending || !editTitle || !editVimeoUrl}
+                    disabled={updateWebinar.isPending || !editTitle || (editVideoProvider === "vimeo" ? !editVimeoUrl : !editVideoAssetId)}
                     data-testid="button-save-webinar-info"
                   >
                     {updateWebinar.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}

@@ -21,12 +21,14 @@ import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } fro
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
 import { SafeRichText } from "@/components/safe-rich-text";
 import { landingVideoEmbedUrl } from "@shared/landingVideo";
+import { ProviderPlayer } from "@/components/provider-player";
+import type { PlaybackSource } from "@/lib/media";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 type LandingBlock = { id?: string; type: string; enabled?: boolean; [key: string]: any };
 
 const isSafeLandingImage = (value?: string) => Boolean(value && (value.startsWith("https://") || value.startsWith("/uploads/")));
-function WebinarLanding({ blocks, brand, title, description, onRegister, countdownTarget }: { blocks: LandingBlock[]; brand: any; title: string; description?: string; onRegister: () => void; countdownTarget?: number }) {
+function WebinarLanding({ blocks, brand, title, description, onRegister, countdownTarget, mediaPlayback = {}, webinarId }: { blocks: LandingBlock[]; brand: any; title: string; description?: string; onRegister: () => void; countdownTarget?: number; mediaPlayback?: Record<string, PlaybackSource>; webinarId: string }) {
   const list = blocks.filter((b) => b.enabled !== false);
   const sticky = list.find((b) => b.type === "stickyCta");
   const scroll = () => {
@@ -41,7 +43,7 @@ function WebinarLanding({ blocks, brand, title, description, onRegister, countdo
       if (block.type === "hero") return <section className="webinar-landing-hero" key={key}><div><span className="webinar-kicker">ONLINE WEBINAR</span><h1>{block.headline || title}</h1><p>{block.subheadline || description}</p><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></div>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={title} />}</section>;
       if (block.type === "intro") return <section className="webinar-landing-section" key={key}><span className="webinar-kicker">ABOUT THIS EVENT</span><h2>{block.headline || "關於這場說明會"}</h2><p>{block.content || description}</p></section>;
       if (block.type === "richText") return <section className="webinar-landing-section rich-text-preview" key={key}><SafeRichText value={block.body} /></section>;
-       if (block.type === "video" && block.videoId) return <section className="webinar-landing-section webinar-landing-video" key={key}>{block.headline && <h2>{block.headline}</h2>}<div className="video-frame"><iframe src={landingVideoEmbedUrl(block.provider === "vimeo" ? "vimeo" : "youtube", block.videoId)} title={block.headline || `${title} 活動介紹影片`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen /></div></section>;
+       if (block.type === "video" && block.videoId) { const bunny = block.provider === "bunny" ? mediaPlayback[block.videoId] : undefined; return <section className="webinar-landing-section webinar-landing-video" key={key}>{block.headline && <h2>{block.headline}</h2>}<div className="video-frame">{bunny ? <ProviderPlayer source={{ ...bunny, assetId: block.videoId }} renewSource={async () => { const response = await apiRequest("GET", `/api/webinars/${webinarId}/landing-media/${block.videoId}/playback`); return { ...(await response.json()), assetId: block.videoId }; }} /> : block.provider === "bunny" ? <div className="video-frame-empty">影片目前無法播放</div> : <iframe src={landingVideoEmbedUrl(block.provider === "vimeo" ? "vimeo" : "youtube", block.videoId)} title={block.headline || `${title} 活動介紹影片`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />}</div></section>; }
       if (block.type === "audience" || block.type === "agenda") return <section className="webinar-landing-section" key={key}><h2>{block.headline}</h2><div className="webinar-landing-list">{(block.items || []).map((item: string) => <div key={item}>{item}</div>)}</div></section>;
       if (block.type === "instructor") return <section className="webinar-landing-section webinar-instructor" key={key}>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={block.name || "講師"} />}<div><h2>{block.headline || "關於講師"}</h2><h3>{block.name}</h3><p>{block.bio}</p></div></section>;
       if (block.type === "faq") return <section className="webinar-landing-section webinar-faq" key={key}><h2>{block.headline || "常見問題"}</h2>{(block.items || []).map((item: any) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
@@ -125,7 +127,7 @@ export default function Registration() {
     enabled: !!id,
   });
   const previewMode = new URLSearchParams(window.location.search).get("preview") === "1";
-  const { data: landingResponse, isLoading: landingLoading, error: landingError } = useQuery<{ landingPage?: { blocks?: LandingBlock[]; brandSettings?: any } }>({
+  const { data: landingResponse, isLoading: landingLoading, error: landingError } = useQuery<{ landingPage?: { blocks?: LandingBlock[]; brandSettings?: any }; mediaPlayback?: Record<string, PlaybackSource> }>({
     queryKey: previewMode ? ["/api/webinars", id, "landing-page", "preview"] : ["/api/webinars", id, "landing-page"],
     enabled: !!id,
   });
@@ -398,7 +400,7 @@ export default function Registration() {
         metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
         gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
       />
-      {landingPage?.blocks?.length ? <WebinarLanding blocks={landingPage.blocks} brand={brandSettings} title={webinar.title} description={webinar.description || undefined} countdownTarget={countdownTarget} onRegister={() => { document.getElementById("registration-form")?.scrollIntoView({ behavior: "smooth", block: "start" }); window.setTimeout(() => document.getElementById("input-name")?.focus(), 450); }} /> : <div className="mx-auto max-w-lg p-5 text-center text-sm text-muted-foreground">落地頁內容暫時無法載入，以下仍可完成報名。</div>}
+      {landingPage?.blocks?.length ? <WebinarLanding webinarId={id!} blocks={landingPage.blocks} brand={brandSettings} title={webinar.title} description={webinar.description || undefined} countdownTarget={countdownTarget} mediaPlayback={landingResponse?.mediaPlayback} onRegister={() => { document.getElementById("registration-form")?.scrollIntoView({ behavior: "smooth", block: "start" }); window.setTimeout(() => document.getElementById("input-name")?.focus(), 450); }} /> : <div className="mx-auto max-w-lg p-5 text-center text-sm text-muted-foreground">落地頁內容暫時無法載入，以下仍可完成報名。</div>}
       <Card id="registration-form" className="max-w-lg w-full mx-auto my-8">
         <CardHeader className="text-center">
           {brandSettings?.logo && (

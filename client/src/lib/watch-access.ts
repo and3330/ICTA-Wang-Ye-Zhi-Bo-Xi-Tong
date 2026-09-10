@@ -3,6 +3,15 @@ export type WatchState = {
   selectedSession?: string | null;
   waitUntil?: string | null;
   vimeoUrl?: string | null;
+  playback?: {
+    provider: "vimeo" | "bunny";
+    url?: string;
+    embedUrl?: string;
+    videoId?: string;
+    libraryId?: string;
+    expiresAt?: string;
+    assetId?: string;
+  } | null;
   canWatch: boolean;
   accessRevoked?: boolean;
 };

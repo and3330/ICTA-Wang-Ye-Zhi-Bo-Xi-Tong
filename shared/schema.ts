@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, boolean, jsonb, real, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, bigint, boolean, jsonb, real, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
@@ -23,6 +23,8 @@ export const webinars = pgTable("webinars", {
   title: text("title").notNull(),
   description: text("description"),
   vimeoUrl: text("vimeo_url").notNull(),
+  videoProvider: text("video_provider").$type<"vimeo" | "bunny">().notNull().default("vimeo"),
+  videoAssetId: varchar("video_asset_id").references(() => mediaAssets.id, { onDelete: "restrict" }),
   coverImage: text("cover_image"),
   startTime: timestamp("start_time").notNull(),
   status: text("status").notNull().default("scheduled"), // scheduled, live, ended
@@ -810,8 +812,50 @@ export const uploadedAssets = pgTable("uploaded_assets", {
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   url: text("url").notNull().unique(),
   filename: text("filename").notNull().unique(),
+  storageBackend: text("storage_backend").$type<"legacy" | "app_storage" | "bunny_storage">().notNull().default("legacy"),
+  storageKey: text("storage_key"),
+  contentType: text("content_type"),
+  sizeBytes: integer("size_bytes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Platform-owned media. Provider credentials and playback identifiers are
+// deliberately server-only; providerId must never be returned by public APIs.
+export const mediaAssets = pgTable("media_assets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").$type<"video" | "image">().notNull(),
+  provider: text("provider").$type<"bunny_stream" | "bunny_storage" | "legacy">().notNull(),
+  providerId: text("provider_id"),
+  storageKey: text("storage_key"),
+  name: text("name").notNull(),
+  status: text("status").$type<"uploading" | "processing" | "ready" | "failed">().notNull().default("uploading"),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+  contentType: text("content_type"),
+  durationSeconds: integer("duration_seconds"),
+  url: text("url"),
+  thumbnailUrl: text("thumbnail_url"),
+  errorCode: text("error_code"),
+  deletingAt: timestamp("deleting_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  userCreatedIndex: index("media_assets_user_created_idx").on(table.userId, table.createdAt),
+  userVideoQuotaIndex: index("media_assets_user_video_quota_idx").on(table.userId, table.kind, table.status),
+  providerIdUnique: uniqueIndex("media_assets_provider_id_uniq").on(table.provider, table.providerId)
+    .where(sql`provider_id IS NOT NULL`),
+}));
+export type MediaAsset = typeof mediaAssets.$inferSelect;
+export type InsertMediaAsset = typeof mediaAssets.$inferInsert;
+
+// Minimal tombstones prevent a URL from being re-attached after its provider
+// object and mutable asset metadata have been deleted.
+export const deletedMediaUrls = pgTable("deleted_media_urls", {
+  url: text("url").primaryKey(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  deletedAt: timestamp("deleted_at").notNull().defaultNow(),
+});
+export type DeletedMediaUrl = typeof deletedMediaUrls.$inferSelect;
 
 // Webinar Sessions (用於循環排程的場次)
 export const webinarSessions = pgTable("webinar_sessions", {

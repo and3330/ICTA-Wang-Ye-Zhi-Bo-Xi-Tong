@@ -14,6 +14,8 @@ import { isPlaybackPermitted, resolveViewerAccessState } from "@/lib/watch-acces
 import { ViewerAccessState } from "@/components/viewer-access-state";
 import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { ProviderPlayer } from "@/components/provider-player";
+import type { PlaybackSource } from "@/lib/media";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -36,7 +38,6 @@ export default function EmbedWebinar() {
   const [videoDuration, setVideoDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const playerRef = useRef<any>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -72,6 +73,8 @@ export default function EmbedWebinar() {
   });
   const canWatch = isPlaybackPermitted(accessKind);
   const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
+  const effectivePlayback = canWatch && watchToken ? watchState?.playback : undefined;
+  const hasPlayback = !!(effectivePlayback?.url || effectivePlayback?.embedUrl || effectiveVimeoUrl);
   useAttendanceTracking({
     registrationId: watchState?.registrationId,
     watchToken,
@@ -142,35 +145,6 @@ export default function EmbedWebinar() {
     if (isJoined) connectWebSocket();
     return () => { wsRef.current?.close(); };
   }, [isJoined, connectWebSocket]);
-
-  useEffect(() => {
-    if (!isJoined || !effectiveVimeoUrl || !canWatch || watchStateLoading) return;
-    const script = document.createElement("script");
-    script.src = "https://player.vimeo.com/api/player.js";
-    script.onload = () => {
-      if (iframeRef.current && (window as any).Vimeo) {
-        const player = new (window as any).Vimeo.Player(iframeRef.current);
-        playerRef.current = player;
-        player.on("timeupdate", (data: { seconds: number; duration?: number }) => {
-          setCurrentTime(data.seconds);
-          if (data.duration) setVideoDuration(data.duration);
-        });
-        player.on("play", () => setIsPlaying(true));
-        player.on("pause", () => setIsPlaying(false));
-        player.on("ended", () => {
-          Promise.all([player.getCurrentTime(), player.getDuration()])
-            .then(([position, duration]: [number, number]) => {
-              trackWebinarEvent(id, "video_progress", {
-                positionSeconds: duration || position,
-                metadata: { progressPercent: 100 },
-              });
-            })
-            .catch(() => {});
-        });
-      }
-    };
-    document.head.appendChild(script);
-  }, [isJoined, effectiveVimeoUrl, canWatch, watchStateLoading]);
 
   useEffect(() => {
     if (canWatch) return;
@@ -261,6 +235,10 @@ export default function EmbedWebinar() {
     const match = url.match(/vimeo\.com\/(\d+)/);
     return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1` : url;
   };
+  const playbackSource: PlaybackSource | undefined = effectivePlayback || (effectiveVimeoUrl ? {
+    provider: "vimeo",
+    url: getVimeoEmbedUrl(effectiveVimeoUrl),
+  } : undefined);
 
   if (isLoading) {
     return (
@@ -284,7 +262,7 @@ export default function EmbedWebinar() {
   );
 
   if (!isJoined) {
-    if (!canWatch || !effectiveVimeoUrl) {
+    if (!canWatch || !hasPlayback) {
       return (
         <div className="flex min-h-[100dvh] items-center justify-center p-4">
           {trackingProvider}
@@ -340,13 +318,21 @@ export default function EmbedWebinar() {
       {trackingProvider}
       <div className="relative bg-black">
         <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
-          {canWatch && effectiveVimeoUrl ? (
-            <iframe
-              ref={iframeRef}
-              src={getVimeoEmbedUrl(effectiveVimeoUrl!)}
+          {canWatch && playbackSource ? (
+            <ProviderPlayer
+              source={playbackSource}
+              renewSource={effectivePlayback?.provider === "bunny" ? async () => {
+                const result = await refetchWatchState();
+                if (!result.data?.playback) throw new Error("403: 播放授權已失效");
+                return result.data.playback;
+              } : undefined}
               className="absolute inset-0 w-full h-full"
-              allow="autoplay; fullscreen; picture-in-picture"
-              allowFullScreen
+              testId="embed-video-player"
+              onReady={(player) => { playerRef.current = player; }}
+              onTimeUpdate={(seconds, duration) => { setCurrentTime(seconds); if (duration) setVideoDuration(duration); }}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } })}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center bg-muted p-4">

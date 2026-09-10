@@ -18,3 +18,4 @@
 - [Marketing responsive CSS order](marketing-responsive-css-order.md) — component CSS can load before global index styles; mobile overrides need stronger scope or later placement.
 - [App Storage startup safety](app-storage-startup-safety.md) — constructing the SDK client starts async discovery; create it only inside an awaited storage operation.
 - [Autoscale startup probe](autoscale-startup-probe.md) — bind the HTTP port before database and provider initialization; gate traffic while booting but let GET / answer 200.
+- [Bunny media boundaries](bunny-media-boundaries.md) — distinguish upload keys from embed security keys; direct TUS admission quotas cannot guarantee a provider-cost ceiling.

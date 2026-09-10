@@ -1,17 +1,20 @@
 import { z } from "zod";
 
-export const landingVideoProviderSchema = z.enum(["youtube", "vimeo"]);
+export const landingVideoProviderSchema = z.enum(["youtube", "vimeo", "bunny"]);
 export type LandingVideoProvider = z.infer<typeof landingVideoProviderSchema>;
 export type CanonicalLandingVideo = { provider: LandingVideoProvider; videoId: string };
 
 const youtubeVideoIdSchema = z.string().regex(/^[A-Za-z0-9_-]{11}$/);
 const vimeoVideoIdSchema = z.string().regex(/^[0-9]{1,20}$/);
+const bunnyAssetIdSchema = z.string().uuid();
 
 export const canonicalLandingVideoSchema = z.object({
   provider: landingVideoProviderSchema,
   videoId: z.string(),
 }).strict().superRefine((value, ctx) => {
-  const schema = value.provider === "youtube" ? youtubeVideoIdSchema : vimeoVideoIdSchema;
+  const schema = value.provider === "youtube"
+    ? youtubeVideoIdSchema
+    : value.provider === "vimeo" ? vimeoVideoIdSchema : bunnyAssetIdSchema;
   if (!schema.safeParse(value.videoId).success) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["videoId"], message: "Invalid canonical video ID" });
   }

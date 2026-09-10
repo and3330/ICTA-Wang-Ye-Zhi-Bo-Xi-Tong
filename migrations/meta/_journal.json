@@ -127,6 +127,20 @@
       "when": 1789043400000,
       "tag": "0018_standalone_product_commerce",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789047000000,
+      "tag": "0019_bunny_owned_media",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789047600000,
+      "tag": "0020_media_deletion_fence",
+      "breakpoints": true
     }
   ]
 }

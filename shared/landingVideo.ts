@@ -8,7 +8,10 @@ export type LandingVideo = { provider: LandingVideoProvider; videoId: string };
 export function parseLandingVideo(value: string, preferred?: LandingVideoProvider): LandingVideo | null {
   const input = value.trim();
   if (!input) return null;
-  try { return parseLandingVideoUrl(input); } catch { /* Allow a normalized id while an existing block is being edited. */ }
+  try {
+    const parsed = parseLandingVideoUrl(input);
+    if (parsed.provider !== "bunny") return { provider: parsed.provider, videoId: parsed.videoId };
+  } catch { /* Allow a normalized id while an existing block is being edited. */ }
   if (/^[A-Za-z0-9_-]{11}$/.test(input) && preferred === "youtube") return { provider: "youtube", videoId: input };
   if (/^\d{1,20}$/.test(input) && preferred === "vimeo") return { provider: "vimeo", videoId: input };
   return null;
