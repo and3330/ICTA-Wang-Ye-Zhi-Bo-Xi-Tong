@@ -60,7 +60,7 @@ BUNNY_STREAM_LIBRARY_ID = "26492"
 BUNNY_STORAGE_ZONE = "ictapro"
 BUNNY_STORAGE_HOST = "sg.storage.bunnycdn.com"
 BUNNY_CDN_BASE_URL = "https://ictapro.b-cdn.net"
-BUNNY_STREAM_PLAYBACK_VERIFIED = "false"
+BUNNY_STREAM_PLAYBACK_VERIFIED = "true"
 
 [userenv.production]
 APP_BASE_URL = "https://icta-webinar.com"

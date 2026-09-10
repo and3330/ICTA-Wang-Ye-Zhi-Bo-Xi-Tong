@@ -17,9 +17,9 @@ Stream upload API keys, Storage access passwords, and embed Token Security Keys 
 
 Check a processed video's rendered player, not just the initial iframe HTTP status, when verifying embed protection. Keep runtime playback disabled until valid signatures work and missing, invalid, and expired signatures are rejected.
 
-**Why:** Real-provider verification produced the same playable iframe for all four signature cases even after a token key was supplied. Possessing the key was not evidence that the library-side setting had been enabled.
+**Why:** Real-provider verification produced the same playable iframe for all four signature cases even after a token key was supplied. Possessing the key was not evidence that the library-side setting had been enabled. After enforcement took effect, Bunny returned HTTP 200 with a rendered plain “403” page and no video element for rejected signatures; requiring HTTP 403 incorrectly classified those denials as failures.
 
-**How to apply:** Wait for the synthetic test video to finish encoding before checking positive and negative authorization cases, then delete the test asset. Enabling library-wide authentication can break pre-existing unsigned embeds on other sites; explain that impact before asking the user to enable it.
+**How to apply:** Wait for the synthetic test video to finish encoding. Require actual playback progress with a valid signature, and an explicit denial page with no player for missing, invalid, and expired signatures, then delete the test asset. Unprocessed videos can return a generic HTTP 200 page before these checks, so an empty-video precheck is inconclusive. Enabling library-wide authentication can break pre-existing unsigned embeds on other sites; explain that impact before asking the user to enable it.
 
 Bunny TUS signatures do not bind the declared upload length. Application admission reservations and later provider-size reconciliation are not hard pre-upload spending limits.
 

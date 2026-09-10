@@ -201,8 +201,8 @@ export class BunnyMediaClient {
       embedUrl: `https://iframe.mediadelivery.net/embed/${libraryId}/${encodeURIComponent(videoId)}?token=${token}&expires=${expiration}`,
       videoId,
       libraryId,
-      // This is the expiry of the server-issued response. Bunny URL token
-      // authentication additionally requires a pull-zone token key.
+      // This is the expiry of the server-issued embed URL. Raw CDN/HLS
+      // file protection is a separate Bunny security setting.
       expiresAt: new Date(now + 5 * 60_000).toISOString(),
     };
   }
