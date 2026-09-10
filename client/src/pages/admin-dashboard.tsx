@@ -27,6 +27,7 @@ import {
   Eye, Code, Trash2, MoreVertical, Languages, Sparkles, ImagePlus, Upload, X, ShoppingBag
 } from "lucide-react";
 import type { Webinar } from "@shared/schema";
+import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
 
 type WebinarStats = Record<string, {
   registered: number;
@@ -935,7 +936,7 @@ export default function AdminDashboard() {
                       size="sm"
                       variant="secondary"
                       onClick={() => {
-                        if (window.confirm("將立即結束 7 天試用並向目前付款方式收取本月方案費用。付款成功後會立即發放方案 AI 點數，是否繼續？")) {
+                        if (window.confirm("將立即結束目前試用並向目前付款方式收取本月方案費用。付款成功後會立即發放方案 AI 點數，是否繼續？")) {
                           endTrialMutation.mutate();
                         }
                       }}
@@ -989,7 +990,7 @@ export default function AdminDashboard() {
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>選擇發布方案</DialogTitle>
-              <DialogDescription>免費版只提供基本資料與草稿設定，不含 AI 點數及發布功能。新會員訂閱可免費試用 7 天。</DialogDescription>
+              <DialogDescription>免費版只提供基本資料與草稿設定，不含 AI 點數及發布功能。新會員訂閱可免費試用 {NEW_MEMBER_TRIAL_DAYS} 天。</DialogDescription>
             </DialogHeader>
             <div className="mx-auto flex rounded-lg border bg-muted/50 p-1">
               <button type="button" onClick={() => setBillingInterval("month")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "month" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>月繳</button>
@@ -1014,7 +1015,7 @@ export default function AdminDashboard() {
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
                   <p className="text-sm font-medium text-primary">正式首次扣款後，每月發放 {plan.monthlyAiPoints} AI 點</p>
-                  <p className="mt-2 text-sm font-semibold text-emerald-700">新會員免費試用 {plan.trialDays} 天</p>
+                  <p className="mt-2 text-sm font-semibold text-emerald-700">新會員免費試用 {NEW_MEMBER_TRIAL_DAYS} 天</p>
                   {!available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
               )})}

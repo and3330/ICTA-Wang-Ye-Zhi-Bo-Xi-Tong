@@ -5,6 +5,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { z } from "zod";
+import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
 import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
@@ -1694,9 +1695,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 7 },
-      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 7 },
-      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 7 },
+      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: NEW_MEMBER_TRIAL_DAYS },
+      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: NEW_MEMBER_TRIAL_DAYS },
+      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: NEW_MEMBER_TRIAL_DAYS },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -1833,7 +1834,7 @@ export async function registerRoutes(
           },
           subscription_data: {
             metadata: { userId: lockedUser.id, planKey, billingInterval, addonWebinars: String(addonWebinars) },
-            ...(trialEligible ? { trial_period_days: 7 } : {}),
+            ...(trialEligible ? { trial_period_days: NEW_MEMBER_TRIAL_DAYS } : {}),
           },
           success_url: `${baseUrl}/admin/dashboard?checkout=success`,
           cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
