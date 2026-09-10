@@ -56,6 +56,10 @@ integrations = ["google-mail:1.0.0", "stripe:2.0.0", "javascript_anthropic_ai_in
 STRIPE_MONTHLY_PRICE_ID = "price_1Sy8bxIbl9Q8nuPzsLN1d2VC"
 ARK_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 ARK_MODEL = "ep-20260903145930-lmhk7"
+BUNNY_STREAM_LIBRARY_ID = "26492"
+BUNNY_STORAGE_ZONE = "vz-0df329e5-88b"
+BUNNY_STORAGE_HOST = "ictapro"
+BUNNY_CDN_BASE_URL = "https://ictapro.b-cdn.net"
 
 [userenv.production]
 APP_BASE_URL = "https://icta-webinar.com"
