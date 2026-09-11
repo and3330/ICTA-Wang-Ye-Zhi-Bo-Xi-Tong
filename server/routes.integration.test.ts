@@ -245,6 +245,7 @@ test("lead insight HTTP routes enforce ownership and return scoped compact pagin
   let detailEventsCall: [string, string] | undefined;
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     getRegistration: storage.getRegistration,
     getRegistrationsByWebinar: storage.getRegistrationsByWebinar,
     getRegistrationsByWebinarPage: storage.getRegistrationsByWebinarPage,
@@ -253,6 +254,9 @@ test("lead insight HTTP routes enforce ownership and return scoped compact pagin
     getFunnelEventsByRegistration: storage.getFunnelEventsByRegistration,
   };
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
+  storage.getUser = async id => (id === ownerId || id === otherOwnerId)
+    ? { id, isActive: true, isSuperAdmin: false } as any
+    : undefined;
   storage.getRegistration = async id =>
     id === crossWebinarRegistrationId ? crossWebinarRegistration
       : registrations.find(registration => registration.id === id);

@@ -9,7 +9,7 @@ import { db, pool } from "./db";
 import { registerRoutes } from "./routes";
 import {
   users, webinars, webinarOffers, offerSalesPages, webinarPayments,
-  webinarFunnelEvents, ctaButtons, ecpayConnections,
+  webinarFunnelEvents, ctaButtons, ecpayConnections, memberOrderEvents,
 } from "@shared/schema";
 import { createCheckMacValue, encryptEcpayCredential } from "./ecpay";
 
@@ -64,6 +64,11 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (offerIds.length) {
       await db.delete(webinarFunnelEvents).where(inArray(webinarFunnelEvents.offerId, offerIds));
+      const paymentIds = await db.select({ id: webinarPayments.id }).from(webinarPayments)
+        .where(inArray(webinarPayments.offerId, offerIds));
+      if (paymentIds.length) {
+        await db.delete(memberOrderEvents).where(inArray(memberOrderEvents.paymentId, paymentIds.map(row => row.id)));
+      }
       await db.delete(webinarPayments).where(inArray(webinarPayments.offerId, offerIds));
     }
     await db.delete(ctaButtons).where(eq(ctaButtons.webinarId, webinarId));
@@ -158,7 +163,11 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   assert.deepEqual(publicPage.blocks[0].images, []);
   assert.equal(publicPage.offer.amountMinor, 88000);
 
-  const checkoutBody = { salesPageId: page.id, sessionId: `buyer-${crypto.randomUUID()}` };
+  const checkoutBody = {
+    salesPageId: page.id,
+    sessionId: `buyer-${crypto.randomUUID()}`,
+    buyer: { name: "Checkout Buyer", email: `buyer-${crypto.randomUUID()}@example.test` },
+  };
   assert.ok([400, 404, 409].includes((await request(`/api/products/${other.id}/checkout`, "POST", checkoutBody)).status));
   assert.equal((await request(`/api/products/${product.id}/checkout`, "POST", { ...checkoutBody, amountTwd: 1 })).status, 400);
   const checkout = await jsonOk(await request(`/api/products/${product.id}/checkout`, "POST", checkoutBody));
@@ -172,6 +181,8 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   assert.equal(payment.status, "pending");
   assert.equal(payment.webinarId, null);
   assert.equal(payment.registrationId, null);
+  assert.equal(payment.productNameSnapshot, "獨立商品");
+  assert.equal(payment.buyerNameSnapshot, "Checkout Buyer");
   const statusPath = `/api/public/checkout-status?provider=ecpay&status_token=${token}`;
   assert.equal((await jsonOk(await request(`${statusPath}&status=paid`))).status, "pending");
   assert.notEqual((await request("/api/public/checkout-status?provider=ecpay&status_token=invalid")).status, 200);
@@ -189,16 +200,45 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   for (const response of delivered) assert.equal(await response.text(), "1|OK");
   [payment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, tradeNo));
   assert.equal(payment.status, "paid");
+  assert.equal(payment.operationVersion, 2, "verified payment transition invalidates stale member operations");
+  // Authenticated terminal failure is recorded, an authoritative later success
+  // recovers it, and a reordered failure can never downgrade a paid order.
+  const retryCheckout = await jsonOk(await request(`/api/products/${product.id}/checkout`, "POST", checkoutBody));
+  const retryTradeNo = retryCheckout.fields.MerchantTradeNo as string;
+  const retryFailure = {
+    MerchantID: merchantId, MerchantTradeNo: retryTradeNo, TradeAmt: "999",
+    RtnCode: "0", RtnMsg: "Failed", SimulatePaid: "0",
+  };
+  const retryWaiting = { ...retryFailure, RtnCode: "2", RtnMsg: "Awaiting confirmation" };
+  assert.equal(await (await callback(retryWaiting)).text(), "1|OK");
+  let [retryPayment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, retryTradeNo));
+  assert.equal(retryPayment.status, "pending");
+  assert.equal(retryPayment.operationVersion, 2);
+  assert.equal(await (await callback(retryWaiting)).text(), "1|OK");
+  [retryPayment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, retryTradeNo));
+  assert.equal(retryPayment.operationVersion, 2, "identical authenticated waiting callbacks do not duplicate visible state");
+  assert.equal(await (await callback(retryFailure)).text(), "1|OK");
+  [retryPayment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, retryTradeNo));
+  assert.equal(retryPayment.status, "failed");
+  assert.equal(retryPayment.operationVersion, 3);
+  assert.equal(await (await callback({ ...retryFailure, RtnCode: "1", RtnMsg: "Succeeded" })).text(), "1|OK");
+  [retryPayment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, retryTradeNo));
+  assert.equal(retryPayment.status, "paid");
+  assert.equal(retryPayment.operationVersion, 4);
+  assert.equal(await (await callback(retryFailure)).text(), "1|OK");
+  [retryPayment] = await db.select().from(webinarPayments).where(eq(webinarPayments.providerOrderId, retryTradeNo));
+  assert.equal(retryPayment.status, "paid");
+  assert.equal(retryPayment.operationVersion, 5, "new evidence is visible without downgrading paid status");
   const purchases = await db.select().from(webinarFunnelEvents).where(and(
     eq(webinarFunnelEvents.offerId, product.id), eq(webinarFunnelEvents.eventType, "purchase"),
   ));
-  assert.equal(purchases.length, 1);
+  assert.equal(purchases.length, 2, "two distinct verified orders produce two purchases; callback replay does not add a third");
   const status = await jsonOk(await request(statusPath));
   assert.equal(status.status, "paid");
   assert.equal(status.checkoutSettings.successButtonUrl, "https://example.test/original-delivery");
   const orders = await jsonOk(await request(`/api/products/${product.id}/orders`, "GET", undefined, ownerId));
   assert.equal(orders[0].source, "direct");
-  assert.equal(orders[0].amountMinor, 88000);
+  assert.equal(orders.some((order: any) => order.amountMinor === 88000), true, "earlier checkout retains its immutable amount");
   for (const key of ["providerHashKeySnapshot", "providerHashIvSnapshot", "checkoutStatusTokenHash"]) {
     assert.equal(orders[0][key], undefined, `${key} must not be exposed`);
   }
@@ -262,7 +302,7 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   const liveDirect = await wsAction("liveCta", { text: "即時購買", offerId: product.id, durationSec: 120 }, "liveCta");
   assert.equal(liveDirect.offerId, product.id);
   await jsonOk(await request(`/api/webinars/${webinarId}/offer-checkout`, "POST", {
-    ctaId: liveDirect.id, sessionId: checkoutBody.sessionId,
+    ctaId: liveDirect.id, sessionId: checkoutBody.sessionId, buyer: checkoutBody.buyer,
   }));
   const scheduledOnly = await jsonOk(await request(`/api/webinars/${webinarId}/ctas`, "GET", undefined, ownerId));
   assert.equal(scheduledOnly.some((item: any) => item.id === liveDirect.id || item.id === livePage.id), false);
@@ -306,7 +346,7 @@ test("standalone commerce: zero-webinar lifecycle, tenant isolation, signed paym
   await jsonOk(await request(`/api/products/${product.id}`, "DELETE", undefined, ownerId));
   const afterArchive = await jsonOk(await request("/api/products", "GET", undefined, ownerId));
   assert.equal(afterArchive.find((item: any) => item.id === product.id).active, false);
-  assert.equal((await jsonOk(await request(`/api/products/${product.id}/orders`, "GET", undefined, ownerId))).length, 4);
+  assert.equal((await jsonOk(await request(`/api/products/${product.id}/orders`, "GET", undefined, ownerId))).length, 5);
   assert.equal((await jsonOk(await request(statusPath))).status, "paid");
   const archivedPaymentCallback = { ...callbackFields, MerchantTradeNo: sourced.fields.MerchantTradeNo, TradeAmt: "999" };
   assert.equal(await (await callback(archivedPaymentCallback)).text(), "1|OK");

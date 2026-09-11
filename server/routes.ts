@@ -10,7 +10,7 @@ import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
 import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
-import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry } from "./watchTokens";
+import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, verifyWatchTokenFor, watchTokenExpiry } from "./watchTokens";
 import crypto from "crypto";
 import { safeUploadContentType, verifyImageUpload } from "./safeImageUpload";
 import { getUploadStorage, uploadObjectKey } from "./uploadStorage";
@@ -41,6 +41,7 @@ import {
   safeCtaUrlSchema,
   createWebinarOfferSchema,
   users,
+  memberAdminMetadata,
   ecpayConnections,
   webinarPayments,
   webhookDeliveries,
@@ -71,6 +72,7 @@ import { looksLikeQuestion } from "./aiAssistant";
 import { runAiReply } from "./aiReplyService";
 import { aiReplyAdmission, executeAdmittedAiReply, validateViewerChatContent } from "./aiReplyAdmission";
 import { registerAiManagementRoutes } from "./aiManagementRoutes";
+import { activePublishingOverride, registerAdminManagementRoutes } from "./adminManagementRoutes";
 import { registerAiKnowledgeRoutes } from "./aiKnowledgeRoutes";
 import { aiReplySettingsPatchSchema, aiReplySettingsSchema } from "@shared/aiAssistant";
 import {
@@ -105,10 +107,11 @@ import {
   encryptEcpayCredential,
   merchantTradeNo,
   merchantTradeDate,
-  validateEcpayCallback,
+  validateEcpayCallbackIntegrity,
 } from "./ecpay";
 import { processVerifiedEcpayPayment } from "./offerPayments";
 import { productSalesPageTargetUrl, registerProductCommerceRoutes } from "./productCommerce";
+import { appendMemberOrderEvent, registerMemberOrderRoutes } from "./memberOrders";
 import {
   createSalesPageSchema,
   salesPageCanPublish,
@@ -176,16 +179,32 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
     return res.status(401).json({ message: "Unauthorized" });
   }
   const user = await storage.getUser(req.session.userId);
-  if (!user || !user.isSuperAdmin) {
+  if (!user || !user.isActive || !user.isSuperAdmin) {
     return res.status(403).json({ message: "Forbidden" });
   }
   next();
+}
+
+async function publicManagementRole(user: { id: string; isSuperAdmin: boolean }) {
+  if (user.isSuperAdmin) return "super_admin";
+  try {
+    const [metadata] = await db.select({ managementRole: memberAdminMetadata.managementRole })
+      .from(memberAdminMetadata).where(eq(memberAdminMetadata.userId, user.id)).limit(1);
+    return metadata?.managementRole || "member";
+  } catch (error: any) {
+    // Supports a rolling deployment before the additive management migration
+    // reaches every application node; it never grants access on failure.
+    if (error?.code === "42P01") return "member";
+    throw error;
+  }
 }
 
 async function requireWebinarOwner(req: Request, res: Response, next: NextFunction) {
   if (!req.session?.userId) {
     return res.status(401).json({ message: "Unauthorized" });
   }
+  const actor = await storage.getUser(req.session.userId);
+  if (!actor?.isActive) return res.status(403).json({ message: "Account is suspended or unavailable" });
   const webinarId = req.params.id as string | undefined;
   if (webinarId) {
     const webinar = await storage.getWebinar(webinarId);
@@ -193,8 +212,7 @@ async function requireWebinarOwner(req: Request, res: Response, next: NextFuncti
       return res.status(403).json({ message: "Forbidden" });
     }
     if (webinar.userId !== req.session.userId) {
-      const user = await storage.getUser(req.session.userId);
-      if (!user?.isSuperAdmin) return res.status(403).json({ message: "Forbidden" });
+      if (!actor.isSuperAdmin) return res.status(403).json({ message: "Forbidden" });
     }
   }
   next();
@@ -204,12 +222,15 @@ async function requirePublishedOrOwner(req: Request, res: Response, next: NextFu
   const webinar = await storage.getWebinar(req.params.id as string);
   if (!webinar) return res.status(404).json({ message: "Webinar not found" });
   const requester = req.session?.userId ? await storage.getUser(req.session.userId) : undefined;
-  if (!canViewWebinar(webinar, req.session?.userId, requester?.isSuperAdmin === true)) {
+  if (!canViewWebinar(webinar, req.session?.userId, requester?.isSuperAdmin === true && requester.isActive)) {
     return res.status(404).json({ message: "Webinar not found" });
   }
-  if (webinar.userId !== req.session?.userId && !requester?.isSuperAdmin) {
+  if (webinar.userId === req.session?.userId && !requester?.isActive) {
+    return res.status(403).json({ message: "Account is suspended or unavailable" });
+  }
+  if (webinar.userId !== req.session?.userId && !(requester?.isSuperAdmin && requester.isActive)) {
     const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
-    if (!hasStoredPublicEntitlement(owner)) {
+    if (!await hasStoredPublicEntitlement(owner)) {
       return res.status(404).json({ message: "Webinar not found" });
     }
   }
@@ -316,11 +337,21 @@ async function landingMediaPlayback(userId: string, blocks: unknown) {
   return playback;
 }
 
-function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storage.getUser>>): boolean {
+async function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storage.getUser>>): Promise<boolean> {
   if (!user || !user.isActive) return false;
   if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
-  if (!["active", "trialing"].includes(user.subscriptionStatus)) return false;
-  return !user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now();
+  if (["active", "trialing"].includes(user.subscriptionStatus)
+    && (!user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now())) return true;
+  // Read live override state for every public admission; expiration never
+  // relies on cached entitlement data and does not alter the Stripe record.
+  try {
+    return Boolean(await activePublishingOverride(user.id));
+  } catch (error: any) {
+    // During a rolling deployment an unmigrated node must fail closed rather
+    // than accidentally admitting public traffic.
+    if (error?.code === "42P01") return false;
+    throw error;
+  }
 }
 
 async function resolveOfferOwnerId(offer: { userId: string | null; webinarId: string | null }): Promise<string | null> {
@@ -360,6 +391,21 @@ export async function registerRoutes(
 ): Promise<Server> {
   const refreshEntitlement = dependencies.refreshEntitlement ?? refreshSubscriptionEntitlement;
   const startScheduler = dependencies.startScheduler ?? startEmailScheduler;
+  const revokeUserSessions = async (userId: string) => {
+    // connect-pg-simple stores the signed-session payload in this table. Delete
+    // every matching record so subsequent HTTP requests cannot reuse a cookie.
+    await db.execute(sql`DELETE FROM "session" WHERE (sess::jsonb ->> 'userId') = ${userId}`);
+    // Hosts are the only authenticated websocket role. Close their live sockets
+    // immediately; future upgrades also re-check the suspended account.
+    for (const [webinarId, sockets] of Array.from(hostConnections.entries())) {
+      const webinar = await storage.getWebinar(webinarId);
+      if (webinar?.userId !== userId) continue;
+      for (const socket of Array.from(sockets)) {
+        try { socket.close(1008, "Session revoked"); } catch { /* socket already closed */ }
+      }
+      hostConnections.delete(webinarId);
+    }
+  };
   // 發問通知信節流：每個直播間最短寄送間隔
   const questionNotifyThrottle = new Map<string, number>();
   const QUESTION_NOTIFY_COOLDOWN_MS = 60 * 1000;
@@ -422,6 +468,7 @@ export async function registerRoutes(
     withMediaReferenceLock,
     verifyReferencedMediaUrls,
   );
+  registerMemberOrderRoutes(app);
   // registerBunnyMediaRoutes owns its final handlers. Intercept its DELETE
   // registration so the media lock wraps the returned handler Promise rather
   // than relying on an early app.use response-lifecycle middleware.
@@ -732,7 +779,7 @@ export async function registerRoutes(
           && webinarWatchEligibility(currentWebinar, registration).canWatch);
         return canRetainViewerWsAccess(
           currentWebinar.publishStatus,
-          hasStoredPublicEntitlement(owner),
+          await hasStoredPublicEntitlement(owner),
           registrationEligible,
         );
       }
@@ -775,18 +822,18 @@ export async function registerRoutes(
             await sessionReady;
             const sessionActor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
             const requestedWebinar = await storage.getWebinar(webinarId);
-            if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId, sessionActor?.isSuperAdmin === true)) {
+            if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId, sessionActor?.isSuperAdmin === true && sessionActor.isActive)) {
               ws.send(JSON.stringify({
                 type: "error",
                 data: { message: "Webinar not found or unavailable" },
               }));
               break;
             }
-            const isPrivilegedViewer = requestedWebinar.userId === sessionUserId || sessionActor?.isSuperAdmin === true;
+            const isPrivilegedViewer = Boolean(sessionActor?.isActive && (requestedWebinar.userId === sessionUserId || sessionActor.isSuperAdmin));
             let joinedRegistrationId: string | null = null;
             if (!isPrivilegedViewer) {
               const owner = requestedWebinar.userId ? await storage.getUser(requestedWebinar.userId) : undefined;
-              if (!hasStoredPublicEntitlement(owner)) {
+              if (!await hasStoredPublicEntitlement(owner)) {
                 ws.send(JSON.stringify({ type: "error", data: { message: "Webinar not found or unavailable" } }));
                 break;
               }
@@ -1393,12 +1440,14 @@ export async function registerRoutes(
     if (user.emailVerificationRequired && !user.emailVerifiedAt) {
       return res.status(403).json({ message: "請先驗證電子郵件", code: "EMAIL_VERIFICATION_REQUIRED" });
     }
+    const managementRole = await publicManagementRole(user);
     req.session.regenerate((error) => {
       if (error) return res.status(500).json({ message: "登入失敗" });
       req.session.userId = user.id;
       req.session.save((saveError) => {
         if (saveError) return res.status(500).json({ message: "登入失敗" });
-        res.json({ success: true, user: { id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin } });
+        res.json({ success: true, user: { id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin,
+          managementRole, canManage: managementRole !== "member" } });
       });
     });
   });
@@ -1481,7 +1530,9 @@ export async function registerRoutes(
   app.get("/api/admin/me", requireAdmin, async (req, res) => {
     const user = await storage.getUser(req.session.userId!);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    res.json({ id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin });
+    const managementRole = await publicManagementRole(user);
+    res.json({ id: user.id, username: user.username, email: user.email, companyName: user.companyName, isSuperAdmin: user.isSuperAdmin,
+      managementRole, canManage: managementRole !== "member" });
   });
 
   app.get("/api/admin/subscription", requireAdmin, async (req, res) => {
@@ -1506,6 +1557,8 @@ export async function registerRoutes(
         isActive: user.isActive,
         isExpired: !entitlement.active && entitlement.plan !== "enterprise",
         isSuperAdmin: user.isSuperAdmin,
+        managementRole: await publicManagementRole(user),
+        canManage: (await publicManagementRole(user)) !== "member",
         hasStripeCustomer: Boolean(user.stripeCustomerId),
       });
     } catch (error: any) {
@@ -1544,20 +1597,10 @@ export async function registerRoutes(
   });
 
   app.patch("/api/super-admin/users/:userId", requireSuperAdmin, async (req, res) => {
-    try {
-      const { subscriptionPlan, planExpiresAt, maxWebinars, isActive } = req.body;
-      const updateData: any = {};
-      if (subscriptionPlan !== undefined) updateData.subscriptionPlan = subscriptionPlan;
-      if (planExpiresAt !== undefined) updateData.planExpiresAt = planExpiresAt ? new Date(planExpiresAt) : null;
-      if (maxWebinars !== undefined) updateData.maxWebinars = maxWebinars;
-      if (isActive !== undefined) updateData.isActive = isActive;
-      const updated = await storage.updateUser(req.params.userId as string, updateData);
-      if (!updated) return res.status(404).json({ message: "User not found" });
-      const webinarCount = await storage.getWebinarCountByUser(updated.id);
-      res.json({ ...updated, webinarCount });
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
+    // This endpoint used to accept arbitrary plan, expiry and quota mutation
+    // without an audit trail. It is intentionally retired rather than trying
+    // to map unsafe legacy payloads onto the constrained management API.
+    res.status(410).json({ message: "This legacy mutation is retired; use /api/management member actions" });
   });
 
   app.post("/api/support", requireAdmin, async (req, res) => {
@@ -1572,17 +1615,7 @@ export async function registerRoutes(
   });
 
   app.patch("/api/super-admin/support/:id", requireSuperAdmin, async (req, res) => {
-    const status = req.body?.status;
-    const adminNote = req.body?.adminNote;
-    if (status !== undefined && !["open", "in_progress", "resolved", "closed"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
-    }
-    if (adminNote !== undefined && adminNote !== null && (typeof adminNote !== "string" || adminNote.length > 5000)) {
-      return res.status(400).json({ message: "Invalid admin note" });
-    }
-    const updated = await storage.updateSupportFeedback(req.params.id as string, { status, adminNote });
-    if (!updated) return res.status(404).json({ message: "Support feedback not found" });
-    res.json(updated);
+    res.status(410).json({ message: "This legacy mutation is retired; use /api/management/support/:id" });
   });
 
   // ============ Webinar Routes ============
@@ -1841,12 +1874,15 @@ export async function registerRoutes(
         return res.status(403).json({ message: "帳號已停用" });
       }
       const entitlement = await refreshEntitlement(owner);
-      if (!entitlement.active) {
+      const override = !entitlement.active ? await activePublishingOverride(owner.id) : null;
+      if (!entitlement.active && !override) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       await verifyReferencedMediaUrls(targetWebinar);
       await verifiedWebinarVideo(targetWebinar.userId, targetWebinar, true);
-      const maxPublished = entitlement.maxWebinars;
+      // `publishingSlots` is an absolute temporary capacity, never a
+      // replacement for an already-paid/grandfathered higher capacity.
+      const maxPublished = Math.max(entitlement.maxWebinars, override?.publishingSlots || 0);
       const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string, maxPublished);
       if (publishResult.limitExceeded) {
         return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished });
@@ -1901,7 +1937,7 @@ export async function registerRoutes(
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) return res.status(404).json({ message: "找不到說明會" });
     const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
-    if (!hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "找不到說明會" });
+    if (!await hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "找不到說明會" });
     const page = await storage.getPublicWebinarLandingPage(webinar.id);
     if (!page) return res.status(404).json({ message: "說明會落地頁尚未發布" });
     try {
@@ -1976,7 +2012,7 @@ export async function registerRoutes(
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar?.userId || webinar.publishStatus !== "published") return res.status(404).json({ message: "Media not found" });
     const owner = await storage.getUser(webinar.userId);
-    if (!hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "Media not found" });
+    if (!await hasStoredPublicEntitlement(owner)) return res.status(404).json({ message: "Media not found" });
     const page = await storage.getPublicWebinarLandingPage(webinar.id);
     const referenced = Array.isArray(page?.blocks) && page.blocks.some(block =>
       block.type === "video" && block.provider === "bunny" && block.videoId === req.params.assetId);
@@ -2382,18 +2418,7 @@ export async function registerRoutes(
 
   // 超級管理員手動贈送點數
   app.post("/api/super-admin/users/:id/grant-points", requireAdmin, async (req, res) => {
-    try {
-      const admin = await storage.getUser(req.session.userId!);
-      if (!admin?.isSuperAdmin) return res.status(403).json({ message: "需要超級管理員權限" });
-      const points = Math.floor(Number(req.body?.points));
-      if (!Number.isFinite(points) || points <= 0) return res.status(400).json({ message: "無效的點數" });
-      const target = await storage.getUser(String(req.params.id));
-      if (!target) return res.status(404).json({ message: "找不到使用者" });
-      const result = await storage.grantAiCredits({ userId: target.id, points, source: "admin_grant" });
-      res.json({ success: true, points: result.points });
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
+    res.status(410).json({ message: "This legacy mutation is retired; use /api/management/members/:userId/ai-grants" });
   });
 
   // ============ Registration Routes ============
@@ -2452,7 +2477,7 @@ export async function registerRoutes(
         return res.status(503).json({ message: "此 Webinar 的帳號設定不完整，暫時無法報名" });
       }
       const webinarOwner = await storage.getUser(webinarCheck.userId);
-      if (!hasStoredPublicEntitlement(webinarOwner)) {
+      if (!await hasStoredPublicEntitlement(webinarOwner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       const monthlyRegistrantLimit = getMonthlyRegistrantLimit(webinarOwner?.subscriptionPlan || "");
@@ -2866,7 +2891,7 @@ export async function registerRoutes(
       const [connection] = await db.select({ id: ecpayConnections.id }).from(ecpayConnections)
         .where(eq(ecpayConnections.id, payment.ecpayConnectionId)).limit(1);
       if (!connection || !payment.providerHashKeySnapshot || !payment.providerHashIvSnapshot) return fail();
-      const valid = validateEcpayCallback(
+      const valid = validateEcpayCallbackIntegrity(
         fields,
         {
           merchantId: payment.merchantIdSnapshot!,
@@ -2874,11 +2899,10 @@ export async function registerRoutes(
           amount: payment.amountMinor / 100,
           hashKey: decryptEcpayCredential(payment.providerHashKeySnapshot),
           hashIv: decryptEcpayCredential(payment.providerHashIvSnapshot),
-          allowSimulated: payment.providerEnvironment !== "production",
         },
       );
-      if (!valid) return fail();
-      await processVerifiedEcpayPayment(tradeNo);
+      if (!valid || (payment.providerEnvironment === "production" && fields.SimulatePaid === "1")) return fail();
+      await processVerifiedEcpayPayment(tradeNo, { rtnCode: fields.RtnCode, rtnMsg: fields.RtnMsg });
       return res.type("text/plain").send("1|OK");
     } catch {
       return fail();
@@ -2971,7 +2995,7 @@ export async function registerRoutes(
         return res.status(409).json({ message: "Linked offer is unavailable" });
       }
       const owner = await storage.getUser(webinar.userId);
-      if (!hasStoredPublicEntitlement(owner)) {
+      if (!await hasStoredPublicEntitlement(owner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       const allowed = salesPageCanPublish(webinar, offer, page.orderedBlocks);
@@ -3014,7 +3038,7 @@ export async function registerRoutes(
        const { page, offer } = result;
        const ownerId = page.userId || await resolveOfferOwnerId(offer);
        const owner = ownerId ? await storage.getUser(ownerId) : undefined;
-       if (!hasStoredPublicEntitlement(owner)) {
+       if (!await hasStoredPublicEntitlement(owner)) {
          return res.status(404).json({ message: "Sales page not found" });
        }
        const publicCheckout = normalizeCheckoutSettings(page.publishedCheckoutSettings);
@@ -3154,6 +3178,13 @@ export async function registerRoutes(
     offerId: z.string().uuid().optional(),
     salesPageId: z.string().uuid().optional(),
     registrationId: z.string().uuid().optional(),
+    // Required when a registrationId is used. The signature binds this
+    // registration to the webinar; an arbitrary public UUID is not identity.
+    watchToken: z.string().trim().min(16).max(1_000).optional(),
+    buyer: z.object({
+      name: z.string().trim().min(1).max(200),
+      email: z.string().trim().email().max(320).transform(value => value.toLowerCase()),
+    }).strict().optional(),
     visitorToken: analyticsVisitorTokenSchema.optional(),
     sessionId: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
   }).strict()
@@ -3165,6 +3196,9 @@ export async function registerRoutes(
     })
     .refine(value => value.registrationId || value.visitorToken || value.sessionId, {
       message: "A visitor identity is required",
+    })
+    .refine(value => Boolean(value.registrationId || value.buyer), {
+      message: "buyer { name, email } is required when no verified registrationId is supplied",
     });
 
   app.post("/api/webinars/:id/offer-checkout", async (req, res) => {
@@ -3174,7 +3208,7 @@ export async function registerRoutes(
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar || webinar.publishStatus !== "published") return res.status(404).json({ message: "Webinar not found" });
       const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
-      if (!hasStoredPublicEntitlement(owner)) {
+      if (!await hasStoredPublicEntitlement(owner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       let cta: Awaited<ReturnType<typeof storage.getCtaButtonsByWebinar>>[number] | undefined;
@@ -3235,11 +3269,23 @@ export async function registerRoutes(
         checkoutSettingsSnapshot = normalizeCheckoutSettings(context.page.publishedCheckoutSettings);
         offerSlugSnapshot = context.page.slug;
       }
+      let buyer: { name: string; email: string } | undefined;
       if (input.registrationId) {
+        const suppliedWatchToken = input.watchToken ||
+          req.get("Authorization")?.replace(/^Bearer\s+/i, "") ||
+          req.get("X-Watch-Token");
+        if (!verifyWatchTokenFor(suppliedWatchToken, input.registrationId, webinarId)) {
+          return res.status(403).json({ message: "A valid watchToken bound to registrationId is required for registered checkout" });
+        }
         const registration = await storage.getRegistration(input.registrationId);
         if (!registration || registration.webinarId !== webinarId) {
           return res.status(400).json({ message: "registrationId does not belong to this webinar" });
         }
+        // Registration identity is server-verified and wins over any browser
+        // buyer payload so callers cannot cross-bind arbitrary identities.
+        buyer = { name: registration.name, email: registration.email };
+      } else {
+        buyer = input.buyer;
       }
 
       const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : "";
@@ -3280,10 +3326,20 @@ export async function registerRoutes(
           providerEnvironment: connection.environment,
           providerHashKeySnapshot: connection.hashKeyEncrypted,
           providerHashIvSnapshot: connection.hashIvEncrypted,
+          productNameSnapshot: offer.ecpayItemName,
+          buyerNameSnapshot: buyer!.name,
+          buyerEmailSnapshot: buyer!.email,
+          providerStatus: "checkout_started",
+          providerStatusMessage: "Awaiting payment confirmation",
           amountMinor: amountTwd * 100,
           currency: "TWD",
           status: "pending",
         }).returning();
+        await appendMemberOrderEvent(db, {
+          paymentId: payment.id,
+          type: "checkout_started",
+          details: { provider: "ecpay" },
+        });
         const fields: Record<string, string | number> = {
           MerchantID: connection.merchantId,
           MerchantTradeNo: tradeNo,
@@ -3332,10 +3388,20 @@ export async function registerRoutes(
         salesPageVersion,
         checkoutSettingsSnapshot,
         offerSlugSnapshot,
+        productNameSnapshot: offer.ecpayItemName || null,
+        buyerNameSnapshot: buyer!.name,
+        buyerEmailSnapshot: buyer!.email,
+        providerStatus: "checkout_started",
+        providerStatusMessage: "Awaiting payment confirmation",
         amountMinor: price.unit_amount,
         currency: price.currency.toUpperCase(),
         status: "pending",
       }).returning({ id: webinarPayments.id });
+      await appendMemberOrderEvent(db, {
+        paymentId: pendingPayment.id,
+        type: "checkout_started",
+        details: { provider: "stripe" },
+      });
       const metadata = {
         kind: "webinar_offer",
         webinarId,
@@ -4313,6 +4379,7 @@ export async function registerRoutes(
 
   registerAiKnowledgeRoutes(app, requireWebinarOwner);
   registerAiManagementRoutes(app, requireWebinarOwner);
+  registerAdminManagementRoutes(app, revokeUserSessions);
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }

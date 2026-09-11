@@ -154,7 +154,7 @@ export function openTrackedExternalUrl(
 export async function openOfferCheckout(
   webinarId: string,
   ctaId: string,
-  identity: { registrationId?: string; sessionId?: string } = {},
+  identity: { registrationId?: string; sessionId?: string; watchToken?: string; buyer?: { name: string; email: string } } = {},
 ): Promise<void> {
   trackWebinarEvent(webinarId, "cta_click", { ctaId });
   const popup = window.open("", "_blank");

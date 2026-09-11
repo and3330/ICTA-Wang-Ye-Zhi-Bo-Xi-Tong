@@ -421,6 +421,8 @@ export default function AdminDashboard() {
     isActive: boolean;
     isExpired: boolean;
     isSuperAdmin: boolean;
+    canManage?: boolean;
+    managementRole?: string;
     hasStripeCustomer: boolean;
   }>({
     queryKey: ["/api/admin/subscription"],
@@ -845,6 +847,7 @@ export default function AdminDashboard() {
           <AdminDashboardNavigation
             lang={lang}
             isSuperAdmin={!!subscription?.isSuperAdmin}
+            canManage={!!subscription?.canManage}
             adminLabel={s.superAdminPanel}
             logoutLabel={s.logout}
             navigate={setLocation}

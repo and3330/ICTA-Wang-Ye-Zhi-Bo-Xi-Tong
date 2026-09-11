@@ -12,6 +12,7 @@ import {
   webinars,
 } from "@shared/schema";
 import { sha256 } from "./funnelAnalytics";
+import { appendMemberOrderEvent } from "./memberOrders";
 
 const metadataId = (value: string | undefined) =>
   value && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
@@ -123,6 +124,7 @@ async function reconcilePendingRefunds(tx: any, paymentIntentId: string, payment
       userId: ownerId,
       refundedMinor: transition.refundedMinor,
       status: transition.status,
+      operationVersion: sql`${webinarPayments.operationVersion} + 1`,
       updatedAt: new Date(),
     }).where(eq(webinarPayments.id, payment.id));
     await tx.insert(webinarFunnelEvents).values({
@@ -139,6 +141,11 @@ async function reconcilePendingRefunds(tx: any, paymentIntentId: string, payment
       // event key because all provider IDs are represented in this digest.
       dedupeKey: sha256(`stripe-refunds:${pending.map(item => item.stripeEventId).sort().join(":")}`),
       metadata: { serverRecorded: true },
+    });
+    await appendMemberOrderEvent(tx, {
+      paymentId: payment.id,
+      type: "payment_refunded",
+      details: { refundedMinor: transition.refundDelta, cumulativeRefundedMinor: transition.refundedMinor },
     });
   }
   await tx.update(webinarPendingRefunds).set({ reconciledAt: new Date() })
@@ -194,7 +201,6 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
         stripePriceId: session.metadata.stripePriceId,
         registrationWebinarId,
       });
-
       const visitorTokenHash = session.metadata.visitorTokenHash || null;
       const pendingPaymentId = metadataId(session.metadata.paymentId);
       const [precreated] = pendingPaymentId ? await tx.select().from(webinarPayments)
@@ -207,15 +213,18 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
         precreated.originSalesPageIdSnapshot !== (metadataId(session.metadata.originSalesPageIdSnapshot) || null) ||
         precreated.salesPageVersion !== (session.metadata.salesPageVersion ? Number(session.metadata.salesPageVersion) : null)
       )) throw new Error("Mismatched pre-created payment attribution");
-      const precreatedChanged = precreated?.status === "pending"
+      const precreatedChanged = precreated && ["pending", "failed"].includes(precreated.status)
         ? await tx.update(webinarPayments).set({
             stripeCheckoutSessionId: session.id,
              userId: ownerId,
             stripePaymentIntentId: paymentIntentId,
             status: "paid",
+            providerStatus: "paid",
+            providerStatusMessage: "Verified Stripe payment",
+            operationVersion: sql`${webinarPayments.operationVersion} + 1`,
             purchasedAt: new Date(),
             updatedAt: new Date(),
-          }).where(and(eq(webinarPayments.id, precreated.id), eq(webinarPayments.status, "pending")))
+          }).where(and(eq(webinarPayments.id, precreated.id), sql`${webinarPayments.status} IN ('pending', 'failed')`))
           .returning({ id: webinarPayments.id })
         : [];
       const inserted = precreated ? [] : await tx.insert(webinarPayments).values({
@@ -245,16 +254,19 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
           .from(webinarPayments)
           .where(eq(webinarPayments.stripeCheckoutSessionId, session.id))
           .limit(1);
-        if (pending?.status === "pending") {
+        if (pending && ["pending", "failed"].includes(pending.status)) {
           const changed = await tx.update(webinarPayments).set({
             userId: ownerId,
             stripePaymentIntentId: paymentIntentId,
             amountMinor: amountMinor!,
             currency,
             status: "paid",
+            providerStatus: "paid",
+            providerStatusMessage: "Verified Stripe payment",
+            operationVersion: sql`${webinarPayments.operationVersion} + 1`,
             purchasedAt: new Date(),
             updatedAt: new Date(),
-          }).where(and(eq(webinarPayments.id, pending.id), eq(webinarPayments.status, "pending")))
+          }).where(and(eq(webinarPayments.id, pending.id), sql`${webinarPayments.status} IN ('pending', 'failed')`))
             .returning({ id: webinarPayments.id });
           paidApplied = Boolean(changed[0]);
         }
@@ -275,6 +287,14 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
           metadata: { serverRecorded: true },
         }).onConflictDoNothing({
           target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
+        });
+        const [paidPayment] = precreated
+          ? await tx.select({ id: webinarPayments.id }).from(webinarPayments).where(eq(webinarPayments.id, precreated.id)).limit(1)
+          : await tx.select({ id: webinarPayments.id }).from(webinarPayments).where(eq(webinarPayments.stripeCheckoutSessionId, session.id)).limit(1);
+        if (paidPayment) await appendMemberOrderEvent(tx, {
+          paymentId: paidPayment.id,
+          type: "payment_paid",
+          details: { provider: "stripe" },
         });
       }
       const payment = await lockPayment(tx, paymentIntentId);
@@ -304,14 +324,37 @@ export async function processVerifiedOfferPaymentEvent(event: Stripe.Event): Pro
 }
 
 /** Applies a previously authenticated ECPay server callback idempotently. */
-export async function processVerifiedEcpayPayment(providerOrderId: string): Promise<{ duplicate: boolean }> {
+export async function processVerifiedEcpayPayment(
+  providerOrderId: string,
+  callback: { rtnCode?: string; rtnMsg?: string } = {},
+): Promise<{ duplicate: boolean }> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT 1 FROM webinar_payments WHERE provider_order_id = ${providerOrderId} FOR UPDATE`);
     const [payment] = await tx.select().from(webinarPayments)
       .where(and(eq(webinarPayments.providerOrderId, providerOrderId), eq(webinarPayments.paymentProvider, "ecpay")));
     if (!payment) throw new Error("ECPay order not found");
-    if (payment.status === "paid") return { duplicate: true };
-    if (payment.status !== "pending") throw new Error("ECPay order is not payable");
+    const providerStatus = String(callback.rtnCode || "").slice(0, 64) || "unknown";
+    const providerMessage = String(callback.rtnMsg || "").slice(0, 500) || "Awaiting payment confirmation";
+    // ECPay documents RtnCode 1 as successful and 0 as a terminal failure.
+    // Other authenticated codes include asynchronous/waiting states, so remain
+    // pending rather than manufacturing a false payment failure.
+    const outcome = providerStatus === "1" ? "paid" : providerStatus === "0" ? "failed" : "pending";
+    if (payment.status === "paid" || ["partially_refunded", "refunded"].includes(payment.status)) {
+      if (payment.providerStatus === providerStatus && payment.providerStatusMessage === providerMessage) {
+        return { duplicate: true };
+      }
+      await tx.update(webinarPayments).set({
+        providerStatus, providerStatusMessage: providerMessage,
+        operationVersion: sql`${webinarPayments.operationVersion} + 1`,
+        updatedAt: new Date(),
+      }).where(eq(webinarPayments.id, payment.id));
+      await appendMemberOrderEvent(tx, {
+        paymentId: payment.id,
+        type: "payment_provider_evidence",
+        details: { provider: "ecpay", providerStatus, ignoredAfterPaid: true },
+      });
+      return { duplicate: false };
+    }
     const [cta] = payment.ctaId
       ? await tx.select().from(ctaButtons).where(eq(ctaButtons.id, payment.ctaId))
       : [undefined];
@@ -328,14 +371,31 @@ export async function processVerifiedEcpayPayment(providerOrderId: string): Prom
     if (!offer || !ownerId || (payment.userId && payment.userId !== ownerId) || !ctaMatches) {
       throw new Error("Invalid persisted ECPay attribution");
     }
+    const nextStatus = payment.status === "failed" && outcome === "pending" ? "failed" : outcome;
+    if (payment.status === nextStatus &&
+      payment.providerStatus === providerStatus &&
+      payment.providerStatusMessage === providerMessage) return { duplicate: true };
     const changed = await tx.update(webinarPayments).set({
-      status: "paid",
+      status: nextStatus,
       userId: ownerId,
-      purchasedAt: new Date(),
+      providerStatus,
+      providerStatusMessage: providerMessage,
+      operationVersion: sql`${webinarPayments.operationVersion} + 1`,
+      ...(nextStatus === "paid" ? { purchasedAt: payment.purchasedAt || new Date() } : {}),
       updatedAt: new Date(),
-    }).where(and(eq(webinarPayments.id, payment.id), eq(webinarPayments.status, "pending")))
+    }).where(and(
+      eq(webinarPayments.id, payment.id),
+      // An authoritative late success may recover a prior terminal failure.
+      ...(nextStatus === "paid" ? [sql`${webinarPayments.status} IN ('pending', 'failed')`] : [sql`${webinarPayments.status} IN ('pending', 'failed')`]),
+    ))
       .returning({ id: webinarPayments.id });
     if (!changed[0]) return { duplicate: true };
+    await appendMemberOrderEvent(tx, {
+      paymentId: payment.id,
+      type: nextStatus === "paid" ? "payment_paid" : nextStatus === "failed" ? "payment_failed" : "payment_pending",
+      details: { provider: "ecpay", providerStatus },
+    });
+    if (nextStatus !== "paid") return { duplicate: false };
     await tx.insert(webinarFunnelEvents).values({
       userId: ownerId,
       webinarId: payment.webinarId,

@@ -12,6 +12,7 @@ test("child deletion always passes the URL webinar scope to storage", async (t) 
   const calls: Array<[string, string]> = [];
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     deleteScheduledMessage: storage.deleteScheduledMessage,
     deleteTip: storage.deleteTip,
     deletePoll: storage.deletePoll,
@@ -20,6 +21,7 @@ test("child deletion always passes the URL webinar scope to storage", async (t) 
   storage.getWebinar = async (id) => id === webinarId
     ? { id, userId: ownerId, publishStatus: "draft" } as Webinar
     : undefined;
+  storage.getUser = async id => id === ownerId ? { id, isActive: true, isSuperAdmin: false } as any : undefined;
   storage.deleteScheduledMessage = async (scope, id) => { calls.push([scope, id]); return false; };
   storage.deleteTip = async (scope, id) => { calls.push([scope, id]); return false; };
   storage.deletePoll = async (scope, id) => { calls.push([scope, id]); return false; };

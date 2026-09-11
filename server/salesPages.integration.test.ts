@@ -39,6 +39,7 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
 
   const originals = {
     getWebinar: storage.getWebinar,
+    getUser: storage.getUser,
     getWebinarOffer: storage.getWebinarOffer,
     getOfferSalesPage: storage.getOfferSalesPage,
     getPublicOfferSalesPage: storage.getPublicOfferSalesPage,
@@ -46,6 +47,7 @@ test("sales page HTTP routes enforce ownership, webinar offer scope, visibility,
     setOfferSalesPageStatus: storage.setOfferSalesPageStatus,
   };
   storage.getWebinar = async id => id === webinarId ? webinar : undefined;
+  storage.getUser = async id => id === ownerId ? { id, isActive: true, isSuperAdmin: false } as any : undefined;
   storage.getWebinarOffer = async id => id === offerId
     ? crossWebinarOffer
     : id === ownedOfferId
@@ -189,7 +191,10 @@ test("checkout distinguishes direct published sales pages from trusted CTA attri
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   });
 
-  const body = { offerId, salesPageId, sessionId: "buyer-session-identity" };
+  const body = {
+    offerId, salesPageId, sessionId: "buyer-session-identity",
+    buyer: { name: "Sales Page Buyer", email: "sales-page-buyer@example.test" },
+  };
   const draftOrUnpublished = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
@@ -209,7 +214,7 @@ test("checkout distinguishes direct published sales pages from trusted CTA attri
 
   const missingPageBinding = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ offerId, sessionId: "buyer-session-identity" }),
+    body: JSON.stringify({ ...body, salesPageId: undefined }),
   });
   assert.equal(missingPageBinding.status, 400);
 
@@ -224,7 +229,7 @@ test("checkout distinguishes direct published sales pages from trusted CTA attri
   ctaLookupCalled = false;
   const trustedCta = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ctaId, sessionId: "buyer-session-identity" }),
+    body: JSON.stringify({ ctaId, sessionId: "buyer-session-identity", buyer: body.buyer }),
   });
   assert.equal(trustedCta.status, 409);
   assert.equal(ctaLookupCalled, true);
@@ -312,7 +317,7 @@ test("public sales-page identity is returned and authorizes its bound direct che
   const checkoutUrl = `${baseUrl}/api/webinars/${publicPage.webinarId}/offer-checkout`;
   const missingId = await fetch(checkoutUrl, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ offerId: publicPage.offerId, sessionId: "buyer-session-identity" }),
+    body: JSON.stringify({ offerId: publicPage.offerId, sessionId: "buyer-session-identity", buyer: { name: "Sales Page Buyer", email: "sales-page-buyer@example.test" } }),
   });
   assert.equal(missingId.status, 400);
 
@@ -322,6 +327,7 @@ test("public sales-page identity is returned and authorizes its bound direct che
       offerId: publicPage.offerId,
       salesPageId: publicPage.id,
       sessionId: "buyer-session-identity",
+      buyer: { name: "Sales Page Buyer", email: "sales-page-buyer@example.test" },
     }),
   });
   // Page authorization succeeds; no ECPay merchant is configured in the test.

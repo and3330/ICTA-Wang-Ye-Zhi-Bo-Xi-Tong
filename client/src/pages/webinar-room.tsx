@@ -23,6 +23,7 @@ import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { ProviderPlayer } from "@/components/provider-player";
 import type { PlaybackSource } from "@/lib/media";
+import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 
 interface WebSocketMessage {
   type: string;
@@ -62,6 +63,7 @@ export default function WebinarRoom() {
   
   const [visibleCtas, setVisibleCtas] = useState<CtaButton[]>([]);
   const [liveCtas, setLiveCtas] = useState<CtaButton[]>([]);
+  const [checkoutCtaId, setCheckoutCtaId] = useState<string | null>(null);
   
   const [activePoll, setActivePoll] = useState<Poll | null>(null);
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
@@ -733,7 +735,13 @@ export default function WebinarRoom() {
                     className="w-full sm:w-auto animate-pulse"
                     onClick={() => {
                       if (cta.offerId && id) {
-                        void openOfferCheckout(id, cta.id, { sessionId }).catch((error) => {
+                        // A verified registration is resolved by the server from the viewing
+                        // context. Unregistered checkout must collect buyer contact first.
+                        if (!watchState?.registrationId) {
+                          setCheckoutCtaId(cta.id);
+                          return;
+                        }
+                        void openOfferCheckout(id, cta.id, { sessionId, registrationId: watchState.registrationId, watchToken: watchToken || undefined }).catch((error) => {
                           toast({ title: error.message || "Unable to start checkout", variant: "destructive" });
                         });
                       } else if (cta.url) {
@@ -973,6 +981,14 @@ export default function WebinarRoom() {
           </div>
         </div>
       </div>
+      <CheckoutBuyerDialog
+        open={!!checkoutCtaId}
+        onOpenChange={open => !open && setCheckoutCtaId(null)}
+        onContinue={async (buyer: CheckoutBuyer) => {
+          if (!id || !checkoutCtaId) throw new Error("目前無法確認商品，請關閉後再試。");
+          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer });
+        }}
+      />
 
       <Dialog open={!!activePoll && !hasVoted} onOpenChange={() => {}}>
         <DialogContent className="sm:max-w-md">

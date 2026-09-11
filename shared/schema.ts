@@ -684,6 +684,57 @@ export const insertUserSchema = createInsertSchema(users).omit({ id: true, creat
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+// Platform-management data is deliberately separate from a member's Stripe
+// entitlement. A role grants access to this console, never paid features.
+export const memberAdminMetadata = pgTable("member_admin_metadata", {
+  userId: varchar("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  managementRole: text("management_role").$type<"member" | "support" | "billing" | "read_only" | "super_admin">().notNull().default("member"),
+  notes: jsonb("notes").$type<string[]>().notNull().default([]),
+  tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const entitlementOverrides = pgTable("entitlement_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  publishingSlots: integer("publishing_slots").notNull(),
+  startsAt: timestamp("starts_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: varchar("created_by").notNull().references(() => users.id, { onDelete: "restrict" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  userExpiryIndex: index("entitlement_overrides_user_expiry_idx").on(table.userId, table.expiresAt),
+}));
+
+// Append-only administrative trail. `before` and `after` only store approved,
+// non-secret fields selected by the route, never full database rows.
+export const adminAuditEvents = pgTable("admin_audit_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  targetUserId: varchar("target_user_id").references(() => users.id, { onDelete: "set null" }),
+  action: varchar("action", { length: 100 }).notNull(),
+  reason: text("reason").notNull(),
+  before: jsonb("before"),
+  after: jsonb("after"),
+  requestId: varchar("request_id", { length: 100 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  targetCreatedIndex: index("admin_audit_events_target_created_idx").on(table.targetUserId, table.createdAt),
+  createdIndex: index("admin_audit_events_created_idx").on(table.createdAt),
+}));
+
+export const adminMutationIdempotency = pgTable("admin_mutation_idempotency", {
+  idempotencyKey: varchar("idempotency_key", { length: 160 }).primaryKey(),
+  actorUserId: varchar("actor_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  action: varchar("action", { length: 100 }).notNull(),
+  targetUserId: varchar("target_user_id").references(() => users.id, { onDelete: "set null" }),
+  payloadFingerprint: varchar("payload_fingerprint", { length: 128 }).notNull(),
+  status: text("status").notNull().default("pending"),
+  providerReference: varchar("provider_reference", { length: 255 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const ecpayConnections = pgTable("ecpay_connections", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
@@ -1022,6 +1073,17 @@ export const webinarPayments = pgTable("webinar_payments", {
   providerEnvironment: text("provider_environment"),
   providerHashKeySnapshot: text("provider_hash_key_snapshot"),
   providerHashIvSnapshot: text("provider_hash_iv_snapshot"),
+  // Immutable commerce presentation captured before checkout redirects. Older
+  // rows deliberately remain null; never infer historical buyer identities.
+  productNameSnapshot: text("product_name_snapshot"),
+  buyerNameSnapshot: text("buyer_name_snapshot"),
+  buyerEmailSnapshot: text("buyer_email_snapshot"),
+  providerStatus: text("provider_status"),
+  providerStatusMessage: text("provider_status_message"),
+  internalNote: text("internal_note"),
+  fulfillmentStatus: text("fulfillment_status").$type<"pending" | "in_progress" | "completed" | "cancelled">().notNull().default("pending"),
+  operationVersion: integer("operation_version").notNull().default(1),
+  operationMetadata: jsonb("operation_metadata").$type<Record<string, unknown>>().notNull().default({}),
   amountMinor: integer("amount_minor").notNull(),
   refundedMinor: integer("refunded_minor").notNull().default(0),
   currency: varchar("currency", { length: 3 }).notNull(),
@@ -1029,7 +1091,25 @@ export const webinarPayments = pgTable("webinar_payments", {
   purchasedAt: timestamp("purchased_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  ownerCreatedIndex: index("webinar_payments_owner_created_idx").on(table.userId, table.createdAt),
+  ownerStatusIndex: index("webinar_payments_owner_status_idx").on(table.userId, table.status),
+  offerCreatedIndex: index("webinar_payments_offer_created_idx").on(table.offerId, table.createdAt),
+}));
+
+// Append-only seller-operation and authenticated-provider history. This is
+// intentionally distinct from funnel analytics and excludes raw callbacks.
+export const memberOrderEvents = pgTable("member_order_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  paymentId: varchar("payment_id").notNull().references(() => webinarPayments.id, { onDelete: "restrict" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  eventType: text("event_type").notNull(),
+  reason: text("reason"),
+  details: jsonb("details").$type<Record<string, string | number | boolean | null>>().notNull().default({}),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+}, (table) => ({
+  paymentOccurredIndex: index("member_order_events_payment_occurred_idx").on(table.paymentId, table.occurredAt),
+}));
 
 export const currencyCodeSchema = z.string().trim().regex(/^[A-Za-z]{3}$/)
   .transform(value => value.toUpperCase());

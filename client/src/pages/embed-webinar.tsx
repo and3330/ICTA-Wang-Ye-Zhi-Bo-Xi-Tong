@@ -16,6 +16,7 @@ import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { ProviderPlayer } from "@/components/provider-player";
 import type { PlaybackSource } from "@/lib/media";
+import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +47,8 @@ export default function EmbedWebinar() {
   const [likeCount, setLikeCount] = useState(0);
   const [visibleCtas, setVisibleCtas] = useState<CtaButton[]>([]);
   const [liveCtas, setLiveCtas] = useState<CtaButton[]>([]);
+  const [checkoutCtaId, setCheckoutCtaId] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
   const [viewerCount, setViewerCount] = useState(1);
@@ -352,7 +355,17 @@ export default function EmbedWebinar() {
             <Button
               size="sm"
               onClick={() => {
-                if (cta.offerId && id) void openOfferCheckout(id, cta.id, { sessionId });
+                if (cta.offerId && id) {
+                  if (!watchState?.registrationId) {
+                    setCheckoutCtaId(cta.id);
+                    return;
+                  }
+                  void openOfferCheckout(id, cta.id, {
+                    sessionId,
+                    registrationId: watchState.registrationId,
+                    watchToken: watchToken || undefined,
+                  }).catch(error => setCheckoutError(error instanceof Error ? error.message : "無法開啟付款，請稍後再試。"));
+                }
                 else if (cta.url) openTrackedExternalUrl(
                   id,
                   cta.url,
@@ -404,6 +417,15 @@ export default function EmbedWebinar() {
           </Button>
         </div>
       </div>
+      <CheckoutBuyerDialog
+        open={!!checkoutCtaId}
+        onOpenChange={open => !open && setCheckoutCtaId(null)}
+        onContinue={async (buyer: CheckoutBuyer) => {
+          if (!id || !checkoutCtaId) throw new Error("目前無法確認商品，請關閉後再試。");
+          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer });
+        }}
+      />
+      {checkoutError && <p className="border-t p-3 text-sm text-destructive" role="alert">{checkoutError}</p>}
     </div>
   );
 }

@@ -25,6 +25,7 @@ import SalesPageEditor from "@/pages/sales-page-editor";
 import PurchaseResult from "@/pages/purchase-result";
 import LandingPageEditor from "@/pages/landing-page-editor";
 import AdminProducts from "@/pages/admin-products";
+import AdminOrders from "@/pages/admin-orders";
 import AdminMedia from "@/pages/admin-media";
 import { MarketingConsentBanner } from "@/components/marketing-consent";
 
@@ -59,6 +60,7 @@ function Router() {
        <Route path="/admin/webinar/:id/sales/:pageId" component={SalesPageEditor} />
        <Route path="/admin/products/sales/:pageId" component={SalesPageEditor} />
        <Route path="/admin/products" component={AdminProducts} />
+        <Route path="/admin/orders" component={AdminOrders} />
        <Route path="/admin/media" component={AdminMedia} />
       <Route path="/super-admin" component={SuperAdmin} />
       

@@ -33,7 +33,9 @@ import {
   validatePublishableBlocks,
 } from "./salesPages";
 import { getUncachableStripeClient } from "./stripeClient";
+import { activePublishingOverride } from "./adminManagementRoutes";
 import { safeRequestMetadata, sha256 } from "./funnelAnalytics";
+import { appendMemberOrderEvent } from "./memberOrders";
 
 type SessionRequest = Request & { session: { userId?: string } };
 
@@ -50,6 +52,10 @@ const productUpdateSchema = z.object({
 
 const productCheckoutSchema = z.object({
   salesPageId: z.string().uuid(),
+  buyer: z.object({
+    name: z.string().trim().min(1).max(200),
+    email: z.string().trim().email().max(320).transform(value => value.toLowerCase()),
+  }).strict(),
   visitorToken: analyticsVisitorTokenSchema.optional(),
   sessionId: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
   sourceCtaId: z.string().uuid().optional(),
@@ -89,11 +95,14 @@ function statusTokenHash(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function storedEntitlement(user: typeof users.$inferSelect | undefined): boolean {
+async function storedEntitlement(user: typeof users.$inferSelect | undefined): Promise<boolean> {
   if (!user?.isActive) return false;
   if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
-  return ["active", "trialing"].includes(user.subscriptionStatus)
-    && (!user.planExpiresAt || user.planExpiresAt.getTime() > Date.now());
+  if (["active", "trialing"].includes(user.subscriptionStatus)
+    && (!user.planExpiresAt || user.planExpiresAt.getTime() > Date.now())) return true;
+  // A time-limited publishing override admits public member sales pages but
+  // never changes Stripe subscription truth or grants any AI credits.
+  return Boolean(await activePublishingOverride(user.id));
 }
 
 function effectiveOwner(
@@ -152,7 +161,7 @@ async function publicProductContext(offerId: string, pageId: string) {
   const ownerId = effectiveOwner({ userId: row.offer.userId, webinarUserId: row.offerWebinarUserId });
   if (!ownerId || (row.page.userId && row.page.userId !== ownerId)) return undefined;
   const [owner] = await db.select().from(users).where(eq(users.id, ownerId)).limit(1);
-  return storedEntitlement(owner) ? { ...row, owner, ownerId } : undefined;
+  return await storedEntitlement(owner) ? { ...row, owner, ownerId } : undefined;
 }
 
 async function validatedSource(input: {
@@ -234,7 +243,7 @@ async function sendEcpayCheckout(
     return res.status(409).json({ message: "ECPay return URL exceeds the provider limit" });
   }
   const visitorTokenHash = input.visitorToken ? sha256(input.visitorToken) : null;
-  await db.insert(webinarPayments).values({
+  const [payment] = await db.insert(webinarPayments).values({
     userId: ownerId,
     webinarId: input.sourceWebinarId || null,
     offerId: offer.id,
@@ -253,9 +262,19 @@ async function sendEcpayCheckout(
     providerEnvironment: connection.environment,
     providerHashKeySnapshot: connection.hashKeyEncrypted,
     providerHashIvSnapshot: connection.hashIvEncrypted,
+    productNameSnapshot: offer.ecpayItemName,
+    buyerNameSnapshot: input.buyer.name,
+    buyerEmailSnapshot: input.buyer.email,
+    providerStatus: "checkout_started",
+    providerStatusMessage: "Awaiting payment confirmation",
     amountMinor: offer.ecpayAmountTwd * 100,
     currency: "TWD",
     status: "pending",
+  }).returning({ id: webinarPayments.id });
+  await appendMemberOrderEvent(db, {
+    paymentId: payment.id,
+    type: "checkout_started",
+    details: { provider: "ecpay" },
   });
 
   const fields: Record<string, string | number> = {
@@ -511,7 +530,7 @@ export function registerProductCommerceRoutes(
         return res.status(409).json({ message: "Linked product is unavailable" });
       }
       const [owner] = await db.select().from(users).where(eq(users.id, req.session.userId!)).limit(1);
-      if (!storedEntitlement(owner)) {
+      if (!await storedEntitlement(owner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       await verifyReferencedMediaUrls(page.orderedBlocks);
@@ -677,7 +696,7 @@ export function registerProductCommerceRoutes(
     const ownerId = row.offer.userId || row.webinar.userId;
     if (!ownerId) return res.status(404).json({ message: "CTA target is unavailable" });
     const [owner] = await db.select().from(users).where(eq(users.id, ownerId)).limit(1);
-    if (!storedEntitlement(owner)) return res.status(404).json({ message: "CTA target is unavailable" });
+    if (!await storedEntitlement(owner)) return res.status(404).json({ message: "CTA target is unavailable" });
     res.redirect(302, `/sales/${encodeURIComponent(row.page.slug)}?sourceCtaId=${encodeURIComponent(row.cta.id)}&sourceWebinarId=${encodeURIComponent(row.webinar.id)}`);
   });
 }

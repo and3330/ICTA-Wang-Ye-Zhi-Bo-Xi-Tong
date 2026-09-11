@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard } from "lucide-react";
+import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { LangAdmin } from "@/hooks/use-lang";
@@ -7,6 +7,7 @@ import type { LangAdmin } from "@/hooks/use-lang";
 type Props = {
   lang: LangAdmin;
   isSuperAdmin: boolean;
+  canManage?: boolean;
   adminLabel: string;
   logoutLabel: string;
   navigate: (path: string) => void;
@@ -30,9 +31,10 @@ export function AdminDashboardNavigation(props: Props) {
 
   const actions = [
     { id: "button-products", label: "商品", icon: ShoppingBag, run: () => props.navigate("/admin/products") },
+    { id: "button-orders", label: simplified ? "订单管理" : "訂單管理", icon: ReceiptText, run: () => props.navigate("/admin/orders") },
     { id: "button-media-library", label: simplified ? "素材库" : "素材庫", icon: FolderOpen, run: () => props.navigate("/admin/media") },
     { id: "button-admin-lang-toggle", label: simplified ? "简" : "繁", mobileLabel: simplified ? "切換為繁體中文" : "切换为简体中文", icon: Languages, run: props.toggleLanguage },
-    ...(props.isSuperAdmin ? [{ id: "button-super-admin", label: props.adminLabel, icon: Crown, run: () => props.navigate("/super-admin") }] : []),
+    ...(props.isSuperAdmin || props.canManage ? [{ id: "button-super-admin", label: props.adminLabel, icon: Crown, run: () => props.navigate("/super-admin") }] : []),
     { id: "button-open-support", label: simplified ? "客服" : "客服支援", icon: MessageCircle, run: props.openSupport, dialog: true },
     { id: "button-open-ecpay", label: simplified ? "绿界金流" : "綠界金流", icon: CreditCard, run: props.openEcpay, dialog: true },
     { id: "button-logout", label: props.logoutLabel, icon: LogOut, run: props.logout },

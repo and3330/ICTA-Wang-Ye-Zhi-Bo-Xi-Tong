@@ -22,3 +22,5 @@
 - [Bunny media boundaries](bunny-media-boundaries.md) — distinguish upload keys from embed security keys; direct TUS admission quotas cannot guarantee a provider-cost ceiling.
 - [AI reply review semantics](ai-reply-review-semantics.md) — 每場直播獨立管理人設與知識；修正保留原始問答，確認後加入知識，不代表重新訓練模型。
 - [HTTP aborted-stream cleanup](http-aborted-stream-cleanup.md) — Node can emit an error after aborted; response error protection must survive promise settlement until close.
+- [Management financial browsing](management-financial-browsing.md) — keep payment categories independently paginated; merging and truncating source pages silently loses transactions.
+- [Order fulfillment concurrency](order-fulfillment-concurrency.md) — provider changes must invalidate stale seller edits; payment and fulfillment remain separate histories.
