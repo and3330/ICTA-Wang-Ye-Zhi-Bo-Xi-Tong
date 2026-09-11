@@ -87,7 +87,7 @@ test("homepage anchors and signup CTA retain their destinations", async ({ page 
   await expect(page).toHaveURL(/\/admin(?:[/?#].*)?$/);
 });
 
-test("product preview and featured pricing retain readable text contrast", async ({ page }) => {
+test("homepage product preview, proof notes and pricing retain readable text contrast", async ({ page }) => {
   await page.goto("/");
   const selectors = [
     ".sc-room header", ".sc-room header b",
@@ -95,6 +95,7 @@ test("product preview and featured pricing retain readable text contrast", async
     ".sc-room-bottom aside > small", ".sc-room-bottom aside > b",
     ".sc-room-bottom aside > span",
     ".sc-plan-grid .featured .sc-price", ".sc-plan-grid .featured .sc-price small",
+    ".sc-proof-notes article h3", ".sc-proof-notes article p", ".sc-proof-notes article > svg",
   ];
   for (const selector of selectors) {
     const ratios = await page.locator(selector).evaluateAll(elements => {
