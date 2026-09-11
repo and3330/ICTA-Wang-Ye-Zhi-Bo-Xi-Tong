@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ExternalOrders } from "@/components/external-orders";
 
 type ProductFiltersResponse = { items: MemberOrderProductFilterOption[]; truncated?: boolean; hasMore?: boolean };
 const paymentLabels: Record<MemberOrderPaymentStatus, string> = { pending: "待付款確認", paid: "已付款", failed: "付款失敗", partially_refunded: "部分退款", refunded: "已退款" };
@@ -35,7 +36,7 @@ function statusClass(paymentStatus: MemberOrderPaymentStatus) {
   return paymentStatus === "paid" ? "bg-emerald-700 hover:bg-emerald-700" : paymentStatus === "failed" || paymentStatus === "refunded" ? "bg-rose-700 hover:bg-rose-700" : "bg-amber-700 hover:bg-amber-700";
 }
 
-export default function AdminOrders() {
+function InternalOrders() {
   const [, navigate] = useLocation();
   const search = useSearch();
   const { toast } = useToast();
@@ -152,5 +153,20 @@ export default function AdminOrders() {
       </section>
     </main>
     {selectedId && <MemberOrderDetailDialog order={detailQuery.data} loading={detailQuery.isLoading} error={detailQuery.error || null} onClose={() => setParams({ order: null })} onRetry={() => detailQuery.refetch()} saving={update.isPending} conflict={conflict} onSave={input => update.mutate(input)} />}
+  </div>;
+}
+
+export default function AdminOrders() {
+  const [, navigate] = useLocation();
+  const search = useSearch();
+  const external = new URLSearchParams(search).get("tab") === "external";
+  return <div className="min-h-screen bg-muted/30">
+    <div className="container mx-auto px-4 pt-4 sm:pt-6">
+      <div className="inline-flex rounded-md border bg-card p-1" role="tablist" aria-label="訂單來源">
+        <Button size="sm" variant={external ? "ghost" : "secondary"} role="tab" aria-selected={!external} onClick={() => navigate("/admin/orders")} data-testid="member-orders-tab-internal">內部訂單</Button>
+        <Button size="sm" variant={external ? "secondary" : "ghost"} role="tab" aria-selected={external} onClick={() => navigate("/admin/orders?tab=external")} data-testid="member-orders-tab-external">外部歸因</Button>
+      </div>
+    </div>
+    {external ? <main className="container mx-auto px-4 py-6 sm:py-8"><ExternalOrders /></main> : <InternalOrders />}
   </div>;
 }

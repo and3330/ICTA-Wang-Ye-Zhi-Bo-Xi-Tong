@@ -45,6 +45,7 @@ import {
 import { VideoSourcePicker } from "@/components/media-picker";
 import { SalesTemplateChooser, type SalesTemplate } from "@/components/sales-template-chooser";
 import { createSalesPageTemplate } from "@shared/salesPageTemplates";
+import { ExternalJourneyPanel } from "@/components/external-journey-panel";
 
 function toLocalDateTimeInput(value: Date | string) {
   const date = new Date(value);
@@ -5198,6 +5199,7 @@ export default function AdminWebinarDetail() {
                 { id: "webinar-info", label: s.settingsWebinarInfo, icon: Settings },
                 { id: "brand", label: "品牌設定", icon: Palette },
                 { id: "embed", label: "嵌入與分享", icon: Code },
+                { id: "external-journey", label: "外部旅程與歸因", icon: Link2 },
               ], settingsSection, setSettingsSection)}
               <div className="space-y-6">
               {settingsSection === "tracking" && (
@@ -5869,6 +5871,9 @@ export default function AdminWebinarDetail() {
               </Card>
               </>
               )}
+               {settingsSection === "external-journey" && (
+                 <ExternalJourneyPanel webinarId={id!} webinarPublished={webinar.publishStatus === "published"} />
+               )}
             </div>
               </div>
           </TabsContent>

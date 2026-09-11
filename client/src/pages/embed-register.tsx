@@ -17,8 +17,9 @@ import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } 
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
-import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
+import { saveWatchAccess } from "@/lib/watch-access";
 import { SellCaseLogo } from "@/components/sellcase-logo";
+import type { ExternalJourneyPublicSettings } from "@shared/externalJourneys";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 
@@ -84,6 +85,7 @@ export default function EmbedRegister() {
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [externalThankYouUnavailable, setExternalThankYouUnavailable] = useState(false);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [customFieldErrors, setCustomFieldErrors] = useState<Record<string, boolean>>({});
 
@@ -96,6 +98,25 @@ export default function EmbedRegister() {
     queryKey: ["/api/webinars", id, "available-sessions"],
     enabled: !!id,
   });
+  const { data: publicJourney } = useQuery<ExternalJourneyPublicSettings>({
+    queryKey: ["/api/webinars", id, "external-journey", "public"],
+    enabled: !!id,
+  });
+
+  const allowedParentOrigin = (() => {
+    if (window.parent === window) return null;
+    try {
+      const parentOrigin = document.referrer ? new URL(document.referrer).origin : "";
+      if (parentOrigin === window.location.origin) return parentOrigin;
+      return parentOrigin && publicJourney?.approvedEmbedOrigins.includes(parentOrigin) ? parentOrigin : null;
+    } catch {
+      return null;
+    }
+  })();
+  const postToAllowedParent = (message: Record<string, unknown>) => {
+    if (!allowedParentOrigin) return;
+    try { window.parent.postMessage(message, allowedParentOrigin); } catch {}
+  };
 
   const { data: regCount } = useQuery<{ count: number }>({
     queryKey: ["/api/webinars", id, "registration-count"],
@@ -142,9 +163,21 @@ export default function EmbedRegister() {
       saveWatchAccess(id!, response);
       setRegistered(true);
       setErrorMessage(null);
-      try {
-         window.parent.postMessage({ type: "livecast:registered", webinarId: id, watchUrl: watchUrl(`/webinar/${id}`, id!, getWatchToken(id)) }, "*");
-      } catch {}
+      setExternalThankYouUnavailable(response?.externalThankYouUnavailable === true);
+      const redirectUrl = response?.externalThankYou?.redirectUrl;
+      if (typeof redirectUrl === "string" && redirectUrl) {
+        try {
+          const destination = new URL(redirectUrl);
+          if (destination.protocol === "https:") {
+            window.location.assign(destination.toString());
+            return;
+          }
+        } catch {
+          // Fall back to the internal success view.
+        }
+      }
+      // The parent notification does not contain the private watch URL.
+      postToAllowedParent({ type: "livecast:registered", webinarId: id });
     },
     onError: (error: any) => {
       setErrorMessage(error.message || "報名失敗，請稍後再試");
@@ -158,7 +191,7 @@ export default function EmbedRegister() {
         const height = document.documentElement.scrollHeight;
         if (height !== lastHeight) {
           lastHeight = height;
-          window.parent.postMessage({ type: "livecast:resize", height }, "*");
+          postToAllowedParent({ type: "livecast:resize", height });
         }
       } catch {}
     };
@@ -170,7 +203,7 @@ export default function EmbedRegister() {
       observer.disconnect();
       window.removeEventListener("resize", sendHeight);
     };
-  }, []);
+  }, [allowedParentOrigin]);
 
   const webinarTimezone = webinar?.timezone || "Asia/Taipei";
   const formatDate = (date: string | Date) => {
@@ -283,6 +316,11 @@ export default function EmbedRegister() {
         <h3 className="text-xl font-bold mb-2" data-testid="text-embed-success">
           {thankYou?.enabled && thankYou.headline ? thankYou.headline : "報名成功！"}
         </h3>
+        {externalThankYouUnavailable && (
+          <p role="status" className="mb-4 text-sm">
+            外部完成頁暫時無法開啟；報名已完成，請使用本頁的觀看按鈕。
+          </p>
+        )}
         <p className="text-sm text-muted-foreground mb-4">
           {thankYou?.enabled && thankYou.message ? thankYou.message : "確認信已發送至您的 Email"}
         </p>
@@ -304,7 +342,7 @@ export default function EmbedRegister() {
           <Button
             className="w-full mb-2"
             style={{ backgroundColor: accentColor }}
-            onClick={() => openTrackedExternalUrl(id, thankYou.ctaUrl)}
+            onClick={() => { void openTrackedExternalUrl(id, thankYou.ctaUrl); }}
             data-testid="button-embed-thankyou-cta"
           >
             {thankYou.ctaText}

@@ -73,6 +73,14 @@ import { runAiReply } from "./aiReplyService";
 import { aiReplyAdmission, executeAdmittedAiReply, validateViewerChatContent } from "./aiReplyAdmission";
 import { registerAiManagementRoutes } from "./aiManagementRoutes";
 import { activePublishingOverride, registerAdminManagementRoutes } from "./adminManagementRoutes";
+import {
+  activeMemberManualPlan,
+  composePublishingOverride,
+  effectiveMemberPlan,
+  effectiveMonthlyRegistrantLimit,
+  manualPlanDto,
+  memberManualPlan,
+} from "./manualPlanEntitlements";
 import { registerAiKnowledgeRoutes } from "./aiKnowledgeRoutes";
 import { aiReplySettingsPatchSchema, aiReplySettingsSchema } from "@shared/aiAssistant";
 import {
@@ -81,7 +89,6 @@ import {
   SUBSCRIPTION_PLANS,
   planLookupKey,
   type BillingInterval,
-  getMonthlyRegistrantLimit,
   getApprovedPriceIds,
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
@@ -123,6 +130,10 @@ import {
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
+import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
+import { optionalRegistrationEnrichment } from "./externalJourneySafety";
+import { externalJourneySettings } from "@shared/schema";
+import { externalJourneySettingsSchema } from "@shared/externalJourneys";
 import {
   isAcceptingWork,
   registerStopper,
@@ -342,14 +353,14 @@ async function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storag
   if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
   if (["active", "trialing"].includes(user.subscriptionStatus)
     && (!user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now())) return true;
-  // Read live override state for every public admission; expiration never
-  // relies on cached entitlement data and does not alter the Stripe record.
+  // Read live temporary-entitlement state for every public admission;
+  // expiration/revocation never relies on cached user fields or alters Stripe.
   try {
-    return Boolean(await activePublishingOverride(user.id));
+    return Boolean(await activeMemberManualPlan(user.id) || await activePublishingOverride(user.id));
   } catch (error: any) {
     // During a rolling deployment an unmigrated node must fail closed rather
     // than accidentally admitting public traffic.
-    if (error?.code === "42P01") return false;
+    if (error?.code === "42P01" || error?.code === "42703") return false;
     throw error;
   }
 }
@@ -410,11 +421,29 @@ export async function registerRoutes(
   const questionNotifyThrottle = new Map<string, number>();
   const QUESTION_NOTIFY_COOLDOWN_MS = 60 * 1000;
 
-  // Allow iframe embedding for embed routes
-  app.use((req, res, next) => {
+  // Embeds are same-origin by default. A member must explicitly publish exact
+  // third-party origins before an external page can frame registration; never
+  // restore the historic wildcard frame-ancestors policy.
+  app.use(async (req, res, next) => {
     if (req.path.startsWith('/embed/') || req.path === '/livecast-widget.js') {
       res.removeHeader('X-Frame-Options');
-      res.setHeader('Content-Security-Policy', "frame-ancestors *");
+      let ancestors = ["'self'"];
+      const match = req.path.match(/^\/embed\/(?:register|webinar)\/([^/]+)$/);
+      if (match) {
+        try {
+          const [journey] = await db.select({ publishedSettings: externalJourneySettings.publishedSettings })
+            .from(externalJourneySettings).where(eq(externalJourneySettings.webinarId, match[1])).limit(1);
+          const approved = (journey?.publishedSettings as any)?.approvedEmbedOrigins;
+          const webinar = await storage.getWebinar(match[1]);
+          const owner = webinar?.userId ? await storage.getUser(webinar.userId) : undefined;
+          if (webinar?.publishStatus === "published" && await hasStoredPublicEntitlement(owner) && Array.isArray(approved)) {
+            ancestors = [...ancestors, ...approved.filter((value): value is string => typeof value === "string")];
+          }
+        } catch {
+          // Migration/configuration read failures fail closed to same-origin.
+        }
+      }
+      res.setHeader('Content-Security-Policy', `frame-ancestors ${ancestors.join(" ")}`);
     }
     const isPublicGetRoute =
       (req.method === 'GET' || req.method === 'OPTIONS') &&
@@ -469,6 +498,7 @@ export async function registerRoutes(
     verifyReferencedMediaUrls,
   );
   registerMemberOrderRoutes(app);
+  registerExternalJourneyRoutes(app, hasStoredPublicEntitlement);
   // registerBunnyMediaRoutes owns its final handlers. Intercept its DELETE
   // registration so the media lock wraps the returned handler Promise rather
   // than relying on an early app.use response-lifecycle middleware.
@@ -1540,22 +1570,39 @@ export async function registerRoutes(
       const user = await storage.getUser(req.session.userId!);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
       const entitlement = await refreshEntitlement(user);
+      const manual = await memberManualPlan(user.id);
+      const override = await activePublishingOverride(user.id);
+      const effective = composePublishingOverride(effectiveMemberPlan(entitlement, manual), override);
       const webinarCount = await storage.getWebinarCountByUser(user.id);
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
        res.json({
-        plan: entitlement.plan,
+        // The original fields are effective access for the member dashboard.
+        // `paid` remains Stripe-derived and is never synthesized from manual access.
+        plan: effective.plan,
         amountUsd: entitlement.amountUsd,
         status: entitlement.status,
-        active: entitlement.active,
-        planStartedAt: entitlement.startedAt,
-        planExpiresAt: entitlement.currentPeriodEnd,
+        active: effective.active,
+        planStartedAt: effective.source === "manual" ? manual?.startsAt || null : entitlement.startedAt,
+        planExpiresAt: effective.source === "manual" ? manual?.expiresAt || null : entitlement.currentPeriodEnd,
         cancelAtPeriodEnd: entitlement.cancelAtPeriodEnd,
         addonWebinars: entitlement.addonWebinars,
-        maxWebinars: entitlement.maxWebinars,
+        maxWebinars: effective.maxWebinars,
+        effectivePlan: effective,
+        manualPlan: manual ? manualPlanDto(manual) : null,
+        publishingOverride: override ? {
+          id: override.id, publishingSlots: override.publishingSlots,
+          startsAt: override.startsAt.toISOString(), expiresAt: override.expiresAt.toISOString(),
+        } : null,
+        paid: {
+          plan: entitlement.plan, status: entitlement.status, active: entitlement.active,
+          planStartedAt: entitlement.startedAt, planExpiresAt: entitlement.currentPeriodEnd,
+          cancelAtPeriodEnd: entitlement.cancelAtPeriodEnd, amountUsd: entitlement.amountUsd,
+          stripeSubscriptionId: entitlement.stripeSubscriptionId,
+        },
         webinarCount,
         publishedCount,
         isActive: user.isActive,
-        isExpired: !entitlement.active && entitlement.plan !== "enterprise",
+        isExpired: !effective.active && entitlement.plan !== "enterprise",
         isSuperAdmin: user.isSuperAdmin,
         managementRole: await publicManagementRole(user),
         canManage: (await publicManagementRole(user)) !== "member",
@@ -1874,15 +1921,19 @@ export async function registerRoutes(
         return res.status(403).json({ message: "帳號已停用" });
       }
       const entitlement = await refreshEntitlement(owner);
-      const override = !entitlement.active ? await activePublishingOverride(owner.id) : null;
-      if (!entitlement.active && !override) {
+      const manual = await activeMemberManualPlan(owner.id);
+      // Capacity-only overrides remain additive even when paid/manual access
+      // is already active; the strongest active capacity always wins.
+      const override = await activePublishingOverride(owner.id);
+      const effective = composePublishingOverride(effectiveMemberPlan(entitlement, manual), override);
+      if (!effective.active && !override) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       await verifyReferencedMediaUrls(targetWebinar);
       await verifiedWebinarVideo(targetWebinar.userId, targetWebinar, true);
       // `publishingSlots` is an absolute temporary capacity, never a
       // replacement for an already-paid/grandfathered higher capacity.
-      const maxPublished = Math.max(entitlement.maxWebinars, override?.publishingSlots || 0);
+      const maxPublished = Math.max(effective.maxWebinars, override?.publishingSlots || 0);
       const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string, maxPublished);
       if (publishResult.limitExceeded) {
         return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished });
@@ -2425,6 +2476,8 @@ export async function registerRoutes(
   app.post("/api/registrations", async (req, res) => {
     try {
       const body = { ...req.body };
+      const requestedExternalOrigin = body.externalJourneyOrigin;
+      delete body.externalJourneyOrigin;
       const analyticsVisitorToken = body.analyticsVisitorToken === undefined
         ? undefined
         : analyticsVisitorTokenSchema.parse(body.analyticsVisitorToken);
@@ -2443,8 +2496,35 @@ export async function registerRoutes(
         return res.status(403).json({ message: "此直播間尚未發佈，無法報名" });
       }
       const publishedLanding = await storage.getPublicWebinarLandingPage(webinarCheck.id);
-      if (!publishedLanding) {
+      const [publishedJourney] = await db.select({ publishedSettings: externalJourneySettings.publishedSettings })
+        .from(externalJourneySettings).where(eq(externalJourneySettings.webinarId, webinarCheck.id)).limit(1);
+      const journeySettings = publishedJourney?.publishedSettings
+        ? externalJourneySettingsSchema.parse(publishedJourney.publishedSettings)
+        : undefined;
+      if (!publishedLanding && journeySettings?.landingMode !== "external") {
         return res.status(403).json({ message: "此說明會落地頁尚未發布，暫時無法報名" });
+      }
+      // External registrants may bind their source origin, but it must be the
+      // exact published allowlist origin. Never accept this as an authority
+      // signal or use it to select a different webinar.
+      if (requestedExternalOrigin !== undefined) {
+        if (typeof requestedExternalOrigin !== "string") return res.status(400).json({ message: "Invalid external journey origin" });
+        let normalizedOrigin: string;
+        try { normalizedOrigin = new URL(requestedExternalOrigin).origin; } catch { return res.status(400).json({ message: "Invalid external journey origin" }); }
+        if (!journeySettings?.approvedOrigins.includes(normalizedOrigin)) return res.status(403).json({ message: "External journey origin is not approved" });
+        data = { ...data, landingUrl: normalizedOrigin };
+      } else {
+        // Browsers supply Origin for cross-site form posts. It is attribution
+        // metadata only, and is recorded only when it exactly matches the
+        // owner's published allowlist; same-origin legacy forms keep their
+        // existing behavior.
+        const browserOrigin = req.get("Origin");
+        try {
+          const normalizedOrigin = browserOrigin ? new URL(browserOrigin).origin : undefined;
+          if (normalizedOrigin && journeySettings?.approvedOrigins.includes(normalizedOrigin)) {
+            data = { ...data, landingUrl: normalizedOrigin };
+          }
+        } catch { /* malformed Origin is not attribution */ }
       }
       if (!process.env.SESSION_SECRET) {
         return res.status(503).json({ message: "Registration is temporarily unavailable" });
@@ -2477,10 +2557,19 @@ export async function registerRoutes(
         return res.status(503).json({ message: "此 Webinar 的帳號設定不完整，暫時無法報名" });
       }
       const webinarOwner = await storage.getUser(webinarCheck.userId);
-      if (!await hasStoredPublicEntitlement(webinarOwner)) {
+      if (!webinarOwner || !await hasStoredPublicEntitlement(webinarOwner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
-      const monthlyRegistrantLimit = getMonthlyRegistrantLimit(webinarOwner?.subscriptionPlan || "");
+      const manual = await activeMemberManualPlan(webinarOwner.id);
+      const paidActive = ["active", "trialing"].includes(webinarOwner.subscriptionStatus)
+        && (!webinarOwner.planExpiresAt || webinarOwner.planExpiresAt.getTime() > Date.now());
+      // The historical publishing-only override admitted an expired catalog
+      // member with that catalog's registration cap. Preserve that behavior;
+      // free override recipients remain uncapped exactly as before.
+      const storedPlanHasLimit = webinarOwner.subscriptionPlan in SUBSCRIPTION_PLANS;
+      const monthlyRegistrantLimit = effectiveMonthlyRegistrantLimit(
+        webinarOwner.subscriptionPlan, paidActive || storedPlanHasLimit, manual,
+      );
       const registration = monthlyRegistrantLimit
         ? await storage.createRegistrationWithinMonthlyLimit(
             webinarCheck.userId,
@@ -2499,7 +2588,15 @@ export async function registerRoutes(
       );
       
       dispatchWebhook(data.webinarId, "registration", {
-        registrationId: registration.id, name: data.name, email: data.email
+         // Retain legacy registration fields while adding stable attribution
+         // fields so receivers can safely dedupe without parsing PII.
+         registrationId: registration.id, name: data.name, email: data.email,
+         webinarId: registration.webinarId,
+         sessionId: registration.selectedSession
+           ? persistedSessions.find(session => new Date(session.scheduledStart).getTime() === new Date(registration.selectedSession!).getTime())?.id || null
+           : null,
+         selectedSession: registration.selectedSession?.toISOString?.() || null,
+         eventId: `registration:${registration.id}`,
       });
       
       const webinar = await storage.getWebinar(data.webinarId);
@@ -2512,7 +2609,20 @@ export async function registerRoutes(
         }
       }
       
-      res.json({ ...registration, watchToken });
+       // The normal built-in response remains compatible. An external
+       // destination is emitted only after the registration transaction has
+       // succeeded; the opaque handoff has no registration PII or watch token.
+       const enrichment = await optionalRegistrationEnrichment(() => externalThankYouForRegistration(
+         registration,
+         `/webinar/${encodeURIComponent(registration.webinarId)}?watchToken=${encodeURIComponent(watchToken)}`,
+         req.get("host") || undefined,
+       ));
+       if (!enrichment.available) console.warn("External thank-you enrichment unavailable");
+       res.json({
+         ...registration, watchToken,
+         ...(enrichment.available && enrichment.value ? { externalThankYou: enrichment.value } : {}),
+         ...(!enrichment.available ? { externalThankYouUnavailable: true } : {}),
+       });
     } catch (error: any) {
       res.status(error?.code === "REGISTRATION_CONFLICT" ? 409 : 400).json({ message: error.message });
     }
@@ -4232,12 +4342,14 @@ export async function registerRoutes(
         const [delivery] = await db.insert(webhookDeliveries).values({
           webhookId: hook.id,
           eventType,
+           eventKey: typeof payload?.eventId === "string" ? payload.eventId : null,
           payload: envelope,
           status: "processing",
           attemptCount: 1,
           leaseToken,
           nextAttemptAt: new Date(Date.now() + WEBHOOK_LEASE_MS),
-        }).returning({ id: webhookDeliveries.id });
+         }).onConflictDoNothing().returning({ id: webhookDeliveries.id });
+         if (!delivery) continue;
         void trackOperation(deliverWebhook(hook.targetUrl, { headers, body }).then(async () => {
           await db.update(webhookDeliveries).set({
             status: "delivered", deliveredAt: new Date(), lastError: null, leaseToken: null,

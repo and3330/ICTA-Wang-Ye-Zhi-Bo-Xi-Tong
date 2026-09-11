@@ -48,3 +48,34 @@ html:lang(zh-TW) .sc-site .sc-home--redesigned h1,html:lang(zh-CN) .sc-site .sc-
   border-color: #f58a79;
   color: #102c2d;
 }
+
+/* Full-bleed backgrounds with the same centered content gutters as adjacent sections. */
+.sc-site .sc-home--redesigned .sc-how,
+.sc-site .sc-home--redesigned .sc-pricing {
+  max-width: none;
+  width: 100%;
+}
+
+.sc-site .sc-home--redesigned .sc-how .sc-kicker {
+  color: #f5c370;
+}
+
+.sc-site .sc-home--redesigned .sc-how li p {
+  color: #b0d6d0;
+}
+
+@media (min-width: 761px) {
+  .sc-site .sc-home--redesigned .sc-how,
+  .sc-site .sc-home--redesigned .sc-pricing {
+    padding-inline: max(3rem, calc((100% - 1180px) / 2));
+  }
+
+  .sc-site .sc-home--redesigned .sc-how ol {
+    margin-top: 3rem;
+    column-gap: 2rem;
+  }
+
+  .sc-site .sc-home--redesigned .sc-pricing header > p {
+    margin-inline: 0;
+  }
+}

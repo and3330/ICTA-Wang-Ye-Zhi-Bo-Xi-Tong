@@ -41,9 +41,7 @@ const metaEventMap: Record<WebinarEventType, string> = {
   checkout_start: "InitiateCheckout",
 };
 
-function loadMetaPixel(id: string) {
-  if (loadedPixels.has(id)) return;
-  loadedPixels.add(id);
+export function loadMetaPixel(id: string, automaticEvents = true) {
   if (!window.fbq) {
     const fbq: Fbq = function (...args: unknown[]) {
       if (fbq.callMethod) fbq.callMethod(...args);
@@ -52,12 +50,17 @@ function loadMetaPixel(id: string) {
     fbq.loaded = true;
     fbq.version = "2.0";
     window.fbq = window._fbq = fbq;
+  }
+  if (!window.fbq.callMethod && !document.querySelector('script[data-livecast-tracking="meta"]')) {
     const script = document.createElement("script");
     script.async = true;
     script.src = "https://connect.facebook.net/en_US/fbevents.js";
     script.dataset.livecastTracking = "meta";
     document.head.appendChild(script);
   }
+  if (loadedPixels.has(id)) return;
+  loadedPixels.add(id);
+  if (!automaticEvents) window.fbq?.("set", "autoConfig", false, id);
   window.fbq?.("init", id);
 }
 
@@ -73,7 +76,7 @@ function loadGtm(id: string) {
   document.head.appendChild(script);
 }
 
-function revokeMarketingTracking() {
+export function revokeMarketingTracking() {
   window.fbq?.("consent", "revoke");
   window.dataLayer?.push({
     event: "sellcase_consent_update",
@@ -81,7 +84,6 @@ function revokeMarketingTracking() {
     analytics_storage: "denied",
   });
   document.querySelectorAll<HTMLScriptElement>("script[data-livecast-tracking]").forEach((script) => script.remove());
-  loadedPixels.clear();
   loadedGtmContainers.clear();
 }
 
@@ -120,7 +122,7 @@ export function WebinarTrackingProvider({
         ...detail.data.metadata,
       };
       if (marketingConsent === "granted" && isValidMetaPixelId(safePixelId)) {
-        window.fbq?.("track", metaEventMap[detail.eventType], payload);
+        window.fbq?.("trackSingle", safePixelId, metaEventMap[detail.eventType], payload);
       }
       if (marketingConsent === "granted" && isValidGtmContainerId(safeGtmId)) {
         window.dataLayer?.push({ event: `webinar_${detail.eventType}`, ...payload });

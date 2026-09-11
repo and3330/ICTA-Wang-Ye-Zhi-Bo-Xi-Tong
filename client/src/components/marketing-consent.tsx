@@ -53,7 +53,7 @@ export function MarketingConsentBanner() {
         >
           <h2 id="marketing-consent-title" className="text-lg font-bold">Cookie 與行銷追蹤設定</h2>
           <p id="marketing-consent-description" className="mt-2 text-sm leading-6 text-slate-600">
-            必要功能不需行銷追蹤也能使用。若您同意，我們才會載入主辦人設定的 Meta Pixel 或 Google Tag Manager，用於成效分析與行銷；相關服務商可能接收裝置、頁面與互動資料。
+            必要功能不需行銷追蹤也能使用。若您同意，我們才會載入 SellCase 或主辦人設定的 Meta Pixel 或 Google Tag Manager，用於成效分析與行銷；相關服務商可能接收裝置、頁面與互動資料。
           </p>
           <p className="mt-2 text-xs leading-5 text-slate-500">
             您可拒絕或隨時變更選擇。詳情請參閱 <Link href="/legal/privacy" className="font-semibold text-teal-700 underline">隱私權政策</Link>。

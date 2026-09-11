@@ -366,10 +366,10 @@ export default function EmbedWebinar() {
                     watchToken: watchToken || undefined,
                   }).catch(error => setCheckoutError(error instanceof Error ? error.message : "無法開啟付款，請稍後再試。"));
                 }
-                else if (cta.url) openTrackedExternalUrl(
+                else if (cta.url) void openTrackedExternalUrl(
                   id,
                   cta.url,
-                  { ctaId: cta.id },
+                  { ctaId: cta.id, watchToken: watchToken || undefined },
                 );
               }}
             >

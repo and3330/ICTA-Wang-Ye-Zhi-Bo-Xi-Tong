@@ -5,6 +5,7 @@
  * integer minor units. The client must use `me.permissions` to render actions,
  * but the server enforces every permission independently.
  */
+import type { EffectiveMemberPlanDto, MemberManualPlanDto } from "./memberManualPlans";
 
 export const managementRoles = ["member", "support", "billing", "read_only", "super_admin"] as const;
 export type ManagementRole = typeof managementRoles[number];
@@ -56,7 +57,13 @@ export type MemberUsageDto = {
 };
 export type MemberDetailDto = {
   profile: MemberProfileDto; override?: EntitlementOverrideDto | null;
-  usage?: MemberUsageDto; subscription?: SubscriptionDto | null;
+  /** Paid Stripe-derived billing only; manual grants never change this object. */
+  subscription?: SubscriptionDto | null;
+  /** Retained manual grant, including pending/expired/revoked state. */
+  manualPlan?: MemberManualPlanDto | null;
+  /** Capacity composed from paid and active manual entitlement. */
+  effectivePlan?: EffectiveMemberPlanDto;
+  usage?: MemberUsageDto;
   webinars: Array<{ id: string; title: string; publishStatus: string; createdAt: string | null }>;
   products?: Array<{ id: string; name: string; status: string; createdAt: string | null }>;
 };

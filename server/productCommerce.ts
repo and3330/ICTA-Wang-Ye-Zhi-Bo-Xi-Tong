@@ -34,6 +34,7 @@ import {
 } from "./salesPages";
 import { getUncachableStripeClient } from "./stripeClient";
 import { activePublishingOverride } from "./adminManagementRoutes";
+import { activeMemberManualPlan } from "./manualPlanEntitlements";
 import { safeRequestMetadata, sha256 } from "./funnelAnalytics";
 import { appendMemberOrderEvent } from "./memberOrders";
 
@@ -100,9 +101,9 @@ async function storedEntitlement(user: typeof users.$inferSelect | undefined): P
   if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
   if (["active", "trialing"].includes(user.subscriptionStatus)
     && (!user.planExpiresAt || user.planExpiresAt.getTime() > Date.now())) return true;
-  // A time-limited publishing override admits public member sales pages but
-  // never changes Stripe subscription truth or grants any AI credits.
-  return Boolean(await activePublishingOverride(user.id));
+  // Time-limited overrides and manual plans admit public sales pages, but
+  // neither mutates Stripe subscription truth nor grants AI credits.
+  return Boolean(await activeMemberManualPlan(user.id) || await activePublishingOverride(user.id));
 }
 
 function effectiveOwner(

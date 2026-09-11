@@ -1290,6 +1290,8 @@ function MemberDetail({
   canCredit,
   canRoles,
   canSubscriptions,
+  canReadSubscriptions,
+  isRoot,
   canReadCredits,
   canReadBilling,
   canReadSupport,
@@ -1304,6 +1306,8 @@ function MemberDetail({
   canCredit: boolean;
   canRoles: boolean;
   canSubscriptions: boolean;
+  canReadSubscriptions: boolean;
+  isRoot: boolean;
   canReadCredits: boolean;
   canReadBilling: boolean;
   canReadSupport: boolean;
@@ -1379,7 +1383,7 @@ function MemberDetail({
             </div>
             {detailData.profile.protectedRoot && (
               <div className="mc-warning">
-                此帳戶為受保護根帳戶，敏感操作不可執行。
+                此帳戶為受保護根帳戶；只有根管理員可執行敏感操作。
               </div>
             )}
             <MemberOperations
@@ -1393,7 +1397,12 @@ function MemberDetail({
               canCredit={canCredit}
               canRoles={canRoles}
               canSubscriptions={canSubscriptions}
+              canReadSubscriptions={canReadSubscriptions}
+              isRoot={isRoot}
+              manualPlan={detailData.manualPlan}
+              effectivePlan={detailData.effectivePlan}
               action={action}
+              onConflict={() => detail.refetch()}
             />
             {canReadCredits && (
               <div className="mc-card mc-panel mc-member-section">
@@ -1891,6 +1900,8 @@ export default function SuperAdmin() {
                 canCredit={allowed("credits.grant")}
                 canRoles={allowed("members.roles")}
                 canSubscriptions={allowed("subscriptions.write")}
+                canReadSubscriptions={allowed("subscriptions.read")}
+                isRoot={!!me.isRoot}
                 canReadCredits={allowed("credits.read")}
                 canReadBilling={allowed("billing.read")}
                 canReadSupport={allowed("support.read")}

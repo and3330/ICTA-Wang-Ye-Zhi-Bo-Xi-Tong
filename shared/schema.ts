@@ -3,6 +3,7 @@ import { pgTable, text, varchar, timestamp, integer, bigint, boolean, jsonb, rea
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
+import type { ExternalJourneySettingsInput } from "./externalJourneys";
 export {
   canonicalLandingVideoSchema,
   canonicalizeLandingVideoUrl,
@@ -327,6 +328,95 @@ export const webinarLandingPages = pgTable("webinar_landing_pages", {
 }));
 export type WebinarLandingPage = typeof webinarLandingPages.$inferSelect;
 export type InsertWebinarLandingPage = typeof webinarLandingPages.$inferInsert;
+
+// External journey configuration follows the same draft/public-snapshot rule
+// as landing pages. Public code must never consult mutable draft settings.
+export const externalJourneySettings = pgTable("external_journey_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }).unique(),
+  settings: jsonb("settings").$type<ExternalJourneySettingsInput>().notNull(),
+  publishedSettings: jsonb("published_settings").$type<ExternalJourneySettingsInput>(),
+  version: integer("version").notNull().default(1),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export const memberIntegrationSecrets = pgTable("member_integration_secrets", {
+  userId: varchar("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  secretEncrypted: text("secret_encrypted").notNull(),
+  version: integer("version").notNull().default(1),
+  rotatedAt: timestamp("rotated_at").notNull().defaultNow(),
+});
+export const externalHandoffs = pgTable("external_handoffs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  registrationId: varchar("registration_id").notNull().references(() => registrations.id, { onDelete: "cascade" }),
+  watchUrlEncrypted: text("watch_url_encrypted"),
+  destinationOrigin: text("destination_origin").notNull(),
+  includeWatchLink: boolean("include_watch_link").notNull().default(false),
+  includeContact: boolean("include_contact").notNull().default(false),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({ expiresIndex: index("external_handoffs_expires_idx").on(table.expiresAt) }));
+export const externalReferrals = pgTable("external_referrals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  ctaId: varchar("cta_id").references(() => ctaButtons.id, { onDelete: "cascade" }),
+  targetUrl: text("target_url").notNull(),
+  registrationId: varchar("registration_id").references(() => registrations.id, { onDelete: "set null" }),
+  sessionId: varchar("session_id"),
+  selectedSession: timestamp("selected_session"),
+  sessionProvenance: text("session_provenance").$type<"registration_success" | "registered_watch_token" | "declared_session" | "anonymous">().notNull().default("anonymous"),
+  visitHash: varchar("visit_hash", { length: 64 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export const externalOrders = pgTable("external_orders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id"),
+  selectedSession: timestamp("selected_session"),
+  orderId: text("order_id").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  sourceTrust: text("source_trust").$type<"browser_reported" | "merchant_reported">().notNull(),
+  // A refund can arrive before any purchase evidence. Keep it unresolved
+  // rather than presenting a fictitious zero-value paid order.
+  purchaseObserved: boolean("purchase_observed").notNull().default(false),
+  grossPaidMinor: integer("gross_paid_minor").notNull().default(0),
+  refundedMinor: integer("refunded_minor").notNull().default(0),
+  netMinor: integer("net_minor").notNull().default(0),
+  referralId: varchar("referral_id").references(() => externalReferrals.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  ownerWebinarOrderUnique: uniqueIndex("external_orders_owner_webinar_order_uniq").on(table.ownerId, table.webinarId, table.orderId),
+  ownerCreatedIndex: index("external_orders_owner_created_idx").on(table.ownerId, table.createdAt),
+}));
+export const externalOrderEvents = pgTable("external_order_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id"),
+  selectedSession: timestamp("selected_session"),
+  orderId: text("order_id").notNull(),
+  eventId: text("event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  sourceTrust: text("source_trust").$type<"browser_reported" | "merchant_reported">().notNull(),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  payloadFingerprint: varchar("payload_fingerprint", { length: 64 }).notNull(),
+  referralId: varchar("referral_id").references(() => externalReferrals.id, { onDelete: "set null" }),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  ownerWebinarEventUnique: uniqueIndex("external_order_events_owner_webinar_event_uniq").on(table.ownerId, table.webinarId, table.eventId),
+  ownerWebinarOrderIndex: index("external_order_events_owner_webinar_order_idx").on(table.ownerId, table.webinarId, table.orderId),
+}));
 
 export const ctaButtons = pgTable("cta_buttons", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -698,13 +788,23 @@ export const entitlementOverrides = pgTable("entitlement_overrides", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   publishingSlots: integer("publishing_slots").notNull(),
+  // A null manualPlan is the original publishing-only override. A non-null
+  // value is a separate, non-payment plan grant retained on this same audited
+  // entitlement surface.
+  manualPlan: text("manual_plan").$type<"starter" | "growth" | "scale" | null>(),
   startsAt: timestamp("starts_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),
   reason: text("reason").notNull(),
   createdBy: varchar("created_by").notNull().references(() => users.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  version: integer("version").notNull().default(1),
+  revokedAt: timestamp("revoked_at"),
+  revokedBy: varchar("revoked_by").references(() => users.id, { onDelete: "restrict" }),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => ({
   userExpiryIndex: index("entitlement_overrides_user_expiry_idx").on(table.userId, table.expiresAt),
+  oneManualPlanPerUser: uniqueIndex("entitlement_overrides_one_manual_plan_per_user")
+    .on(table.userId).where(sql`${table.manualPlan} is not null`),
 }));
 
 // Append-only administrative trail. `before` and `after` only store approved,

@@ -15,6 +15,12 @@
   }
 
   var BASE_URL = getBaseUrl();
+  var BASE_ORIGIN = '';
+  try {
+    BASE_ORIGIN = BASE_URL ? new URL(BASE_URL, window.location.href).origin : window.location.origin;
+  } catch (ignore) {
+    BASE_ORIGIN = window.location.origin;
+  }
 
   function createOverlay() {
     var overlay = document.createElement('div');
@@ -62,7 +68,7 @@
     container.appendChild(iframe);
 
     window.addEventListener('message', function(event) {
-      if (event.data && event.data.type === 'livecast:resize' && event.source === iframe.contentWindow) {
+      if (event.origin === BASE_ORIGIN && event.data && event.data.type === 'livecast:resize' && event.source === iframe.contentWindow) {
         iframe.style.height = (event.data.height + 20) + 'px';
       }
     });
@@ -101,6 +107,9 @@
   }
 
   window.addEventListener('message', function(event) {
+    // Messages can only originate in this widget's own iframe origin. The
+    // iframe additionally only posts to a configured parent origin.
+    if (event.origin !== BASE_ORIGIN) return;
     if (event.data && (event.data.type === 'livecast:registered' || event.data.type === 'livecast-registered')) {
       var overlay = document.getElementById('livecast-overlay');
       setTimeout(function() {

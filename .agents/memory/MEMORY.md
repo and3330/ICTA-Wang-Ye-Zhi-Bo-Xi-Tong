@@ -24,3 +24,4 @@
 - [HTTP aborted-stream cleanup](http-aborted-stream-cleanup.md) — Node can emit an error after aborted; response error protection must survive promise settlement until close.
 - [Management financial browsing](management-financial-browsing.md) — keep payment categories independently paginated; merging and truncating source pages silently loses transactions.
 - [Order fulfillment concurrency](order-fulfillment-concurrency.md) — provider changes must invalidate stale seller edits; payment and fulfillment remain separate histories.
+- [Pixel tenant isolation](pixel-tenant-isolation.md) — SPA navigation retains initialized pixels; route all events to specific pixels and disable platform automatic events.

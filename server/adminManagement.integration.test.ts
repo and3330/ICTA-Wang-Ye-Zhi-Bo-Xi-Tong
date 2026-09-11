@@ -10,19 +10,20 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { activePublishingOverride, ensureNotLastAdmin, registerAdminManagementRoutes } from "./adminManagementRoutes";
+import { activeMemberManualPlan } from "./manualPlanEntitlements";
 import { registerRoutes } from "./routes";
 
 test("management routes enforce role privacy, guards, idempotent grants, and live override expiry", async t => {
   // The normal test database intentionally is not migrated by `npm test`.
   // Run this integration fixture after 0022 in CI/deployment verification.
-  const schema = await db.execute(sql`select count(*)::int as value from information_schema.columns where table_schema = 'public' and table_name = 'admin_mutation_idempotency' and column_name = 'payload_fingerprint'`);
+  const schema = await db.execute(sql`select count(*)::int as value from information_schema.columns where table_schema = 'public' and table_name = 'entitlement_overrides' and column_name = 'manual_plan'`);
   if (Number(schema.rows[0]?.value || 0) !== 1) {
-    t.skip("requires additive admin-management migration 0022 with idempotency fields");
+    t.skip("requires additive member-manual-plans migration 0027");
     return;
   }
 
-  const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-  const [rootId, supportId, memberId, delegatedAdminId] = ids;
+  const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const [rootId, supportId, memberId, delegatedAdminId, freeMemberId] = ids;
   const offerId = crypto.randomUUID();
   const wrongPaymentId = crypto.randomUUID();
   const goodPaymentId = crypto.randomUUID();
@@ -70,6 +71,7 @@ test("management routes enforce role privacy, guards, idempotent grants, and liv
     { id: supportId, username: `support-${suffix}`, password: "test", email: `support-${suffix}@example.test`, isActive: true },
     { id: memberId, username: `member-${suffix}`, password: "test", email: `member-${suffix}@example.test`, isActive: true, subscriptionPlan: "growth", subscriptionStatus: "active", aiPoints: 777 },
     { id: delegatedAdminId, username: `delegated-${suffix}`, password: "test", email: `delegated-${suffix}@example.test`, isActive: true },
+    { id: freeMemberId, username: `manual-free-${suffix}`, password: "test", email: `manual-free-${suffix}@example.test`, isActive: true, subscriptionPlan: "free", subscriptionStatus: "inactive" },
   ]);
   await db.insert(memberAdminMetadata).values([
     { userId: supportId, managementRole: "support", notes: [], tags: [] },
@@ -140,12 +142,68 @@ test("management routes enforce role privacy, guards, idempotent grants, and liv
   });
   assert.equal(override.status, 201);
   const created: any = await override.json();
-  assert.ok(await activePublishingOverride(memberId));
+  await db.insert(entitlementOverrides).values({
+    userId: memberId, publishingSlots: 100, startsAt: new Date(Date.now() - 60_000),
+    expiresAt: new Date(Date.now() + 60_000), reason: "higher but earlier override", createdBy: rootId,
+  });
+  // Selection is capacity-first, not simply the longest remaining grant.
+  assert.equal((await activePublishingOverride(memberId))?.publishingSlots, 100);
   await db.update(entitlementOverrides).set({
     startsAt: new Date(Date.now() - 120_000),
     expiresAt: new Date(Date.now() - 1_000),
-  }).where(eq(entitlementOverrides.id, created.id));
+  }).where(eq(entitlementOverrides.userId, memberId));
   assert.equal(await activePublishingOverride(memberId), undefined);
+
+  // A manual grant is a versioned, audited entitlement only. It does not
+  // overwrite the paid fields used as Stripe's local cache.
+  const manualCreate = {
+    plan: "growth", startsAt: new Date(Date.now() - 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    reason: "time-limited manual access", idempotencyKey: "manual-plan-create",
+  };
+  const createdManualResponse = await call(`/api/management/members/${freeMemberId}/manual-plan`, rootId, "POST", manualCreate);
+  assert.equal(createdManualResponse.status, 201);
+  const createdManual: any = await createdManualResponse.json();
+  assert.equal(createdManual.state, "active");
+  assert.equal(createdManual.plan, "growth");
+  assert.ok(await activeMemberManualPlan(freeMemberId));
+  assert.equal((await call(`/api/management/members/${freeMemberId}/overrides/${createdManual.id}`, rootId, "DELETE", {
+    reason: "old override endpoint must not delete manual grant",
+  })).status, 404);
+  const manualDetail: any = await (await call(`/api/management/members/${freeMemberId}`, rootId)).json();
+  assert.equal(manualDetail.subscription.plan, "free");
+  assert.equal(manualDetail.effectivePlan.plan, "growth");
+  assert.equal(manualDetail.effectivePlan.source, "manual");
+  assert.equal(manualDetail.manualPlan.version, 1);
+  const manualUpdate = await call(`/api/management/members/${freeMemberId}/manual-plan`, rootId, "PATCH", {
+    plan: "scale", extendHours: 2, reason: "extend and increase capacity", version: 1, idempotencyKey: "manual-plan-update",
+  });
+  assert.equal(manualUpdate.status, 200);
+  const updatedManual: any = await manualUpdate.json();
+  assert.equal(updatedManual.plan, "scale");
+  assert.equal(updatedManual.version, 2);
+  await db.update(entitlementOverrides).set({ expiresAt: new Date(Date.now() - 1_000) })
+    .where(eq(entitlementOverrides.id, updatedManual.id));
+  const revivedManualResponse = await call(`/api/management/members/${freeMemberId}/manual-plan`, rootId, "PATCH", {
+    extendHours: 24, reason: "revive from elapsed stored expiry", version: 2, idempotencyKey: "manual-plan-revive",
+  });
+  assert.equal(revivedManualResponse.status, 200);
+  const revivedManual: any = await revivedManualResponse.json();
+  assert.equal(revivedManual.version, 3);
+  assert.ok(new Date(revivedManual.expiresAt).getTime() > Date.now());
+  assert.ok(await activeMemberManualPlan(freeMemberId));
+  assert.equal((await call(`/api/management/members/${freeMemberId}/manual-plan`, rootId, "DELETE", {
+    reason: "stale version", version: 1, idempotencyKey: "manual-plan-stale-revoke",
+  })).status, 409);
+  const manualRevoke = await call(`/api/management/members/${freeMemberId}/manual-plan`, rootId, "DELETE", {
+    reason: "manual period ended early", version: 3, idempotencyKey: "manual-plan-revoke",
+  });
+  assert.equal(manualRevoke.status, 200);
+  assert.equal((await manualRevoke.json() as any).state, "revoked");
+  assert.equal(await activeMemberManualPlan(freeMemberId), undefined);
+  const freeAfter = (await db.select().from(users).where(eq(users.id, freeMemberId)).limit(1))[0];
+  assert.equal(freeAfter.subscriptionPlan, "free");
+  assert.equal(freeAfter.subscriptionStatus, "inactive");
 
   const refundBody = { amountMinor: 100, reason: "fixture refund", idempotencyKey: "same-refund-key" };
   // The buyer customer is intentionally absent from the mock: attribution,

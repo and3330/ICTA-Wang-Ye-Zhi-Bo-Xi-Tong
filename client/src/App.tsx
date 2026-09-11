@@ -28,6 +28,7 @@ import AdminProducts from "@/pages/admin-products";
 import AdminOrders from "@/pages/admin-orders";
 import AdminMedia from "@/pages/admin-media";
 import { MarketingConsentBanner } from "@/components/marketing-consent";
+import { PlatformPixel } from "@/components/platform-pixel";
 
 function Router() {
   return (
@@ -38,6 +39,9 @@ function Router() {
       
       {/* Public Routes */}
       <Route path="/register/:id" component={Registration} />
+       {/* This is the permanent built-in form. /register is the marketing entry
+           and may be redirected by the server's published journey snapshot. */}
+       <Route path="/form/:id" component={Registration} />
       <Route path="/webinar/:id" component={WebinarRoom} />
       <Route path="/legal/:kind" component={Legal} />
        <Route path="/features" component={FeaturesPage} />
@@ -79,6 +83,7 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        <PlatformPixel />
         <MarketingConsentBanner />
       </TooltipProvider>
     </QueryClientProvider>

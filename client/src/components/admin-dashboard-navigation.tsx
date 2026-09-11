@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText } from "lucide-react";
+import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText, Video, Settings, ChevronDown } from "lucide-react";
+import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLabel, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import type { LangAdmin } from "@/hooks/use-lang";
 
 type Props = {
@@ -20,7 +22,9 @@ type Props = {
 export function AdminDashboardNavigation(props: Props) {
   const [open, setOpen] = useState(false);
   const openingDialog = useRef(false);
+  const pendingDropdownDialog = useRef<(() => void) | null>(null);
   const simplified = props.lang === "zh-CN";
+  const [location] = useLocation();
 
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 1024px)");
@@ -29,53 +33,99 @@ export function AdminDashboardNavigation(props: Props) {
     return () => desktop.removeEventListener("change", closeOnDesktop);
   }, []);
 
-  const actions = [
-    { id: "button-products", label: "商品", icon: ShoppingBag, run: () => props.navigate("/admin/products") },
+  const primaryActions = [
+    { id: "button-webinars", label: simplified ? "说明会管理" : "說明會管理", icon: Video, run: () => props.navigate("/admin/dashboard"), active: location === "/admin/dashboard" },
+    { id: "button-products", label: "商品管理", icon: ShoppingBag, run: () => props.navigate("/admin/products") },
     { id: "button-orders", label: simplified ? "订单管理" : "訂單管理", icon: ReceiptText, run: () => props.navigate("/admin/orders") },
     { id: "button-media-library", label: simplified ? "素材库" : "素材庫", icon: FolderOpen, run: () => props.navigate("/admin/media") },
-    { id: "button-admin-lang-toggle", label: simplified ? "简" : "繁", mobileLabel: simplified ? "切換為繁體中文" : "切换为简体中文", icon: Languages, run: props.toggleLanguage },
-    ...(props.isSuperAdmin || props.canManage ? [{ id: "button-super-admin", label: props.adminLabel, icon: Crown, run: () => props.navigate("/super-admin") }] : []),
-    { id: "button-open-support", label: simplified ? "客服" : "客服支援", icon: MessageCircle, run: props.openSupport, dialog: true },
-    { id: "button-open-ecpay", label: simplified ? "绿界金流" : "綠界金流", icon: CreditCard, run: props.openEcpay, dialog: true },
-    { id: "button-logout", label: props.logoutLabel, icon: LogOut, run: props.logout },
   ];
+  const settingsActions = [
+    { id: "button-open-ecpay", label: simplified ? "收款设置 · 绿界" : "收款設定 · 綠界", icon: CreditCard, run: props.openEcpay, dialog: true },
+    { id: "button-open-support", label: simplified ? "客服" : "客服支援", icon: MessageCircle, run: props.openSupport, dialog: true },
+    { id: "button-admin-lang-toggle", label: simplified ? "切換為繁體中文" : "切换为简体中文", icon: Languages, run: props.toggleLanguage },
+  ];
+  const groups = [
+    { label: simplified ? "营运管理" : "營運管理", actions: primaryActions },
+    { label: simplified ? "设置与支援" : "設定與支援", actions: settingsActions },
+    ...(props.isSuperAdmin || props.canManage ? [{ label: "平台管理", actions: [{ id: "button-super-admin", label: props.adminLabel, icon: Crown, run: () => props.navigate("/super-admin") }] }] : []),
+    { label: simplified ? "账号" : "帳號", actions: [{ id: "button-logout", label: props.logoutLabel, icon: LogOut, run: props.logout }] },
+  ];
+  const preventDialogFocusRestore = (event: Event) => {
+    if (openingDialog.current) event.preventDefault();
+    openingDialog.current = false;
+  };
 
   return (
     <>
-      <div className="hidden items-center gap-1 lg:flex" data-testid="admin-desktop-navigation">
-        {actions.map(action => (
-          <Button key={action.id} variant="ghost" size={action.id === "button-logout" ? "default" : "sm"} onClick={action.run} data-testid={action.id}>
-            {action.id !== "button-open-ecpay" && <action.icon className="mr-1 h-4 w-4" />}
+      <nav aria-label={simplified ? "后台主选单" : "後台主選單"} className="hidden items-center gap-1 lg:flex" data-testid="admin-desktop-navigation">
+        {primaryActions.map(action => (
+          <Button key={action.id} variant={action.active ? "secondary" : "ghost"} size="sm" aria-current={action.active ? "page" : undefined} onClick={action.run} data-testid={action.id}>
+            <action.icon className="h-4 w-4" />
             {action.label}
           </Button>
         ))}
-      </div>
+        <div className="mx-2 h-5 border-l" aria-hidden="true" />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" data-testid="button-admin-settings">
+              <Settings className="h-4 w-4" />{simplified ? "设置与账号" : "設定與帳號"}<ChevronDown className="h-3 w-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-60" onCloseAutoFocus={event => {
+            const run = pendingDropdownDialog.current;
+            if (run) {
+              event.preventDefault();
+              pendingDropdownDialog.current = null;
+              // Let the menu release its focus scope before mounting a dialog.
+              requestAnimationFrame(run);
+            }
+          }}>
+            {groups.slice(1).map((group, index) => (
+              <div key={group.label}>
+                {index > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuLabel className="text-xs text-muted-foreground">{group.label}</DropdownMenuLabel>
+                {group.actions.map(action => (
+                  <DropdownMenuItem key={action.id} data-testid={action.id} className={`gap-3 py-2.5 ${action.id === "button-logout" ? "text-destructive focus:text-destructive" : ""}`} onSelect={() => {
+                    if ("dialog" in action && action.dialog === true) {
+                      pendingDropdownDialog.current = action.run;
+                    } else {
+                      action.run();
+                    }
+                  }}>
+                    <action.icon className="h-4 w-4" />{action.label}
+                  </DropdownMenuItem>
+                ))}
+              </div>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </nav>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>
           <Button variant="ghost" size="icon" className="shrink-0 lg:hidden" aria-label={simplified ? "开启后台选单" : "開啟後台選單"} data-testid="button-admin-mobile-menu">
             <Menu className="h-6 w-6" />
           </Button>
         </SheetTrigger>
-        <SheetContent className="w-[min(20rem,90vw)] overflow-y-auto" onCloseAutoFocus={event => {
-          if (openingDialog.current) event.preventDefault();
-          openingDialog.current = false;
-        }}>
+        <SheetContent side="left" className="w-[min(20rem,90vw)] overflow-y-auto" onCloseAutoFocus={preventDialogFocusRestore}>
           <SheetHeader className="text-left">
             <SheetTitle>{simplified ? "后台选单" : "後台選單"}</SheetTitle>
             <SheetDescription>開賣啦 SellCase</SheetDescription>
           </SheetHeader>
-          <nav className="mt-6 flex flex-col gap-2" aria-label={simplified ? "后台功能" : "後台功能"}>
-            {actions.map(action => (
-              <Button key={action.id} variant="ghost" className={`h-12 w-full justify-start gap-3 px-3 text-base ${action.id === "button-logout" ? "mt-3 border-t text-destructive" : ""}`}
+          <nav className="mt-6 space-y-5" aria-label={simplified ? "后台功能" : "後台功能"}>
+            {groups.map(group => <section key={group.label} aria-label={group.label}>
+              <h3 className="mb-1 px-3 text-xs font-medium text-muted-foreground">{group.label}</h3>
+              {group.actions.map(action => (
+              <Button key={action.id} variant={"active" in action && action.active ? "secondary" : "ghost"} aria-current={"active" in action && action.active ? "page" : undefined} className={`h-11 w-full justify-start gap-3 px-3 text-sm ${action.id === "button-logout" ? "text-destructive" : ""}`}
                 data-testid={`mobile-${action.id}`} onClick={() => {
                   openingDialog.current = "dialog" in action && action.dialog === true;
                   setOpen(false);
                   action.run();
                 }}>
                 <action.icon className="h-5 w-5 shrink-0" />
-                {"mobileLabel" in action ? action.mobileLabel : action.label}
+                {action.label}
               </Button>
-            ))}
+              ))}
+            </section>)}
           </nav>
         </SheetContent>
       </Sheet>

@@ -1,6 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function mockDashboard(page: Page, superAdmin = true) {
+async function mockDashboard(
+  page: Page,
+  superAdmin = true,
+  subscriptionOverride: Record<string, unknown> = {},
+) {
   await page.addInitScript(() => {
     localStorage.setItem("sellcase.marketing-consent.v1", "denied");
     localStorage.setItem("icta-lang", "zh-TW");
@@ -15,6 +19,7 @@ async function mockDashboard(page: Page, superAdmin = true) {
         planStartedAt: null, planExpiresAt: null, cancelAtPeriodEnd: false,
         addonWebinars: 0, maxWebinars: 5, webinarCount: 0, publishedCount: 0,
         isActive: true, isExpired: false, isSuperAdmin: superAdmin, hasStripeCustomer: false,
+        ...subscriptionOverride,
       },
       "/api/stripe/config": { billingAvailable: false, catalogReady: false, plans: [], publishableKey: "" },
       "/api/ai-points": { points: 100, unlimited: superAdmin, giftedPoints: 100, permanentPoints: 0, packages: [] },
@@ -75,7 +80,38 @@ test("regular members do not see super-admin action; desktop stays inline", asyn
   await expect(page.getByTestId("button-admin-mobile-menu")).toBeHidden();
   await expect(page.getByTestId("button-products")).toBeVisible();
   await expect(page.getByTestId("button-media-library")).toBeVisible();
+  await expect(page.getByTestId("button-logout")).not.toBeVisible();
+  await page.getByTestId("button-admin-settings").click();
+  await expect(page.getByTestId("button-super-admin")).toHaveCount(0);
   await expect(page.getByTestId("button-logout")).toBeVisible();
+});
+
+test("desktop navigation prioritizes operations and preserves settings dialog focus", async ({ page }) => {
+  await mockDashboard(page);
+  await page.setViewportSize({ width: 1024, height: 850 });
+  await page.goto("/admin/dashboard");
+  const nav = page.getByTestId("admin-desktop-navigation");
+  await expect(nav.locator(":scope > button")).toHaveText(["說明會管理", "商品管理", "訂單管理", "素材庫", "設定與帳號"]);
+  await expect(page.getByTestId("button-webinars")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("button-open-ecpay")).not.toBeVisible();
+  const settings = page.getByTestId("button-admin-settings");
+  await settings.click();
+  await expect(page.getByTestId("button-super-admin")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeFocused();
+  await settings.click();
+  await page.getByTestId("button-open-support").click();
+  const support = page.getByRole("dialog", { name: "聯繫客服團隊" });
+  await expect(support).toBeVisible();
+  await expect.poll(() => support.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press("Escape");
+  await settings.click();
+  await page.getByTestId("button-open-ecpay").click();
+  await expect(page.getByRole("dialog", { name: "綠界 ECPay 自有商店" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.locator(".admin-dashboard > header").screenshot({ path: "/tmp/admin-nav-desktop.png" });
+  await settings.click();
+  await page.getByRole("menu").screenshot({ path: "/tmp/admin-nav-settings.png" });
 });
 
 test("mobile media, super-admin and logout actions keep original behavior", async ({ page }) => {
@@ -91,4 +127,50 @@ test("mobile media, super-admin and logout actions keep original behavior", asyn
     await page.getByTestId(action).click();
     await expect.poll(() => new URL(page.url()).pathname).toBe(destination);
   }
+});
+
+for (const hasStripeCustomer of [false, true]) {
+  test(`manual effective access with ${hasStripeCustomer ? "a stale Stripe customer" : "no Stripe customer"} opens catalog, not billing portal`, async ({ page }) => {
+    let portalRequests = 0;
+    page.on("request", request => {
+      if (new URL(request.url()).pathname === "/api/stripe/portal") portalRequests += 1;
+    });
+    await mockDashboard(page, false, {
+      plan: "growth",
+      active: true,
+      planStartedAt: "2026-10-01T01:30:00.000Z",
+      planExpiresAt: "2026-11-01T01:30:00.000Z",
+      hasStripeCustomer,
+      effectivePlan: {
+        plan: "growth", source: "manual", active: true, maxWebinars: 5,
+        monthlyRegistrants: 500, manualExpiresAt: "2026-11-01T01:30:00.000Z",
+      },
+      manualPlan: {
+        id: "manual-1", userId: "member-1", plan: "growth", state: "active",
+        startsAt: "2026-10-01T01:30:00.000Z", expiresAt: "2026-11-01T01:30:00.000Z",
+        revokedAt: null, revokedBy: null, reason: "客服補償", version: 1,
+        createdAt: "2026-10-01T01:30:00.000Z", createdBy: "root", updatedAt: "2026-10-01T01:30:00.000Z",
+      },
+      paid: {
+        plan: "free", status: "inactive", active: false, planStartedAt: null,
+        planExpiresAt: null, cancelAtPeriodEnd: false, amountUsd: null, stripeSubscriptionId: null,
+      },
+    });
+    await page.goto("/admin/dashboard");
+    await expect(page.getByTestId("badge-current-plan")).toHaveText(/Growth（人工授權）/);
+    await expect(page.getByText("人工授權到期日")).toBeVisible();
+    await expect(page.getByText("下次續訂日")).toHaveCount(0);
+    await expect(page.getByTestId("button-end-trial")).toHaveCount(0);
+    await expect(page.getByTestId("button-manage-subscription")).toHaveCount(0);
+    await page.getByTestId("button-upgrade").click();
+    await expect(page.getByRole("dialog", { name: "選擇發布方案" })).toBeVisible();
+    expect(portalRequests).toBe(0);
+  });
+}
+
+test("legacy dashboard subscription fixture remains usable without paid object", async ({ page }) => {
+  await mockDashboard(page, false);
+  await page.goto("/admin/dashboard");
+  await expect(page.getByText("Stripe 下次續訂日")).toBeVisible();
+  await expect(page.getByTestId("button-upgrade")).toHaveText("變更方案／增加額度");
 });

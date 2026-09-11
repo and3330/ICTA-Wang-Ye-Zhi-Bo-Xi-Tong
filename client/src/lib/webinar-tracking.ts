@@ -137,18 +137,81 @@ export function trackWebinarEvent(
   return true;
 }
 
-export function openTrackedExternalUrl(
+export async function openTrackedExternalUrl(
   webinarId: string | undefined,
   url: string,
-  data: Pick<WebinarEventData, "ctaId" | "ctaKey"> = {},
-): Window | null {
+  data: Pick<WebinarEventData, "ctaId" | "ctaKey"> & { watchToken?: string; sessionId?: string } = {},
+): Promise<void> {
   const cta = isUuid(data.ctaId)
     ? { ctaId: data.ctaId }
     : isCtaKey(data.ctaKey)
       ? { ctaKey: data.ctaKey }
       : {};
   if ("ctaId" in cta || "ctaKey" in cta) trackWebinarEvent(webinarId, "cta_click", cta);
-  return window.open(url, "_blank", "noopener,noreferrer");
+  // Only persisted CTA buttons can be attributed. Other external links retain
+  // their normal behavior rather than being routed through this integration.
+  if (!webinarId || !isUuid(data.ctaId)) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  // Opening during the click gesture keeps the original new-tab behavior. Do
+  // not use noopener for an about:blank tab: browsers return null, orphaning it
+  // before we can route the server-issued URL. Remove opener before navigation.
+  const popup = window.open("", "_blank");
+  try { if (popup) popup.opener = null; } catch {}
+  const openDirectly = () => {
+    if (popup && !popup.closed) popup.location.replace(url);
+    else window.open(url, "_blank", "noopener,noreferrer");
+  };
+  let publicSettings: { approvedOrigins?: string[] };
+  try {
+    const settingsResponse = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/external-journey/public`, { credentials: "same-origin" });
+    if (!settingsResponse.ok) return openDirectly();
+    publicSettings = await settingsResponse.json() as { approvedOrigins?: string[] };
+    const targetOrigin = new URL(url).origin;
+    // An absent approved target means attribution is not opted in. Never make
+    // historical CTA links depend on a new integration configuration.
+    if (!publicSettings.approvedOrigins?.includes(targetOrigin)) return openDirectly();
+  } catch {
+    return openDirectly();
+  }
+
+  const createReferral = async (): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/external-referrals`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(data.watchToken ? { "X-Watch-Token": data.watchToken } : {}),
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        targetKind: "cta",
+        ctaId: data.ctaId,
+        targetUrl: url,
+        visitId: getWebinarVisitorToken(webinarId),
+      }),
+      });
+      if (!response.ok) throw new Error("Unable to create attributed referral");
+      const result = await response.json() as { redirectUrl?: string };
+      if (!result.redirectUrl || !result.redirectUrl.startsWith("/r/")) throw new Error("Invalid attributed referral");
+      const destination = new URL(result.redirectUrl, window.location.origin);
+      if (destination.origin !== window.location.origin) throw new Error("Invalid attributed referral");
+      if (popup && !popup.closed) popup.location.replace(destination.toString());
+      else window.open(destination.toString(), "_blank", "noopener,noreferrer");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (await createReferral()) return;
+  // Tracking was explicitly enabled for this target, so surface a retry rather
+  // than silently dropping the referral. The CTA still opens its original URL
+  // if the viewer declines or the retry also fails.
+  if (window.confirm("無法建立歸因連結。要重試嗎？")) {
+    if (await createReferral()) return;
+  }
+  openDirectly();
 }
 
 export async function openOfferCheckout(

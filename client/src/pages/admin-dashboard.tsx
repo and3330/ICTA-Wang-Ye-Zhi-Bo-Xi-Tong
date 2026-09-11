@@ -27,6 +27,7 @@ import {
   BarChart3, Users, Pencil, Share2, MessageCircle,
   Eye, Code, Trash2, MoreVertical, Sparkles, ImagePlus, Upload, X, ShoppingBag, FolderOpen
 } from "lucide-react";
+import type { EffectiveMemberPlanDto, MemberManualPlanDto } from "@shared/memberManualPlans";
 import type { Webinar } from "@shared/schema";
 import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
 import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
@@ -424,9 +425,56 @@ export default function AdminDashboard() {
     canManage?: boolean;
     managementRole?: string;
     hasStripeCustomer: boolean;
+    effectivePlan?: EffectiveMemberPlanDto;
+    manualPlan?: MemberManualPlanDto | null;
+    publishingOverride?: {
+      id: string;
+      publishingSlots: number;
+      startsAt: string;
+      expiresAt: string;
+    } | null;
+    paid?: {
+      plan: string;
+      status: string;
+      active: boolean;
+      planStartedAt: string | null;
+      planExpiresAt: string | null;
+      cancelAtPeriodEnd: boolean;
+      amountUsd: number | null;
+      stripeSubscriptionId: string | null;
+    };
   }>({
     queryKey: ["/api/admin/subscription"],
   });
+  // Older responses expose only the original, paid top-level fields. Once an
+  // effective entitlement exists, do not synthesize Stripe billing from it:
+  // manual or capacity-only access may be active without paid billing.
+  const paidSubscription = subscription?.paid ??
+    (subscription && !subscription.effectivePlan
+      ? {
+          plan: subscription.plan,
+          status: subscription.status,
+          active: subscription.active,
+          planStartedAt: subscription.planStartedAt,
+          planExpiresAt: subscription.planExpiresAt,
+          cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+          amountUsd: subscription.amountUsd,
+          stripeSubscriptionId: null,
+        }
+      : undefined);
+  const effectiveSource = subscription?.effectivePlan?.source;
+  const manualAccess = effectiveSource === "manual";
+  const overrideAccess = effectiveSource === "override";
+  const effectiveStartsAt = manualAccess
+    ? subscription?.manualPlan?.startsAt || subscription?.planStartedAt
+    : overrideAccess
+      ? subscription?.publishingOverride?.startsAt || null
+      : paidSubscription?.planStartedAt || subscription?.planStartedAt;
+  const effectiveExpiresAt = manualAccess
+    ? subscription?.manualPlan?.expiresAt || subscription?.planExpiresAt
+    : overrideAccess
+      ? subscription?.publishingOverride?.expiresAt || null
+      : paidSubscription?.planExpiresAt || subscription?.planExpiresAt;
 
   const { data: stripeConfig } = useQuery<{
     publishableKey: string;
@@ -927,17 +975,33 @@ export default function AdminDashboard() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold">{s.subPlanLabel}</span>
                     <Badge variant={subscription.active ? "default" : "outline"} data-testid="badge-current-plan">
-                      {subscription.plan === "starter" ? `$${subscription.amountUsd ?? 39} Starter` : subscription.plan === "growth" ? `$${subscription.amountUsd ?? 99} Growth` : subscription.plan === "scale" ? `$${subscription.amountUsd ?? 199} Scale` : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
+                      {manualAccess
+                        ? `${subscription.plan === "starter" ? "Starter" : subscription.plan === "growth" ? "Growth" : "Scale"}（人工授權）`
+                        : overrideAccess
+                          ? `發布容量臨時覆寫（${subscription.maxWebinars} 間）`
+                        : subscription.plan === "starter" ? `$${subscription.amountUsd ?? 39} Starter` : subscription.plan === "growth" ? `$${subscription.amountUsd ?? 99} Growth` : subscription.plan === "scale" ? `$${subscription.amountUsd ?? 199} Scale` : subscription.plan === "legacy" ? "舊版 $49（3 間）" : s.subPlanFree}
                     </Badge>
-                    {subscription.cancelAtPeriodEnd && <Badge variant="secondary">期末取消</Badge>}
+                    {manualAccess && (
+                      <Badge variant="secondary">人工授權至 {subscription.manualPlan?.expiresAt ? new Date(subscription.manualPlan.expiresAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" }) : "—"}（台灣時間）</Badge>
+                    )}
+                    {overrideAccess && (
+                      <Badge variant="secondary">臨時容量至 {subscription.publishingOverride?.expiresAt ? new Date(subscription.publishingOverride.expiresAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" }) : "—"}（台灣時間）</Badge>
+                    )}
+                    {paidSubscription?.cancelAtPeriodEnd && <Badge variant="secondary">Stripe 期末取消</Badge>}
                     {!subscription.active && subscription.plan !== "free" && <Badge variant="destructive">{s.subExpired}</Badge>}
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">
                     免費帳號可建立、編輯與預覽草稿；發布及公開分享需要有效訂閱。
                   </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {paidSubscription
+                      ? <>付費帳務（Stripe）：{paidSubscription.plan} · {paidSubscription.status} · {paidSubscription.planExpiresAt ? `${paidSubscription.cancelAtPeriodEnd ? "服務到期" : "下次扣款"} ${new Date(paidSubscription.planExpiresAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}` : "無下次扣款"}。</>
+                      : <>付費帳務（Stripe）：目前沒有有效付費訂閱。</>}
+                    {" "}人工授權與臨時容量都不會延後 Stripe 扣款或增加 AI 點數。
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 admin-subscription-actions">
-                  {subscription.status === "trialing" && (
+                  {paidSubscription?.status === "trialing" && (
                     <Button
                       size="sm"
                       variant="secondary"
@@ -954,14 +1018,14 @@ export default function AdminDashboard() {
                   )}
                   <Button
                     size="sm"
-                    onClick={() => subscription.active && subscription.hasStripeCustomer ? portalMutation.mutate() : setIsUpgradeOpen(true)}
+                    onClick={() => paidSubscription?.active && subscription.hasStripeCustomer ? portalMutation.mutate() : setIsUpgradeOpen(true)}
                     disabled={portalMutation.isPending}
                     data-testid="button-upgrade"
                   >
                     <Crown className="h-4 w-4 mr-1" />
-                    {subscription.active ? "變更方案／增加額度" : s.upgradeBtn}
+                    {paidSubscription?.active ? "變更方案／增加額度" : s.upgradeBtn}
                   </Button>
-                  {subscription.hasStripeCustomer && (
+                  {paidSubscription?.active && subscription.hasStripeCustomer && (
                     <Button variant="outline" size="sm" onClick={() => portalMutation.mutate()} disabled={portalMutation.isPending} data-testid="button-manage-subscription">
                       {s.manageSubscription}
                     </Button>
@@ -978,13 +1042,13 @@ export default function AdminDashboard() {
                   <div className="text-xl font-bold">{Math.max(0, subscription.webinarCount - subscription.publishedCount)}</div>
                 </div>
                 <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">訂閱開始日</div>
-                  <div className="text-sm font-semibold">{subscription.planStartedAt ? new Date(subscription.planStartedAt).toLocaleDateString() : "—"}</div>
+                  <div className="text-xs text-muted-foreground">{manualAccess ? "人工授權生效日" : overrideAccess ? "臨時容量生效日" : "Stripe 訂閱開始日"}</div>
+                  <div className="text-sm font-semibold">{effectiveStartsAt ? new Date(effectiveStartsAt).toLocaleDateString() : "—"}</div>
                 </div>
                 <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">{subscription.cancelAtPeriodEnd ? "服務到期日" : "下次續訂日"}</div>
+                  <div className="text-xs text-muted-foreground">{manualAccess ? "人工授權到期日" : overrideAccess ? "臨時容量到期日" : paidSubscription?.cancelAtPeriodEnd ? "Stripe 服務到期日" : "Stripe 下次續訂日"}</div>
                   <div className="text-sm font-semibold" data-testid="text-plan-expires">
-                    {subscription.planExpiresAt ? `${new Date(subscription.planExpiresAt).toLocaleDateString()}（剩 ${Math.max(0, Math.ceil((new Date(subscription.planExpiresAt).getTime() - Date.now()) / 86400000))} 天）` : "—"}
+                    {effectiveExpiresAt ? `${new Date(effectiveExpiresAt).toLocaleDateString()}（剩 ${Math.max(0, Math.ceil((new Date(effectiveExpiresAt).getTime() - Date.now()) / 86400000))} 天）` : "—"}
                   </div>
                 </div>
               </div>

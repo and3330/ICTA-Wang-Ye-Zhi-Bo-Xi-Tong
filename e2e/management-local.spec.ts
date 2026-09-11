@@ -34,6 +34,7 @@ const collection = (items: unknown[]) => ({
 async function setup(page: Page, permissions: readonly ManagementPermission[] = managementPermissions) {
   const writes: Array<{ method: string; path: string; body: any }> = [];
   const currentMember = structuredClone(member);
+  let currentManual: any = null;
   await page.addInitScript(() => localStorage.setItem("sellcase.marketing-consent.v1", "denied"));
   await page.route("**/api/management/**", async route => {
     const request = route.request();
@@ -46,13 +47,38 @@ async function setup(page: Page, permissions: readonly ManagementPermission[] = 
       if (path.endsWith("/disable")) currentMember.isActive = false;
       if (path.endsWith("/enable")) currentMember.isActive = true;
       if (path.endsWith("/role")) currentMember.managementRole = body.role;
+      if (path === `members/${memberId}/manual-plan`) {
+        if (request.method() === "POST") {
+          currentManual = {
+            id: "manual-plan-1", userId: memberId, plan: body.plan, state: "active",
+            startsAt: body.startsAt, expiresAt: body.expiresAt, revokedAt: null, revokedBy: null,
+            reason: body.reason, version: 1, createdAt: member.createdAt, createdBy: "root",
+            updatedAt: member.createdAt,
+          };
+        } else if (request.method() === "PATCH" && currentManual) {
+          currentManual = {
+            ...currentManual, plan: body.plan ?? currentManual.plan,
+            startsAt: body.startsAt ?? currentManual.startsAt,
+            expiresAt: body.expiresAt ?? currentManual.expiresAt,
+            version: currentManual.version + 1, reason: body.reason,
+          };
+        } else if (request.method() === "DELETE" && currentManual) {
+          currentManual = { ...currentManual, state: "revoked", version: currentManual.version + 1, reason: body.reason };
+        }
+        return route.fulfill({ json: currentManual });
+      }
       return route.fulfill({ json: { ...currentMember, requested: true, added: true, points: 220 } });
     }
     let json: unknown;
     if (path === "me") json = { id: "root", username: "管理員", managementRole: permissions.length === managementPermissions.length ? "super_admin" : "support", canManage: true, permissions, isRoot: permissions.length === managementPermissions.length };
     else if (path === "overview") json = { totals: { users: 1, activeUsers: 1, disabledUsers: 0, paidSubscriptions: 1, openSupportCases: 1 }, warnings: [{ code: "past_due", count: 1, message: "1 位會員付款失敗" }] };
     else if (path === "members") json = collection([currentMember]);
-    else if (path === `members/${memberId}`) json = { profile: currentMember, override: null, subscription, usage: { webinars: 2, publishedWebinars: 1, registrations: 5, aiPoints: 200, aiLots: [{ id: "lot-1", source: "subscription", originalPoints: 200, remainingPoints: 200, grantedAt: member.createdAt, expiresAt: member.planExpiresAt, idempotencyKey: null }] }, webinars: [{ id: "webinar-1", title: "範例銷講", publishStatus: "published", createdAt: member.createdAt }], products: [{ id: "product-1", name: "線上課程", status: "active", createdAt: member.createdAt }] };
+    else if (path === `members/${memberId}`) json = {
+      profile: currentMember, override: null, subscription, manualPlan: currentManual,
+      effectivePlan: currentManual?.state === "active"
+        ? { plan: currentManual.plan, source: "manual", active: true, maxWebinars: 10, monthlyRegistrants: 1000, manualExpiresAt: currentManual.expiresAt }
+        : { plan: "growth", source: "paid", active: true, maxWebinars: 5, monthlyRegistrants: 500, manualExpiresAt: null },
+      usage: { webinars: 2, publishedWebinars: 1, registrations: 5, aiPoints: 200, aiLots: [{ id: "lot-1", source: "subscription", originalPoints: 200, remainingPoints: 200, grantedAt: member.createdAt, expiresAt: member.planExpiresAt, idempotencyKey: null }] }, webinars: [{ id: "webinar-1", title: "範例銷講", publishStatus: "published", createdAt: member.createdAt }], products: [{ id: "product-1", name: "線上課程", status: "active", createdAt: member.createdAt }] };
     else if (path.endsWith("/ai-ledger")) json = collection([{ id: "tx-1", type: "grant", points: 200, amountMinor: null, currency: null, createdAt: member.createdAt, source: "subscription" }]);
     else if (path === "subscriptions") json = collection([subscription]);
     else if (path === "orders") json = collection([order]);
@@ -124,7 +150,10 @@ test("member edits, suspension, restoration, role and credits reach real API pat
   const writes = await setup(page);
   page.on("dialog", dialog => dialog.accept());
   await page.goto(`/super-admin?section=members&member=${memberId}`);
-  await expect(page.getByTestId("management-profile-save")).toBeDisabled();
+  await expect(page.getByTestId("management-profile-save")).toBeEnabled();
+  await page.getByTestId("management-profile-save").click();
+  await expect(page.getByTestId("management-reason-input")).toBeFocused();
+  await expect(page.getByRole("alert")).toContainText("請先填寫此操作的原因");
   await page.getByTestId("management-reason-input").fill("會員要求更新及測試管理流程");
   await page.getByTestId("management-company-input").fill("已更新工作室");
   await page.getByTestId("management-profile-save").click();
@@ -142,6 +171,70 @@ test("member edits, suspension, restoration, role and credits reach real API pat
   for (const write of writes) expect(write.body.reason).toBeTruthy();
   await page.getByRole("button", { name: "返回會員列表", exact: true }).click();
   await expect(page.getByText("已更新工作室", { exact: true })).toBeVisible();
+});
+
+test("manual plan can be created, scheduled, extended, updated and revoked without changing paid billing", async ({ page }) => {
+  const writes = await setup(page);
+  page.on("dialog", dialog => dialog.accept());
+  await page.goto(`/super-admin?section=members&member=${memberId}`);
+  await expect(page.getByRole("heading", { name: "會員方案與使用期限" })).toBeVisible();
+  await page.screenshot({ path: "/tmp/member-controls-desktop.png", fullPage: true });
+  await expect(page.getByText("Stripe 付費狀態")).toBeVisible();
+  await page.getByTestId("management-reason-input").fill("客服補償方案期限");
+  await page.getByTestId("management-manual-plan-select").selectOption("scale");
+  await page.getByTestId("management-manual-plan-starts-at").fill("2026-10-01T09:30");
+  await page.getByTestId("management-manual-plan-expires-at").fill("2026-10-02T09:30");
+  await page.getByTestId("management-manual-plan-save").click();
+  await expect.poll(() => writes.some(write => write.method === "POST" && write.path.endsWith("/manual-plan") && write.body.plan === "scale")).toBe(true);
+  const created = writes.find(write => write.method === "POST" && write.path.endsWith("/manual-plan"))!;
+  expect(created.body).toMatchObject({ startsAt: "2026-10-01T09:30:00+08:00", expiresAt: "2026-10-02T09:30:00+08:00", reason: "客服補償方案期限" });
+  expect(created.body.idempotencyKey).toBeTruthy();
+  await expect(page.getByTestId("management-manual-plan-revoke")).toBeVisible();
+  await page.getByTestId("management-manual-plan-hours").fill("1");
+  await page.getByRole("button", { name: "加入時數" }).click();
+  await expect(page.getByTestId("management-manual-plan-expires-at")).not.toHaveValue("2026-10-02T09:30");
+  await page.getByTestId("management-manual-plan-save").click();
+  await expect.poll(() => writes.some(write => write.method === "PATCH" && write.path.endsWith("/manual-plan"))).toBe(true);
+  const updated = writes.find(write => write.method === "PATCH" && write.path.endsWith("/manual-plan"))!;
+  expect(updated.body.version).toBe(1);
+  await page.getByTestId("management-manual-plan-revoke").click();
+  await expect.poll(() => writes.some(write => write.method === "DELETE" && write.path.endsWith("/manual-plan"))).toBe(true);
+  const revoked = writes.find(write => write.method === "DELETE" && write.path.endsWith("/manual-plan"))!;
+  expect(revoked.body).toMatchObject({ version: 2, reason: "客服補償方案期限" });
+  expect(revoked.body.idempotencyKey).toBeTruthy();
+  expect(writes.some(write => write.path.includes("subscriptions/"))).toBe(false);
+});
+
+test("manual plan is read-only without subscription write permission and conflicts refresh the current version", async ({ page }) => {
+  await setup(page, ["members.read", "subscriptions.read"]);
+  await page.goto(`/super-admin?section=members&member=${memberId}`);
+  await expect(page.getByTestId("management-manual-plan-select")).toBeDisabled();
+  await expect(page.getByText("您的角色僅能檢視方案")).toBeVisible();
+
+  const writes = await setup(page);
+  page.on("dialog", dialog => dialog.accept());
+  await page.route(`**/api/management/members/${memberId}/manual-plan`, async route => {
+    if (route.request().method() === "PATCH") return route.fulfill({ status: 409, json: { message: "stale version" } });
+    return route.fallback();
+  });
+  await page.reload();
+  await page.getByTestId("management-reason-input").fill("衝突測試原因");
+  await page.getByTestId("management-manual-plan-starts-at").fill("2026-10-01T09:30");
+  await page.getByTestId("management-manual-plan-expires-at").fill("2026-10-02T09:30");
+  await page.getByTestId("management-manual-plan-save").click();
+  await expect.poll(() => writes.some(write => write.method === "POST" && write.path.endsWith("/manual-plan"))).toBe(true);
+  await page.getByTestId("management-manual-plan-save").click();
+  await expect(page.getByText("方案資料已被其他管理員更新")).toBeVisible();
+});
+
+test("manual plan controls remain horizontally accessible at 390px", async ({ page }) => {
+  await setup(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/super-admin?section=members&member=${memberId}`);
+  await expect(page.getByRole("heading", { name: "會員方案與使用期限" })).toBeVisible();
+  await page.screenshot({ path: "/tmp/member-controls-mobile.png", fullPage: true });
+  await expect(page.getByTestId("management-manual-plan-expires-at")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("refund validates amount and reason before making an idempotent request", async ({ page }) => {

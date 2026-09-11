@@ -187,8 +187,22 @@ export default function Registration() {
       setRegistered(true);
       toast({
         title: "報名成功！",
-        description: "確認信已發送到您的 Email",
+        description: response?.externalThankYouUnavailable
+          ? "外部完成頁暫時無法開啟；報名已完成，請使用本頁的觀看按鈕。"
+          : "確認信已發送到您的 Email",
       });
+      // The server creates and validates this opaque handoff after persistence.
+      // Never construct an external destination from contact or watch data.
+      const redirectUrl = response?.externalThankYou?.redirectUrl;
+      if (typeof redirectUrl === "string" && redirectUrl) {
+        try {
+          const destination = new URL(redirectUrl);
+          if (destination.protocol === "https:") window.location.assign(destination.toString());
+        } catch {
+          // Keep the internal success/watch flow if the supplied destination
+          // cannot be used by this browser.
+        }
+      }
     },
     onError: (error: any) => {
       toast({
@@ -368,7 +382,7 @@ export default function Registration() {
             </div>
             {thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl && (
               <Button
-                onClick={() => openTrackedExternalUrl(id, thankYou.ctaUrl)}
+                onClick={() => { void openTrackedExternalUrl(id, thankYou.ctaUrl); }}
                 className="w-full mb-3"
                 data-testid="button-thankyou-cta"
               >

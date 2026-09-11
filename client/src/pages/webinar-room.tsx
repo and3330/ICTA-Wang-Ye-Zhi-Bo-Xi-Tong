@@ -745,10 +745,10 @@ export default function WebinarRoom() {
                           toast({ title: error.message || "Unable to start checkout", variant: "destructive" });
                         });
                       } else if (cta.url) {
-                        openTrackedExternalUrl(
+                        void openTrackedExternalUrl(
                           id,
                           cta.url,
-                          { ctaId: cta.id },
+                          { ctaId: cta.id, watchToken: watchToken || undefined },
                         );
                       }
                     }}
@@ -805,7 +805,7 @@ export default function WebinarRoom() {
                     </p>
                     {replay?.ctaText && replay?.ctaUrl && (
                       <Button
-                        onClick={() => openTrackedExternalUrl(id, replay.ctaUrl!)}
+                        onClick={() => { void openTrackedExternalUrl(id, replay.ctaUrl!); }}
                         className="mb-3 w-full"
                         data-testid="button-replay-cta"
                       >

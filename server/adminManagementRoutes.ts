@@ -1,5 +1,6 @@
 import type { Express, Request, RequestHandler } from "express";
-import { and, asc, count, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import crypto from "node:crypto";
+import { and, asc, count, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   adminAuditEvents, adminMutationIdempotency, aiCreditLots, aiPointTransactions,
@@ -10,12 +11,14 @@ import {
   managementPermissions, managementRoles, type ManagementPermission,
   type ManagementRole,
 } from "@shared/adminManagement";
+import { memberManualPlanKeys, type MemberManualPlanKey } from "@shared/memberManualPlans";
 import { db } from "./db";
 import { storage } from "./storage";
 import { appBaseUrl, sendTransactionalMail } from "./mail";
 import { createRawToken, hashToken } from "./security";
 import { getUncachableStripeClient } from "./stripeClient";
 import { SUBSCRIPTION_PLANS } from "./subscriptionEntitlements";
+import { composePublishingOverride, effectiveMemberPlan, manualPlanDto, memberManualPlan } from "./manualPlanEntitlements";
 
 type Actor = { id: string; role: ManagementRole; permissions: Set<ManagementPermission>; isRoot: boolean };
 type SessionRequest = Request & { session: { userId?: string } };
@@ -76,9 +79,49 @@ function overrideDto(row: typeof entitlementOverrides.$inferSelect) {
 /** Checked at each admission, never cached, so an expired override cannot persist. */
 export async function activePublishingOverride(userId: string, now = new Date()) {
   const [row] = await db.select().from(entitlementOverrides).where(and(
-    eq(entitlementOverrides.userId, userId), lte(entitlementOverrides.startsAt, now), gte(entitlementOverrides.expiresAt, now),
-  )).orderBy(desc(entitlementOverrides.expiresAt)).limit(1);
+    eq(entitlementOverrides.userId, userId), isNull(entitlementOverrides.manualPlan),
+    isNull(entitlementOverrides.revokedAt), lte(entitlementOverrides.startsAt, now), gte(entitlementOverrides.expiresAt, now),
+  )).orderBy(desc(entitlementOverrides.publishingSlots), desc(entitlementOverrides.expiresAt)).limit(1);
   return row;
+}
+
+function idempotencyFingerprint(value: unknown) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function storedPaidEntitlement(user: typeof users.$inferSelect) {
+  const active = user.isSuperAdmin || user.subscriptionPlan === "enterprise" || (
+    ["active", "trialing"].includes(user.subscriptionStatus)
+    && (!user.planExpiresAt || user.planExpiresAt.getTime() > Date.now())
+  );
+  return {
+    plan: (user.isSuperAdmin ? "enterprise" : user.subscriptionPlan) as any,
+    status: user.subscriptionStatus, active, amountUsd: null, maxWebinars: active ? user.maxWebinars : 0,
+    addonWebinars: user.addonWebinars, startedAt: user.subscriptionStartedAt,
+    currentPeriodEnd: user.planExpiresAt, cancelAtPeriodEnd: user.cancelAtPeriodEnd,
+    stripeSubscriptionId: user.stripeSubscriptionId,
+  };
+}
+
+const idempotencyKey = z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/);
+const manualPlanInput = z.enum(memberManualPlanKeys);
+const manualPlanDate = z.coerce.date().refine(date => Number.isFinite(date.getTime()), "Invalid date");
+const createManualPlanSchema = z.object({
+  plan: manualPlanInput, startsAt: manualPlanDate, expiresAt: manualPlanDate, reason, idempotencyKey,
+}).strict();
+const updateManualPlanSchema = z.object({
+  plan: manualPlanInput.optional(), startsAt: manualPlanDate.optional(), expiresAt: manualPlanDate.optional(),
+  extendHours: z.number().int().min(1).max(43_800).optional(), reason, version: z.number().int().min(1),
+  idempotencyKey,
+}).strict().refine(value => value.plan !== undefined || value.startsAt !== undefined || value.expiresAt !== undefined || value.extendHours !== undefined, "A plan, schedule, or extension is required")
+  .refine(value => !(value.extendHours && value.expiresAt), "Use either expiresAt or extendHours, not both");
+const revokeManualPlanSchema = z.object({ reason, version: z.number().int().min(1), idempotencyKey }).strict();
+
+function validManualPlanTimes(startsAt: Date, expiresAt: Date, now = new Date()) {
+  if (expiresAt.getTime() <= startsAt.getTime()) return "Manual plan expiry must be after its start";
+  if (startsAt.getTime() > now.getTime() + 366 * 24 * 3600_000) return "Manual plan start may be at most 366 days ahead";
+  if (expiresAt.getTime() > now.getTime() + 5 * 366 * 24 * 3600_000) return "Manual plan expiry may be at most five years ahead";
+  return null;
 }
 
 async function recordAudit(data: {
@@ -226,6 +269,9 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
     if (can(current, "subscriptions.read")) {
       const override = await activePublishingOverride(user.id);
       response.override = override ? overrideDto(override) : null;
+      const manual = await memberManualPlan(user.id);
+      response.manualPlan = manual ? manualPlanDto(manual) : null;
+      response.effectivePlan = composePublishingOverride(effectiveMemberPlan(storedPaidEntitlement(user), manual), override);
       try {
         const stripe = await getStripe(); const remote = await liveSubscription(user, stripe);
         response.subscription = subscriptionDto(user, remote.item, remote.error ? "error" : "connected", remote.item?.latest_invoice?.hosted_invoice_url || null);
@@ -357,8 +403,140 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
     const userId = uuid.safeParse(req.params.userId), overrideId = uuid.safeParse(req.params.overrideId); if (!issue(res, userId) || !issue(res, overrideId)) return;
     const body = z.object({ reason }).strict().safeParse(req.body); if (!issue(res, body)) return;
     const user = await targetOr404(userId.data); if (!user) return res.status(404).json({ message: "Member not found" });
-    try { await guardTarget(actor(req), user); const removed = await db.delete(entitlementOverrides).where(and(eq(entitlementOverrides.id, overrideId.data), eq(entitlementOverrides.userId, user.id))).returning({ id: entitlementOverrides.id }); if (!removed[0]) return res.status(404).json({ message: "Override not found" }); await recordAudit({ actorUserId: actor(req).id, targetUserId: user.id, action: "entitlement_override.delete", reason: body.data.reason, before: { id: overrideId.data } }); res.json({ removed: true }); }
+    try { await guardTarget(actor(req), user); const removed = await db.delete(entitlementOverrides).where(and(eq(entitlementOverrides.id, overrideId.data), eq(entitlementOverrides.userId, user.id), isNull(entitlementOverrides.manualPlan))).returning({ id: entitlementOverrides.id }); if (!removed[0]) return res.status(404).json({ message: "Override not found" }); await recordAudit({ actorUserId: actor(req).id, targetUserId: user.id, action: "entitlement_override.delete", reason: body.data.reason, before: { id: overrideId.data } }); res.json({ removed: true }); }
     catch (error: any) { res.status(error.status || 400).json({ message: error.message || "Unable to remove override" }); }
+  });
+
+  app.post("/api/management/members/:userId/manual-plan", requirePermission("subscriptions.write"), async (req, res) => {
+    const id = uuid.safeParse(req.params.userId); if (!issue(res, id)) return;
+    const body = createManualPlanSchema.safeParse(req.body); if (!issue(res, body)) return;
+    const timeIssue = validManualPlanTimes(body.data.startsAt, body.data.expiresAt); if (timeIssue) return res.status(400).json({ message: timeIssue });
+    const user = await targetOr404(id.data); if (!user) return res.status(404).json({ message: "Member not found" });
+    try {
+      await guardTarget(actor(req), user);
+      const result = await db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        const mutationKey = `manual-plan:create:${user.id}:${body.data.idempotencyKey}`;
+        const fingerprint = idempotencyFingerprint(body.data);
+        const [prior] = await tx.select().from(adminMutationIdempotency)
+          .where(eq(adminMutationIdempotency.idempotencyKey, mutationKey)).for("update");
+        if (prior) {
+          if (prior.payloadFingerprint !== fingerprint) throw Object.assign(new Error("Idempotency key was already used with a different manual-plan payload"), { status: 409 });
+          const [existing] = await tx.select().from(entitlementOverrides).where(and(eq(entitlementOverrides.userId, user.id), isNotNull(entitlementOverrides.manualPlan))).for("update");
+          if (!existing) throw Object.assign(new Error("Manual plan idempotency record has no retained grant"), { status: 409 });
+          return { row: existing, created: false };
+        }
+        const [existing] = await tx.select().from(entitlementOverrides).where(and(eq(entitlementOverrides.userId, user.id), isNotNull(entitlementOverrides.manualPlan))).for("update");
+        if (existing && !existing.revokedAt) throw Object.assign(new Error("A manual plan already exists; update or revoke it instead"), { status: 409 });
+        const slots = SUBSCRIPTION_PLANS[body.data.plan].baseWebinars;
+        const [row] = existing
+          ? await tx.update(entitlementOverrides).set({
+            manualPlan: body.data.plan, publishingSlots: slots, startsAt: body.data.startsAt, expiresAt: body.data.expiresAt,
+            reason: body.data.reason, createdBy: actor(req).id, revokedAt: null, revokedBy: null,
+            version: existing.version + 1, updatedAt: new Date(),
+          }).where(eq(entitlementOverrides.id, existing.id)).returning()
+          : await tx.insert(entitlementOverrides).values({
+            userId: user.id, manualPlan: body.data.plan, publishingSlots: slots, startsAt: body.data.startsAt,
+            expiresAt: body.data.expiresAt, reason: body.data.reason, createdBy: actor(req).id,
+          }).returning();
+        await tx.insert(adminMutationIdempotency).values({
+          idempotencyKey: mutationKey, actorUserId: actor(req).id, action: "manual_plan.create",
+          targetUserId: user.id, payloadFingerprint: fingerprint, status: "completed",
+        });
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor(req).id, targetUserId: user.id, action: "manual_plan.create", reason: body.data.reason,
+          before: existing ? { id: existing.id, state: "revoked", version: existing.version } : null,
+          after: { id: row.id, plan: row.manualPlan, startsAt: row.startsAt.toISOString(), expiresAt: row.expiresAt.toISOString(), version: row.version },
+        });
+        return { row, created: true };
+      });
+      res.status(result.created ? 201 : 200).json(manualPlanDto(result.row));
+    } catch (error: any) { res.status(error.status || 400).json({ message: error.message || "Unable to create manual plan" }); }
+  });
+
+  app.patch("/api/management/members/:userId/manual-plan", requirePermission("subscriptions.write"), async (req, res) => {
+    const id = uuid.safeParse(req.params.userId); if (!issue(res, id)) return;
+    const body = updateManualPlanSchema.safeParse(req.body); if (!issue(res, body)) return;
+    const user = await targetOr404(id.data); if (!user) return res.status(404).json({ message: "Member not found" });
+    try {
+      await guardTarget(actor(req), user);
+      const result = await db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        const mutationKey = `manual-plan:update:${user.id}:${body.data.idempotencyKey}`;
+        const fingerprint = idempotencyFingerprint(body.data);
+        const [prior] = await tx.select().from(adminMutationIdempotency).where(eq(adminMutationIdempotency.idempotencyKey, mutationKey)).for("update");
+        const [existing] = await tx.select().from(entitlementOverrides).where(and(eq(entitlementOverrides.userId, user.id), isNotNull(entitlementOverrides.manualPlan))).for("update");
+        if (prior) {
+          if (prior.payloadFingerprint !== fingerprint) throw Object.assign(new Error("Idempotency key was already used with a different manual-plan payload"), { status: 409 });
+          if (!existing) throw Object.assign(new Error("Manual plan idempotency record has no retained grant"), { status: 409 });
+          return { row: existing, changed: false };
+        }
+        if (!existing) throw Object.assign(new Error("Manual plan not found"), { status: 404 });
+        if (existing.revokedAt) throw Object.assign(new Error("A revoked manual plan must be granted again, not updated"), { status: 409 });
+        if (existing.version !== body.data.version) throw Object.assign(new Error("Manual plan was changed by another administrator; reload and try again"), { status: 409 });
+        const startsAt = body.data.startsAt || existing.startsAt;
+        const expiresAt = body.data.extendHours
+          ? new Date(Math.max(Date.now(), existing.expiresAt.getTime()) + body.data.extendHours * 3600_000)
+          : body.data.expiresAt || existing.expiresAt;
+        const timeIssue = validManualPlanTimes(startsAt, expiresAt); if (timeIssue) throw Object.assign(new Error(timeIssue), { status: 400 });
+        const plan = body.data.plan || existing.manualPlan as MemberManualPlanKey;
+        const [row] = await tx.update(entitlementOverrides).set({
+          manualPlan: plan, publishingSlots: SUBSCRIPTION_PLANS[plan].baseWebinars, startsAt, expiresAt,
+          reason: body.data.reason, version: existing.version + 1, updatedAt: new Date(),
+        }).where(and(eq(entitlementOverrides.id, existing.id), eq(entitlementOverrides.version, body.data.version))).returning();
+        if (!row) throw Object.assign(new Error("Manual plan was changed by another administrator; reload and try again"), { status: 409 });
+        await tx.insert(adminMutationIdempotency).values({
+          idempotencyKey: mutationKey, actorUserId: actor(req).id, action: body.data.extendHours ? "manual_plan.extend" : "manual_plan.update",
+          targetUserId: user.id, payloadFingerprint: fingerprint, status: "completed",
+        });
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor(req).id, targetUserId: user.id, action: body.data.extendHours ? "manual_plan.extend" : "manual_plan.update", reason: body.data.reason,
+          before: { plan: existing.manualPlan, startsAt: existing.startsAt.toISOString(), expiresAt: existing.expiresAt.toISOString(), version: existing.version },
+          after: { plan: row.manualPlan, startsAt: row.startsAt.toISOString(), expiresAt: row.expiresAt.toISOString(), version: row.version },
+        });
+        return { row, changed: true };
+      });
+      res.json(manualPlanDto(result.row));
+    } catch (error: any) { res.status(error.status || 400).json({ message: error.message || "Unable to update manual plan" }); }
+  });
+
+  app.delete("/api/management/members/:userId/manual-plan", requirePermission("subscriptions.write"), async (req, res) => {
+    const id = uuid.safeParse(req.params.userId); if (!issue(res, id)) return;
+    const body = revokeManualPlanSchema.safeParse(req.body); if (!issue(res, body)) return;
+    const user = await targetOr404(id.data); if (!user) return res.status(404).json({ message: "Member not found" });
+    try {
+      await guardTarget(actor(req), user);
+      const result = await db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        const mutationKey = `manual-plan:revoke:${user.id}:${body.data.idempotencyKey}`;
+        const fingerprint = idempotencyFingerprint(body.data);
+        const [prior] = await tx.select().from(adminMutationIdempotency).where(eq(adminMutationIdempotency.idempotencyKey, mutationKey)).for("update");
+        const [existing] = await tx.select().from(entitlementOverrides).where(and(eq(entitlementOverrides.userId, user.id), isNotNull(entitlementOverrides.manualPlan))).for("update");
+        if (prior) {
+          if (prior.payloadFingerprint !== fingerprint) throw Object.assign(new Error("Idempotency key was already used with a different manual-plan payload"), { status: 409 });
+          if (!existing) throw Object.assign(new Error("Manual plan idempotency record has no retained grant"), { status: 409 });
+          return { row: existing };
+        }
+        if (!existing) throw Object.assign(new Error("Manual plan not found"), { status: 404 });
+        if (existing.revokedAt) throw Object.assign(new Error("Manual plan is already revoked"), { status: 409 });
+        if (existing.version !== body.data.version) throw Object.assign(new Error("Manual plan was changed by another administrator; reload and try again"), { status: 409 });
+        const [row] = await tx.update(entitlementOverrides).set({
+          revokedAt: new Date(), revokedBy: actor(req).id, version: existing.version + 1, updatedAt: new Date(),
+        }).where(and(eq(entitlementOverrides.id, existing.id), eq(entitlementOverrides.version, body.data.version))).returning();
+        if (!row) throw Object.assign(new Error("Manual plan was changed by another administrator; reload and try again"), { status: 409 });
+        await tx.insert(adminMutationIdempotency).values({
+          idempotencyKey: mutationKey, actorUserId: actor(req).id, action: "manual_plan.revoke",
+          targetUserId: user.id, payloadFingerprint: fingerprint, status: "completed",
+        });
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor(req).id, targetUserId: user.id, action: "manual_plan.revoke", reason: body.data.reason,
+          before: { plan: existing.manualPlan, startsAt: existing.startsAt.toISOString(), expiresAt: existing.expiresAt.toISOString(), version: existing.version },
+          after: { id: row.id, revokedAt: row.revokedAt?.toISOString() || null, version: row.version },
+        });
+        return { row };
+      });
+      res.json(manualPlanDto(result.row));
+    } catch (error: any) { res.status(error.status || 400).json({ message: error.message || "Unable to revoke manual plan" }); }
   });
 
   app.post("/api/management/members/:userId/ai-grants", requirePermission("credits.grant"), async (req, res) => {
