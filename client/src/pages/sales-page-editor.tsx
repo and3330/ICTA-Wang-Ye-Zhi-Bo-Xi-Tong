@@ -66,7 +66,9 @@ export default function SalesPageEditor() {
   const { data, isLoading, error } = useQuery<Page>({ queryKey: [base, pageId], enabled: !!pageId });
   const offerEndpoint = standalone ? "/api/products" : `/api/webinars/${id}/offers`;
   const { data: offers } = useQuery<EcommerceOffer[]>({ queryKey: [offerEndpoint], enabled: !!data });
-  const [blocks, setBlocks] = useState<Block[]>([]); const [title, setTitle] = useState(""); const [slug, setSlug] = useState(""); const [images, setImages] = useState<{ url: string; alt: string }[]>([]); const [summary, setSummary] = useState(""); const [features, setFeatures] = useState<string[]>([]); const [checkoutSettings, setCheckoutSettings] = useState<CheckoutSettings>(defaultCheckoutSettings); const [version, setVersion] = useState(0); const [status, setStatus] = useState<"draft" | "published">("draft"); const [selected, setSelected] = useState<string>(); const [mobile, setMobile] = useState(false); const [state, setState] = useState<"saved" | "unsaved" | "saving" | "error">("saved"); const [errorMessage, setErrorMessage] = useState(""); const [picker, setPicker] = useState(false); const [ecommercePicker, setEcommercePicker] = useState(false); const [uploading, setUploading] = useState(false);
+   const { data: noCardTrial } = useQuery<{ state: string; remainingAI: number }>({ queryKey: ["/api/trial"], enabled: standalone });
+   const { data: aiPoints } = useQuery<{ points: number; unlimited: boolean }>({ queryKey: ["/api/ai-points"], enabled: standalone });
+   const [blocks, setBlocks] = useState<Block[]>([]); const [title, setTitle] = useState(""); const [slug, setSlug] = useState(""); const [images, setImages] = useState<{ url: string; alt: string }[]>([]); const [summary, setSummary] = useState(""); const [features, setFeatures] = useState<string[]>([]); const [aiBrief, setAiBrief] = useState(""); const [aiAudience, setAiAudience] = useState(""); const [checkoutSettings, setCheckoutSettings] = useState<CheckoutSettings>(defaultCheckoutSettings); const [version, setVersion] = useState(0); const [status, setStatus] = useState<"draft" | "published">("draft"); const [selected, setSelected] = useState<string>(); const [mobile, setMobile] = useState(false); const [state, setState] = useState<"saved" | "unsaved" | "saving" | "error">("saved"); const [errorMessage, setErrorMessage] = useState(""); const [picker, setPicker] = useState(false); const [ecommercePicker, setEcommercePicker] = useState(false); const [uploading, setUploading] = useState(false);
   useEffect(() => { if (data) { const productBlock = data.orderedBlocks.find((block): block is Extract<Block, { type: "offer" }> => block.type === "offer"); setBlocks(data.orderedBlocks); setTitle(data.title); setSlug(data.slug); setImages(productBlock?.images || []); setSummary(productBlock?.summary || ""); setFeatures(productBlock?.features || []); setCheckoutSettings({ ...defaultCheckoutSettings, ...data.checkoutSettings }); setVersion(data.version); setStatus(data.status); setSelected(data.orderedBlocks[0]?.id); setState("saved"); } }, [data]);
   const draftBlocks = useMemo(() => blocks.map(block =>
     block.type === "offer" && block.layout === "ecommerce"
@@ -96,6 +98,22 @@ export default function SalesPageEditor() {
     onSuccess: p => { cachePage(p); setState("saved"); },
     onError: (error: any) => { setState("error"); setErrorMessage(error?.message || "儲存失敗，請重新載入後再試。"); },
   });
+   const generateAiDraft = useMutation({
+     mutationFn: async () => {
+       if (!window.confirm("AI 會取代目前尚未儲存的草稿內容；已發布的公開版本不會變更。要繼續嗎？")) throw new Error("已取消 AI 產生草稿。");
+       const response = await apiRequest("POST", `/api/product-sales-pages/${pageId}/ai-draft`, { brief: aiBrief, audience: aiAudience || undefined });
+       return response.json() as Promise<{ blocks: Block[]; cost: { kind: "trial_call" | "ai_points" | "unlimited"; amount: number; remaining: number | null } }>;
+     },
+     onSuccess: result => {
+       const next = result.blocks;
+       const nextOffer = next.find((block): block is Extract<Block, { type: "offer" }> => block.type === "offer");
+       setBlocks(next); setImages(nextOffer?.images || []); setSummary(nextOffer?.summary || ""); setFeatures(nextOffer?.features || []);
+       setSelected(next[0]?.id); setState("unsaved"); setErrorMessage("");
+       void queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
+       void queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+     },
+     onError: (error: any) => { if (!String(error?.message || "").includes("已取消")) { setState("error"); setErrorMessage(error?.message || "AI 草稿產生失敗，請稍後再試。"); } },
+   });
   const publish = useMutation({
     mutationFn: async (action: "publish" | "unpublish") => {
       setState("saving"); setErrorMessage("");
@@ -114,7 +132,7 @@ export default function SalesPageEditor() {
     onSuccess: p => { cachePage(p); setState("saved"); },
     onError: (error: any) => { setState("error"); setErrorMessage(error?.message || "操作失敗，請保留目前內容並重試。"); },
   });
-  const busy = save.isPending || publish.isPending;
+   const busy = save.isPending || publish.isPending || generateAiDraft.isPending;
   const upload = async (file?: File) => { if (!file || !active) return; setUploading(true); try { const body = new FormData(); body.append("file", file); const response = await fetch("/api/upload", { method: "POST", body, credentials: "same-origin" }); const result = await response.json(); if (!response.ok) throw new Error(result.message || "圖片上傳失敗"); const key = active.type === "hero" ? "imageUrl" : active.type === "image" ? "url" : null; if (key) dirty(blocks.map(block => block.id === active.id ? { ...block, [key]: result.url } as Block : block)); } catch (e) { setState("error"); setErrorMessage(e instanceof Error ? e.message : "圖片上傳失敗"); } finally { setUploading(false); } };
    const publicUrl = `${window.location.origin}/sales/${slug}`;
    const productBlock = blocks.find((block): block is Extract<Block, { type: "offer" }> => block.type === "offer"); const ecommerce = productBlock?.layout === "ecommerce"; const offer = offers?.find(item => item.id === data?.offerId);
@@ -130,7 +148,8 @@ export default function SalesPageEditor() {
         </div>
         {status === "published" && <p className="studio-note" style={{ maxWidth: 850, margin: "0 auto 12px" }}>頁面已發布；名稱與網址識別須先取消發布才能修改。內容變更請先儲存草稿，再按「更新發布」。</p>}
         {ecommerce ? <>
-          <div className="ecommerce-editor-fields">
+           <div className="ecommerce-editor-fields">
+             {standalone && <div className="rounded-md border p-3 space-y-2" data-testid="ai-product-draft-panel"><b>AI 產生商品頁草稿</b><p className="studio-note">會覆蓋尚未儲存的草稿；不會自動發布，已發布的公開版本維持不變。</p><label>商品說明（選填）<textarea data-testid="ai-product-brief" disabled={busy} value={aiBrief} onChange={e => setAiBrief(e.target.value)} /></label><label>目標受眾（選填）<input data-testid="ai-product-audience" disabled={busy} value={aiAudience} onChange={e => setAiAudience(e.target.value)} /></label>{noCardTrial?.state === "active" ? <p className="studio-note">試用 AI 剩餘 {noCardTrial.remainingAI} / 50 次；本次使用 1 次。</p> : <p className="studio-note">本次使用 5 點 AI 點數（目前 {aiPoints?.unlimited ? "不限量" : `${aiPoints?.points ?? "—"} 點`}）。</p>}<button type="button" className="studio-add" data-testid="button-ai-product-draft" disabled={busy || (noCardTrial?.state === "active" && noCardTrial.remainingAI < 1) || (noCardTrial?.state !== "active" && !aiPoints?.unlimited && (aiPoints?.points ?? 0) < 5)} onClick={() => generateAiDraft.mutate()}>AI 產生草稿</button></div>}
             <label>商品摘要<textarea data-testid="product-summary" disabled={busy} maxLength={1200} value={summary} onChange={e => { setSummary(e.target.value); setState("unsaved"); }} /></label>
             <label>商品特點（每行一項）<textarea disabled={busy} value={features.join("\n")} onChange={e => { setFeatures(e.target.value.split("\n").slice(0, 8)); setState("unsaved"); }} /></label>
             <div className="gallery-edit">

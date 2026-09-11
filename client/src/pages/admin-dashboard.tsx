@@ -29,15 +29,29 @@ import {
 } from "lucide-react";
 import type { EffectiveMemberPlanDto, MemberManualPlanDto } from "@shared/memberManualPlans";
 import type { Webinar } from "@shared/schema";
-import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
+import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCounts";
+import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS, NO_CARD_TRIAL_MILESTONES, type NoCardTrialState } from "@shared/noCardTrial";
 import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
+import { SessionRegistrationCounts } from "@/components/session-registration-counts";
 
 type WebinarStats = Record<string, {
   registered: number;
   attended: number;
   engaged: number;
   onlineCount: number;
+  sessionRegistrationCounts?: SessionRegistrationCountsDto | null;
 }>;
+
+type NoCardTrialClientStatus = {
+  eligibility: NoCardTrialState;
+  state: NoCardTrialState;
+  startsAt: string | null;
+  expiresAt: string | null;
+  retentionUntil: string | null;
+  remainingAI: number;
+  usedAI: number;
+  milestones: Array<{ day: number; reached: boolean }>;
+};
 
 const t: Record<LangAdmin, {
   validationTitle: string;
@@ -349,6 +363,24 @@ function createWebinarSchema(s: typeof t["zh-TW"]) {
   });
 }
 
+function TrialCountdown({ expiresAt }: { expiresAt: string | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!expiresAt) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, [expiresAt]);
+  const remaining = expiresAt ? Math.max(0, new Date(expiresAt).getTime() - now) : 0;
+  useEffect(() => {
+    if (expiresAt && remaining === 0) void queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
+  }, [expiresAt, remaining]);
+  if (!expiresAt) return <p className="mt-1 font-semibold tabular-nums" data-testid="text-trial-countdown">—</p>;
+  const days = Math.floor(remaining / 86400000);
+  const hours = Math.floor((remaining % 86400000) / 3600000);
+  const minutes = Math.floor((remaining % 3600000) / 60000);
+  return <p className="mt-1 font-semibold tabular-nums" data-testid="text-trial-countdown">{days} 天 {String(hours).padStart(2, "0")}:{String(minutes).padStart(2, "0")}</p>;
+}
+
 export default function AdminDashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -446,6 +478,14 @@ export default function AdminDashboard() {
   }>({
     queryKey: ["/api/admin/subscription"],
   });
+  const { data: noCardTrial } = useQuery<NoCardTrialClientStatus>({
+    queryKey: ["/api/trial"],
+  });
+  const { data: trialSalesPages } = useQuery<Array<{ status: "draft" | "published" }>>({
+    queryKey: ["/api/product-sales-pages"],
+    enabled: noCardTrial?.state === "active",
+  });
+  const trialPageRemaining = (trialSalesPages || []).some((page) => page.status === "published") ? 0 : 1;
   // Older responses expose only the original, paid top-level fields. Once an
   // effective entitlement exists, do not synthesize Stripe billing from it:
   // manual or capacity-only access may be active without paid billing.
@@ -502,6 +542,15 @@ export default function AdminDashboard() {
     packages: { id: string; twd: number; points: number }[];
   }>({
     queryKey: ["/api/ai-points"],
+  });
+  const activateTrialMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/trial/activate", {})).json() as Promise<NoCardTrialClientStatus>,
+    onSuccess: (trial) => {
+      queryClient.setQueryData(["/api/trial"], trial);
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
+      toast({ title: "免信用卡試用已啟用", description: `可發布 1 個商品頁，並使用 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次 AI。到期不扣款。` });
+    },
+    onError: (error: Error) => toast({ title: "無法啟用試用", description: error.message, variant: "destructive" }),
   });
 
   const { data: ecpayConnection } = useQuery<{
@@ -618,6 +667,7 @@ export default function AdminDashboard() {
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars"] });
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
       setIsAiWizardOpen(false);
       setCreatedWizardWebinar(result.webinar);
       setIsProductPagePromptOpen(true);
@@ -642,6 +692,11 @@ export default function AdminDashboard() {
     },
     onError: (error: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      if (noCardTrial?.state === "active" && (String(error?.message || "").includes("402") || String(error?.message || "").includes("額度"))) {
+        setIsAiWizardOpen(false);
+        toast({ title: "試用 AI 次數不足", description: `這個建立精靈需要 3 次 AI 呼叫；試用剩餘 ${noCardTrial.remainingAI} 次。升級不會重設試用次數。`, variant: "destructive" });
+        return;
+      }
       if (String(error?.message || "").includes("402") || String(error?.message || "").includes("點數")) {
         setIsAiWizardOpen(false);
         setIsRechargeOpen(true);
@@ -967,6 +1022,57 @@ export default function AdminDashboard() {
             </form>
           </DialogContent>
         </Dialog>
+        {noCardTrial && !subscription?.isSuperAdmin && (
+          <Card data-testid="card-no-card-trial">
+            <CardContent className="p-5 space-y-4">
+              {noCardTrial.state === "eligible" && (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="font-semibold">啟用 {NO_CARD_TRIAL_DAYS} 天免信用卡試用</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">發布 1 個商品頁、使用 50 次 AI、蒐集名單與查看基本數據。到期不扣款。</p>
+                  </div>
+                  <Button onClick={() => activateTrialMutation.mutate()} disabled={activateTrialMutation.isPending} data-testid="button-activate-no-card-trial">
+                    {activateTrialMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}啟用試用
+                  </Button>
+                </div>
+              )}
+              {noCardTrial.state === "active" && (
+                <>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">免信用卡試用進行中</h2><Badge>到期不扣款</Badge></div>
+                      <p className="mt-1 text-sm text-muted-foreground">此試用與付費 AI 點數及 Stripe 訂閱分開計算。</p>
+                    </div>
+                    <Button variant="outline" onClick={() => setIsUpgradeOpen(true)} data-testid="button-trial-upgrade">升級付費方案</Button>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">試用剩餘時間</p><TrialCountdown expiresAt={noCardTrial.expiresAt} /></div>
+                    <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">AI 次數剩餘</p><p className="mt-1 font-semibold" data-testid="text-trial-ai-remaining">{noCardTrial.remainingAI} / {NO_CARD_TRIAL_AI_CALL_LIMIT} 次</p></div>
+                    <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">商品頁發布額度</p><p className="mt-1 font-semibold" data-testid="text-trial-page-quota">剩餘 {trialPageRemaining} / 1 個</p></div>
+                  </div>
+                  <ol className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3" aria-label="試用行動清單">
+                    {NO_CARD_TRIAL_MILESTONES.map((day) => {
+                      const label: Record<number, string> = { 1: "建立商品頁", 2: "發布商品頁", 3: "分享平台網址", 7: "查看實際基本數據", 12: "試用即將到期，請選擇方案", 14: "試用結束；升級後可恢復公開頁" };
+                      const reached = noCardTrial.milestones.find(item => item.day === day)?.reached;
+                      return <li key={day} className={`rounded-md border p-2 ${reached ? "border-emerald-300 bg-emerald-50" : ""}`}><b>第 {day} 天</b> · {label[day]} {reached && <span className="text-emerald-700">完成</span>}</li>;
+                    })}
+                  </ol>
+                  <div className="grid gap-2 border-t pt-4 text-sm sm:grid-cols-2">
+                    <div className="rounded-md bg-muted/50 p-3"><b>進階分析</b><p className="mt-1 text-muted-foreground">此版本僅提供瀏覽、名單與轉換率；進階分析目前不包含在試用中。</p></div>
+                    <div className="rounded-md bg-muted/50 p-3"><b>自訂網域、移除品牌與團隊</b><p className="mt-1 text-muted-foreground">這些功能目前不在試用內；升級前不承諾尚未提供的功能。</p></div>
+                  </div>
+                   <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm"><b>第一天開始路徑</b><p className="mt-1 text-muted-foreground">建立商品 → 建立商品頁 → AI 產生草稿 → 發布；所有內容先存為草稿，不會自動公開。</p><Button className="mt-2" size="sm" onClick={() => setLocation("/admin/products")} data-testid="button-trial-start-product-page">前往商品管理</Button></div>
+                </>
+              )}
+              {noCardTrial.state === "expired" && (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div><h2 className="font-semibold">試用已結束，公開頁已暫停</h2><p className="mt-1 text-sm text-muted-foreground">內容會至少保留到 {noCardTrial.retentionUntil ? new Date(noCardTrial.retentionUntil).toLocaleDateString("zh-TW") : "試用結束後 30 天"}；升級付費方案可恢復公開網址。</p></div>
+                  <Button onClick={() => setIsUpgradeOpen(true)} data-testid="button-restore-trial-page">選擇付費方案</Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
         {subscription && !subscription.isSuperAdmin && (
           <Card>
             <CardContent className="p-5 space-y-4">
@@ -991,7 +1097,7 @@ export default function AdminDashboard() {
                     {!subscription.active && subscription.plan !== "free" && <Badge variant="destructive">{s.subExpired}</Badge>}
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">
-                    免費帳號可建立、編輯與預覽草稿；發布及公開分享需要有效訂閱。
+                    未啟用或已到期的免費帳號可建立、編輯與預覽草稿；發布及公開分享需要有效付費方案。免信用卡試用期間可發布 1 個商品頁。
                   </p>
                   <p className="text-xs text-muted-foreground mt-1">
                     {paidSubscription
@@ -1060,7 +1166,7 @@ export default function AdminDashboard() {
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>選擇發布方案</DialogTitle>
-              <DialogDescription>免費版只提供基本資料與草稿設定，不含 AI 點數及發布功能。新會員訂閱可免費試用 {NEW_MEMBER_TRIAL_DAYS} 天。</DialogDescription>
+              <DialogDescription>付費方案會立即進入安全結帳並依方案收費；不會建立新的信用卡試用。免信用卡試用與付費 AI 點數、Stripe 帳務分開計算。</DialogDescription>
             </DialogHeader>
             <div className="mx-auto flex rounded-lg border bg-muted/50 p-1">
               <button type="button" onClick={() => setBillingInterval("month")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "month" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>月繳</button>
@@ -1085,7 +1191,7 @@ export default function AdminDashboard() {
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
                   <p className="text-sm font-medium text-primary">正式首次扣款後，每月發放 {plan.monthlyAiPoints} AI 點</p>
-                  <p className="mt-2 text-sm font-semibold text-emerald-700">新會員免費試用 {NEW_MEMBER_TRIAL_DAYS} 天</p>
+                  <p className="mt-2 text-sm font-semibold text-emerald-700">付款完成後立即啟用付費方案</p>
                   {!available && <p className="mt-2 text-xs font-medium text-amber-700">即將開放</p>}
                 </button>
               )})}
@@ -1458,7 +1564,7 @@ export default function AdminDashboard() {
                   <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="font-medium">本次 AI 建立</span>
-                      <Badge variant="default">30 點</Badge>
+                      <Badge variant="default">{noCardTrial?.state === "active" ? "3 次試用 AI 呼叫" : "30 點"}</Badge>
                     </div>
                     <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
                       <li>產生 Webinar 標題、報名頁介紹與稀缺設定</li>
@@ -1473,7 +1579,15 @@ export default function AdminDashboard() {
                     <p><span className="text-muted-foreground">目標：</span>{aiWizard.goal}</p>
                     <p><span className="text-muted-foreground">建立後：</span>只保存為草稿，不自動發布、不自動寄信</p>
                   </div>
-                  {!aiPoints?.unlimited && (
+                  {noCardTrial?.state === "active" ? (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className={`text-sm ${(noCardTrial.remainingAI < 3) ? "text-destructive" : "text-muted-foreground"}`} data-testid="text-ai-wizard-trial-budget">
+                        試用 AI 次數：剩餘 {noCardTrial.remainingAI} / {NO_CARD_TRIAL_AI_CALL_LIMIT} 次；本次會使用 3 次，不使用付費 AI 點數。
+                        {noCardTrial.remainingAI < 3 ? " 次數不足，請升級後使用付費 AI 點數。" : ""}
+                      </p>
+                      {noCardTrial.remainingAI < 3 && <Button type="button" size="sm" variant="outline" onClick={() => setIsUpgradeOpen(true)}>升級方案</Button>}
+                    </div>
+                  ) : !aiPoints?.unlimited && (
                     <div className="flex items-center justify-between gap-3">
                       <p className={`text-sm ${aiPoints && aiPoints.points < 30 ? "text-destructive" : "text-muted-foreground"}`}>
                         目前餘額：{aiPoints?.points ?? "—"} 點
@@ -1513,14 +1627,17 @@ export default function AdminDashboard() {
                   <Button
                     type="button"
                     onClick={() => {
-                      if (!aiPoints?.unlimited && (aiPoints?.points ?? 0) < 30) {
+                      if (noCardTrial?.state === "active" && noCardTrial.remainingAI < 3) {
+                        return;
+                      }
+                      if (noCardTrial?.state !== "active" && !aiPoints?.unlimited && (aiPoints?.points ?? 0) < 30) {
                         setIsAiWizardOpen(false);
                         setIsRechargeOpen(true);
                         return;
                       }
                       aiWizardMutation.mutate();
                     }}
-                    disabled={aiWizardMutation.isPending}
+                    disabled={aiWizardMutation.isPending || (noCardTrial?.state === "active" && noCardTrial.remainingAI < 3)}
                     data-testid="button-run-ai-webinar-wizard"
                   >
                     {aiWizardMutation.isPending ? (
@@ -1531,7 +1648,7 @@ export default function AdminDashboard() {
                     ) : (
                       <>
                         <Sparkles className="h-4 w-4 mr-2" />
-                        使用 30 點建立草稿
+                        {noCardTrial?.state === "active" ? "使用 3 次試用 AI 建立草稿" : "使用 30 點建立草稿"}
                       </>
                     )}
                   </Button>
@@ -1829,33 +1946,17 @@ export default function AdminDashboard() {
                             <div className="text-xs text-muted-foreground">{s.statEngagement}</div>
                           </div>
                         </div>
+                         {webinarStats?.sessionRegistrationCounts && (
+                           <SessionRegistrationCounts
+                             summary={webinarStats.sessionRegistrationCounts}
+                             lang={lang}
+                             compact
+                             className="mt-4"
+                           />
+                         )}
                       </div>
 
                        <div className="admin-webinar-actions flex md:flex-col items-center md:items-stretch gap-1 p-3 md:border-l border-t md:border-t-0 flex-wrap justify-center md:w-36 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="justify-start gap-2 text-xs w-full"
-                          onClick={() => setLocation(`/admin/webinar/${webinar.id}`)}
-                          aria-label={s.actionEdit}
-                          title={s.actionEdit}
-                          data-testid={`button-edit-${webinar.id}`}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                          <span>{s.actionEdit}</span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="justify-start gap-2 text-xs w-full"
-                          onClick={() => setLocation(`/admin/webinar/${webinar.id}/control`)}
-                          aria-label={s.actionControl}
-                          title={s.actionControl}
-                          data-testid={`button-control-${webinar.id}`}
-                        >
-                          <Radio className="h-3.5 w-3.5" />
-                          <span>{s.actionControl}</span>
-                        </Button>
                         {webinar.publishStatus === "published" ? (
                           <Button
                             variant="ghost"
@@ -1885,6 +1986,30 @@ export default function AdminDashboard() {
                             <span>{s.publishBtn}</span>
                           </Button>
                         )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="justify-start gap-2 text-xs w-full"
+                          onClick={() => setLocation(`/admin/webinar/${webinar.id}`)}
+                          aria-label={s.actionEdit}
+                          title={s.actionEdit}
+                          data-testid={`button-edit-${webinar.id}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span>{s.actionEdit}</span>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="justify-start gap-2 text-xs w-full"
+                          onClick={() => setLocation(`/admin/webinar/${webinar.id}/control`)}
+                          aria-label={s.actionControl}
+                          title={s.actionControl}
+                          data-testid={`button-control-${webinar.id}`}
+                        >
+                          <Radio className="h-3.5 w-3.5" />
+                          <span>{s.actionControl}</span>
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"

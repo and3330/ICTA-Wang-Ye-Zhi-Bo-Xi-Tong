@@ -224,7 +224,7 @@ test("manual plan is read-only without subscription write permission and conflic
   await page.getByTestId("management-manual-plan-save").click();
   await expect.poll(() => writes.some(write => write.method === "POST" && write.path.endsWith("/manual-plan"))).toBe(true);
   await page.getByTestId("management-manual-plan-save").click();
-  await expect(page.getByText("方案資料已被其他管理員更新")).toBeVisible();
+  await expect(page.getByText("方案資料已被其他管理員更新", { exact: true })).toBeVisible();
 });
 
 test("manual plan controls remain horizontally accessible at 390px", async ({ page }) => {

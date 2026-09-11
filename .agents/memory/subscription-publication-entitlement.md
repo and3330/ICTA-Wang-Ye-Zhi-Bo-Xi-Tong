@@ -3,7 +3,7 @@ name: Subscription publication entitlement
 description: Durable rules for separating free draft access from Stripe-backed publishing rights.
 ---
 
-Free accounts may create, edit, retain, and owner-preview drafts. Public access and publication require an active entitlement from Stripe-approved recurring prices or an explicitly audited, time-bounded administrative grant; returning from Checkout must never grant access by itself.
+Free accounts may create, edit, retain, and owner-preview drafts. Public access and publication require an active entitlement from Stripe-approved recurring prices or an explicitly audited, time-bounded administrative grant. The one-time no-card trial is a narrower exception: one branded product lead page, not general webinar or paid-checkout access. Returning from Checkout must never grant access by itself.
 
 **Why:** Client-controlled price IDs, redirect-based activation, or check-then-publish quota logic can grant the wrong capacity, activate unpaid accounts, or exceed a plan during concurrent requests. Draft protection must also cover WebSocket and child-resource access, not only the main page.
 
@@ -16,3 +16,7 @@ Administrative plan/time adjustments are non-payment grants, not edits to Stripe
 **Why:** Support needs to grant or extend member access without charging members, deferring real renewal charges, fabricating paid/trial status, granting invoice-funded AI points, or accidentally reducing existing paid rights.
 
 **How to apply:** Keep effective access and actual paid billing separately labeled throughout management and member dashboards. Manual expiry must never appear as a Stripe renewal date. Future starts, expiry, and revocation apply at every public admission; manual grants do not qualify for automatic paid AI gifts.
+
+No-card expiry pauses the trial product's public URL while retaining content and leads for at least 30 days; it does not delete the published snapshot. A paid upgrade restores that same URL. A former lead-generation page must remain usable without ECPay until the merchant explicitly configures real checkout.
+
+**Why:** The trial's goal is a first published product page and real leads without a payment-provider setup prerequisite. Restoring access must not replace lead capture with a broken payment flow or mislabel a trial as paid commerce.

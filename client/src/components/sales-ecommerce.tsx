@@ -14,7 +14,7 @@ export type EcommerceBlock =
   | { id: string; enabled: boolean; type: "testimonials"; headline: string; items: { name: string; quote: string; role?: string }[] };
 
 const money = (offer?: EcommerceOffer) => !offer ? "價格載入中" : offer.amountMinor === null ? "價格請洽詢" : new Intl.NumberFormat("zh-TW", { style: "currency", currency: offer.currency, maximumFractionDigits: offer.currency === "TWD" ? 0 : 2 }).format(offer.amountMinor / 100);
-export function EcommerceProductSection({ offer, images = [], summary, features = [], buttonLabel = "立即取得", onCheckout, preview = false }: { offer?: EcommerceOffer; images?: EcommerceImage[]; summary?: string; features?: string[]; buttonLabel?: string; onCheckout?: () => void; preview?: boolean }) {
+export function EcommerceProductSection({ offer, images = [], summary, features = [], buttonLabel = "立即取得", onCheckout, preview = false, leadCapture = false }: { offer?: EcommerceOffer; images?: EcommerceImage[]; summary?: string; features?: string[]; buttonLabel?: string; onCheckout?: () => void; preview?: boolean; leadCapture?: boolean }) {
   const [active, setActive] = useState(0);
   const selectedIndex = Math.max(0, Math.min(active, images.length - 1));
   const selected = images[selectedIndex];
@@ -25,7 +25,7 @@ export function EcommerceProductSection({ offer, images = [], summary, features 
     {summary && <p className="ecommerce-description">{summary}</p>}
     {features.length > 0 && <ul className="ecommerce-features">{features.map((feature, index) => <li key={`${feature}-${index}`}><Check size={16} />{feature}</li>)}</ul>}
     <button type="button" className="ecommerce-buy" onClick={onCheckout}>{preview ? buttonLabel : buttonLabel}</button>
-    <p className="ecommerce-fineprint">{preview ? "預覽模式不會開啟付款。" : `點擊後前往安全的 ${offer?.paymentProvider === "ecpay" ? "綠界 ECPay" : "Stripe"} 付款頁面。`}</p>
+    <p className="ecommerce-fineprint">{preview ? "預覽模式不會開啟付款。" : leadCapture ? "留下資料後，主辦人會依你同意的目的聯絡你。" : `點擊後前往安全的 ${offer?.paymentProvider === "ecpay" ? "綠界 ECPay" : "Stripe"} 付款頁面。`}</p>
   </div></section>;
 }
 export function EcommerceContent({ blocks }: { blocks: EcommerceBlock[] }) {

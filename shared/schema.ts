@@ -774,6 +774,30 @@ export const insertUserSchema = createInsertSchema(users).omit({ id: true, creat
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+// No-card trials deliberately do not share users.aiPoints or ai_credit_lots.
+// Keeping one row per account makes the one-ever entitlement enforceable even
+// after expiry.
+export const noCardTrials = pgTable("no_card_trials", {
+  userId: varchar("user_id").primaryKey().references(() => users.id, { onDelete: "restrict" }),
+  startsAt: timestamp("starts_at").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  retentionUntil: timestamp("retention_until").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type NoCardTrial = typeof noCardTrials.$inferSelect;
+
+export const noCardTrialAiCalls = pgTable("no_card_trial_ai_calls", {
+  id: varchar("id").primaryKey(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  status: text("status").$type<"reserved" | "completed" | "refunded">().notNull().default("reserved"),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (table) => ({
+  userStatusIndex: index("no_card_trial_ai_calls_user_status_idx").on(table.userId, table.status),
+}));
+export type NoCardTrialAiCall = typeof noCardTrialAiCalls.$inferSelect;
+
 // Platform-management data is deliberately separate from a member's Stripe
 // entitlement. A role grants access to this console, never paid features.
 export const memberAdminMetadata = pgTable("member_admin_metadata", {
@@ -1243,3 +1267,7 @@ export const webinarPendingRefunds = pgTable("webinar_pending_refunds", {
 }, (table) => ({
   pendingPaymentIndex: index("webinar_pending_refunds_payment_idx").on(table.stripePaymentIntentId),
 }));
+
+// Kept in a focused module so no-card-trial commerce can evolve independently
+// from paid commerce while remaining part of the Drizzle schema export.
+export * from "./trialCommerceSchema";

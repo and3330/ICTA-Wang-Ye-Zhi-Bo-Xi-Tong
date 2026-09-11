@@ -17,6 +17,12 @@ import {
 import { db } from "./db";
 import { storage } from "./storage";
 import {
+  completeTrialAiCall,
+  getActiveNoCardTrial,
+  refundTrialAiCall,
+  reserveTrialAiCall,
+} from "./noCardTrial";
+import {
   AI_REPLY_MODEL,
   AI_NO_ANSWER_TOKEN,
   type AiProvider,
@@ -219,10 +225,16 @@ export async function runAiReply(input: {
   }
 
   let reservationId: string | null = null;
+  let trialReservationId: string | null = null;
   if (!unlimited) {
-    const reservation = webinar.userId
-      ? await storage.reserveAiCredits(webinar.userId, AI_POINTS_PER_ASSISTANT_REPLY)
+    const activeTrial = webinar.userId && owner?.subscriptionPlan === "free"
+      ? await getActiveNoCardTrial(webinar.userId)
       : null;
+    const reservation = activeTrial
+      ? await reserveTrialAiCall(webinar.userId!)
+      : webinar.userId
+        ? await storage.reserveAiCredits(webinar.userId, AI_POINTS_PER_ASSISTANT_REPLY)
+        : null;
     if (!reservation) {
       const answer = settings.outOfPointsMessage || DEFAULT_OUT_OF_POINTS_MESSAGE;
       const persisted = await persistUnchargedReply({
@@ -246,7 +258,8 @@ export async function runAiReply(input: {
         ...persisted,
       };
     }
-    reservationId = reservation.reservationId;
+    if (activeTrial) trialReservationId = reservation.reservationId;
+    else reservationId = reservation.reservationId;
   }
 
   let generated: { text: string; model: string };
@@ -267,6 +280,13 @@ export async function runAiReply(input: {
         // Still write the provider-failure audit row. The reservation remains
         // recoverable by the existing stale-reservation reconciliation.
         console.error("AI reply credit refund failed:", refundError);
+      }
+    }
+    if (trialReservationId) {
+      try {
+        await refundTrialAiCall(trialReservationId);
+      } catch (refundError) {
+        console.error("AI reply trial reservation refund failed:", refundError);
       }
     }
     const persisted = await persistUnchargedReply({
@@ -312,19 +332,23 @@ export async function runAiReply(input: {
       sources: retrieved.sources,
       model: generated.model,
       durationMs: Date.now() - startedAt,
-      pointsCharged: unlimited ? 0 : AI_POINTS_PER_ASSISTANT_REPLY,
+      pointsCharged: unlimited || trialReservationId ? 0 : AI_POINTS_PER_ASSISTANT_REPLY,
     });
+    if (trialReservationId && !await completeTrialAiCall(trialReservationId)) {
+      throw new Error("Trial AI reservation is not active");
+    }
     return {
       answer,
       status: isFallback ? "fallback" : "answered",
       sources: retrieved.sources,
-      pointsCharged: unlimited ? 0 : AI_POINTS_PER_ASSISTANT_REPLY,
+      pointsCharged: unlimited || trialReservationId ? 0 : AI_POINTS_PER_ASSISTANT_REPLY,
       unlimited,
       model: generated.model,
       ...persisted,
     };
   } catch (error) {
     if (reservationId) await storage.refundAiCreditReservation(reservationId);
+    if (trialReservationId) await refundTrialAiCall(trialReservationId);
     throw error;
   }
 }

@@ -19,6 +19,7 @@ import { createRawToken, hashToken } from "./security";
 import { getUncachableStripeClient } from "./stripeClient";
 import { SUBSCRIPTION_PLANS } from "./subscriptionEntitlements";
 import { composePublishingOverride, effectiveMemberPlan, manualPlanDto, memberManualPlan } from "./manualPlanEntitlements";
+import { getNoCardTrialStatus } from "./noCardTrial";
 
 type Actor = { id: string; role: ManagementRole; permissions: Set<ManagementPermission>; isRoot: boolean };
 type SessionRequest = Request & { session: { userId?: string } };
@@ -122,6 +123,16 @@ function validManualPlanTimes(startsAt: Date, expiresAt: Date, now = new Date())
   if (startsAt.getTime() > now.getTime() + 366 * 24 * 3600_000) return "Manual plan start may be at most 366 days ahead";
   if (expiresAt.getTime() > now.getTime() + 5 * 366 * 24 * 3600_000) return "Manual plan expiry may be at most five years ahead";
   return null;
+}
+
+// This ordering matches ensureNoCardTrial: the shared trial key is obtained
+// first, then the same user row is locked. A manual grant that wins the race
+// therefore makes a new no-card trial ineligible; a later manual grant keeps
+// an already-legitimate trial ledger intact.
+async function lockManualPlanMutation(tx: any, userId: string) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"no-card-trial:" + userId}))`);
+  await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update");
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + userId}))`);
 }
 
 async function recordAudit(data: {
@@ -272,6 +283,9 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
       const manual = await memberManualPlan(user.id);
       response.manualPlan = manual ? manualPlanDto(manual) : null;
       response.effectivePlan = composePublishingOverride(effectiveMemberPlan(storedPaidEntitlement(user), manual), override);
+      // Trial history is billing-sensitive account information: expose it only
+      // to roles already allowed to read subscription data.
+      response.noCardTrial = await getNoCardTrialStatus(user.id);
       try {
         const stripe = await getStripe(); const remote = await liveSubscription(user, stripe);
         response.subscription = subscriptionDto(user, remote.item, remote.error ? "error" : "connected", remote.item?.latest_invoice?.hosted_invoice_url || null);
@@ -415,7 +429,7 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
     try {
       await guardTarget(actor(req), user);
       const result = await db.transaction(async tx => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        await lockManualPlanMutation(tx, user.id);
         const mutationKey = `manual-plan:create:${user.id}:${body.data.idempotencyKey}`;
         const fingerprint = idempotencyFingerprint(body.data);
         const [prior] = await tx.select().from(adminMutationIdempotency)
@@ -461,7 +475,7 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
     try {
       await guardTarget(actor(req), user);
       const result = await db.transaction(async tx => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        await lockManualPlanMutation(tx, user.id);
         const mutationKey = `manual-plan:update:${user.id}:${body.data.idempotencyKey}`;
         const fingerprint = idempotencyFingerprint(body.data);
         const [prior] = await tx.select().from(adminMutationIdempotency).where(eq(adminMutationIdempotency.idempotencyKey, mutationKey)).for("update");
@@ -507,7 +521,7 @@ export function registerAdminManagementRoutes(app: Express, revokeSessions: Revo
     try {
       await guardTarget(actor(req), user);
       const result = await db.transaction(async tx => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"manual-plan:" + user.id}))`);
+        await lockManualPlanMutation(tx, user.id);
         const mutationKey = `manual-plan:revoke:${user.id}:${body.data.idempotencyKey}`;
         const fingerprint = idempotencyFingerprint(body.data);
         const [prior] = await tx.select().from(adminMutationIdempotency).where(eq(adminMutationIdempotency.idempotencyKey, mutationKey)).for("update");

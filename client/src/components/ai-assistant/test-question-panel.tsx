@@ -18,6 +18,7 @@ export function AiTestQuestionPanel({ webinarId }: { webinarId: string }) {
     onSuccess: data => {
       setResult(data);
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
       queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith(`/api/webinars/${webinarId}/ai/logs?`) });
     },
     onError: () => setResult(null),

@@ -1,8 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { WebinarDocument } from "@shared/schema";
 import type { AiReplySettings, AiSourceReference } from "@shared/aiAssistant";
-import { DEFAULT_AI_FALLBACK } from "@shared/aiAssistant";
-import { storage } from "./storage";
 
 export const AI_REPLY_MODEL = "claude-sonnet-4-6";
 export const AI_NO_ANSWER_TOKEN = "[[NO_ANSWER]]";
@@ -196,29 +194,18 @@ export async function requestAiAnswer(input: {
 // Backwards-compatible wrapper for older callers.
 export async function answerViewerQuestion(
   webinarId: string,
-  webinarTitle: string,
-  teacherName: string,
+  _webinarTitle: string,
+  _teacherName: string,
   question: string,
-  fallbackMessage?: string,
-  knowledgeOnly = false,
+  _fallbackMessage?: string,
+  _knowledgeOnly = false,
 ): Promise<string | null> {
   try {
-    const documents = await storage.getWebinarDocuments(webinarId);
-    const retrieved = retrieveAiContext(documents, question);
-    const settings: AiReplySettings = {
-      enabled: true,
-      teacherName,
-      instructions: "",
-      knowledgeOnly,
-      fallbackMessage: fallbackMessage?.trim() || "",
-      outOfPointsMessage: "",
-    };
-    if (knowledgeOnly && !retrieved.context) return settings.fallbackMessage || DEFAULT_AI_FALLBACK;
-    const result = await requestAiAnswer({ webinarTitle, settings, question, context: retrieved.context });
-    if (!result.text) return null;
-    return result.text.includes(AI_NO_ANSWER_TOKEN)
-      ? settings.fallbackMessage || DEFAULT_AI_FALLBACK
-      : result.text;
+    // Dynamic import avoids an aiAssistant <-> aiReplyService evaluation cycle.
+    // All real provider calls must enter through runAiReply so trial and paid
+    // billing reserve/refund/complete exactly once.
+    const { runAiReply } = await import("./aiReplyService");
+    return (await runAiReply({ webinarId, question, kind: "test" })).answer;
   } catch (error) {
     console.error("AI answer error:", error);
     return null;

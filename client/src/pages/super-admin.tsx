@@ -1401,6 +1401,7 @@ function MemberDetail({
               isRoot={isRoot}
               manualPlan={detailData.manualPlan}
               effectivePlan={detailData.effectivePlan}
+              noCardTrial={(detailData as typeof detailData & { noCardTrial?: { state: "eligible" | "active" | "expired" | "ineligible" | "upgraded"; startsAt: string | null; expiresAt: string | null; retentionUntil: string | null; remainingAI: number; usedAI: number } | null; trial?: { state: "eligible" | "active" | "expired" | "ineligible" | "upgraded"; startsAt: string | null; expiresAt: string | null; retentionUntil: string | null; remainingAI: number; usedAI: number } | null }).noCardTrial || (detailData as typeof detailData & { trial?: { state: "eligible" | "active" | "expired" | "ineligible" | "upgraded"; startsAt: string | null; expiresAt: string | null; retentionUntil: string | null; remainingAI: number; usedAI: number } | null }).trial}
               action={action}
               onConflict={() => detail.refetch()}
             />

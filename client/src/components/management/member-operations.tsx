@@ -35,6 +35,14 @@ type MemberOperationsProps = {
   override?: EntitlementOverrideDto | null;
   manualPlan?: MemberManualPlanDto | null;
   effectivePlan?: EffectiveMemberPlanDto | null;
+  noCardTrial?: {
+    state: "eligible" | "active" | "expired" | "ineligible" | "upgraded";
+    startsAt: string | null;
+    expiresAt: string | null;
+    retentionUntil: string | null;
+    remainingAI: number;
+    usedAI: number;
+  } | null;
   canWrite: boolean;
   canDisable: boolean;
   canCredit: boolean;
@@ -53,6 +61,7 @@ export function MemberOperations({
   override,
   manualPlan,
   effectivePlan,
+  noCardTrial,
   canWrite,
   canDisable,
   canCredit,
@@ -195,6 +204,23 @@ export function MemberOperations({
           action={action}
           onConflict={onConflict}
         />
+      )}
+      {noCardTrial && (
+        <section className="mc-card mc-panel" data-testid="management-no-card-trial-readonly">
+          <h3>免信用卡試用（唯讀）</h3>
+          <p className="mc-id">此為獨立試用權益，不會改變 Stripe 付費訂閱或 AI 點數批次。管理介面不能重設、延長或授予試用。</p>
+          {noCardTrial.state === "upgraded" ? (
+            <p className="mc-id">已升級為付費方案；後續 AI 與發布權益以付費訂閱或人工方案為準。免信用卡試用資料僅保留供稽核，不顯示到期警示或可重設操作。</p>
+          ) : (
+            <dl className="mc-plan-summary">
+              <dt>狀態</dt><dd>{noCardTrial.state}</dd>
+              <dt>開始時間</dt><dd>{noCardTrial.startsAt ? new Date(noCardTrial.startsAt).toLocaleString("zh-TW") : "—"}</dd>
+              <dt>到期時間</dt><dd>{noCardTrial.expiresAt ? new Date(noCardTrial.expiresAt).toLocaleString("zh-TW") : "—"}</dd>
+              <dt>AI 次數</dt><dd>{noCardTrial.remainingAI} 次剩餘（已用 {noCardTrial.usedAI} 次）</dd>
+              <dt>資料保留至</dt><dd>{noCardTrial.retentionUntil ? new Date(noCardTrial.retentionUntil).toLocaleString("zh-TW") : "—"}</dd>
+            </dl>
+          )}
+        </section>
       )}
 
       <div className="mc-detail-grid">

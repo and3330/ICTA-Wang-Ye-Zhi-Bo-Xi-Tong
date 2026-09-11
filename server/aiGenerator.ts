@@ -30,7 +30,8 @@ function parseJson<T>(text: string): T | null {
   }
 }
 
-async function callJson(system: string, user: string, maxTokens = 4096): Promise<string> {
+/** Shared configured Anthropic JSON request path for server-side generators. */
+export async function requestAnthropicJson(system: string, user: string, maxTokens = 4096): Promise<string> {
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: maxTokens,
@@ -224,7 +225,7 @@ export async function generateInteractions(
       ? `以下是研討會逐字稿（可能含時間軸）：\n\n${context}`
       : `（沒有逐字稿，請依研討會主題與目標合理推估時間軸生成互動內容。）`;
 
-    const raw = await callJson(system, userMsg, 8192);
+    const raw = await requestAnthropicJson(system, userMsg, 8192);
     const parsed = parseJson<GeneratedInteractions>(raw);
     if (!parsed) return null;
 
@@ -315,7 +316,7 @@ export async function generateEmailSequence(
       ? `研討會內容參考資料：\n\n${context}`
       : `（無額外資料，請依主題與目標撰寫。）`;
 
-    const raw = await callJson(system, userMsg, 8192);
+    const raw = await requestAnthropicJson(system, userMsg, 8192);
     const parsed = parseJson<{ emails: GeneratedEmail[] }>(raw);
     const emails = parsed?.emails;
     if (!Array.isArray(emails)) return null;
@@ -368,7 +369,7 @@ export async function generateSocialPosts(
       ? `研討會內容參考資料：\n\n${context}`
       : `（無額外資料，請依主題與目標撰寫。）`;
 
-    const raw = await callJson(system, userMsg, 6144);
+    const raw = await requestAnthropicJson(system, userMsg, 6144);
     const parsed = parseJson<{ posts: GeneratedPost[] }>(raw);
     const posts = parsed?.posts;
     if (!Array.isArray(posts)) return null;

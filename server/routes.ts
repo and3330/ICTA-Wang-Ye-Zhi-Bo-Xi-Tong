@@ -5,7 +5,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { z } from "zod";
-import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
+import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardTrial";
 import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
@@ -118,6 +118,7 @@ import {
 } from "./ecpay";
 import { processVerifiedEcpayPayment } from "./offerPayments";
 import { productSalesPageTargetUrl, registerProductCommerceRoutes } from "./productCommerce";
+import { registerAiSalesPageRoutes } from "./aiSalesPage";
 import { appendMemberOrderEvent, registerMemberOrderRoutes } from "./memberOrders";
 import {
   createSalesPageSchema,
@@ -129,6 +130,8 @@ import {
   validatePublishableBlocks,
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
+import { getBatchSessionRegistrationCounts, getSessionRegistrationCounts } from "./sessionRegistrationCounts";
+import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCounts";
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
 import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
 import { optionalRegistrationEnrichment } from "./externalJourneySafety";
@@ -142,6 +145,15 @@ import {
   schedulerSuccess,
   trackOperation,
 } from "./operationsRuntime";
+import {
+  ensureNoCardTrial,
+  getActiveNoCardTrial,
+  getNoCardTrial,
+  getNoCardTrialStatus,
+  reserveTrialAiCall,
+  refundTrialAiCall,
+  completeTrialAiCall,
+} from "./noCardTrial";
 
 // ===== AI 點數計費常數 =====
 const AI_POINTS_PER_REPLY = 1; // 每則 AI 回覆扣的點數
@@ -151,6 +163,22 @@ const POINTS_PER_TWD = 1; // 1 元 = 1 點
 const RECHARGE_MIN_TWD = 100; // 自訂金額最低消費
 const RECHARGE_PACKAGES: Record<string, number> = { p300: 300, p1000: 1000, p3000: 3000 }; // 固定儲值包（元）
 export const OFFER_CHECKOUT_RATE_LIMIT = { namespace: "offer-checkout", limit: 20, windowSeconds: 60 } as const;
+/** New upgrades are immediately paid; no-card trials never create Stripe trials. */
+export function immediatePaidSubscriptionData(input: {
+  userId: string;
+  planKey: string;
+  billingInterval: string;
+  addonWebinars: number;
+}) {
+  return {
+    metadata: {
+      userId: input.userId,
+      planKey: input.planKey,
+      billingInterval: input.billingInterval,
+      addonWebinars: String(input.addonWebinars),
+    },
+  };
+}
 function createCheckoutStatusToken() {
   // 192-bit bearer capability; only its SHA-256 digest is persisted.
   return crypto.randomBytes(24).toString("base64url");
@@ -365,6 +393,33 @@ async function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storag
   }
 }
 
+/**
+ * Trial-only accounts may use the workbench and the deliberately-basic trial
+ * commerce statistics, but not the advanced lead-scoring/funnel surfaces.
+ * A retained, expired trial row remains a restriction only until a real paid
+ * or active manual entitlement supersedes it.
+ */
+async function isAdvancedTrialOnlyAccount(userId: string): Promise<boolean> {
+  const user = await storage.getUser(userId);
+  if (!user) return true;
+  const storedPaid = user.isSuperAdmin || user.subscriptionPlan === "enterprise" || (
+    ["active", "trialing"].includes(user.subscriptionStatus)
+    && (!user.planExpiresAt || user.planExpiresAt.getTime() > Date.now())
+  );
+  if (storedPaid) return false;
+  if (await activeMemberManualPlan(userId) || await activePublishingOverride(userId)) return false;
+  return Boolean(await getNoCardTrial(userId));
+}
+
+async function denyAdvancedTrialOnly(res: Response, ownerId: string | null): Promise<boolean> {
+  if (!ownerId || !await isAdvancedTrialOnlyAccount(ownerId)) return false;
+  res.status(403).json({
+    message: "ADVANCED_ANALYTICS_REQUIRES_PAID_OR_MANUAL_ENTITLEMENT",
+    code: "ADVANCED_ANALYTICS_REQUIRES_PAID_OR_MANUAL_ENTITLEMENT",
+  });
+  return true;
+}
+
 async function resolveOfferOwnerId(offer: { userId: string | null; webinarId: string | null }): Promise<string | null> {
   if (offer.userId) return offer.userId;
   if (!offer.webinarId) return null;
@@ -489,6 +544,8 @@ export async function registerRoutes(
   app.use("/api/stripe", (req, res, next) => req.method === "POST" ? stripeLimit(req, res, next) : next());
   app.use("/api/webinars", (req, res, next) =>
     req.method === "POST" && (req.path.includes("/ai/") || req.path === "/ai-wizard") ? aiLimit(req, res, next) : next());
+  app.use("/api/product-sales-pages", (req, res, next) =>
+    req.method === "POST" && /^\/[^/]+\/ai-draft$/.test(req.path) ? aiLimit(req, res, next) : next());
   registerProductCommerceRoutes(
     app,
     requireAdmin,
@@ -497,6 +554,7 @@ export async function registerRoutes(
     withMediaReferenceLock,
     verifyReferencedMediaUrls,
   );
+  registerAiSalesPageRoutes(app, requireAdmin);
   registerMemberOrderRoutes(app);
   registerExternalJourneyRoutes(app, hasStoredPublicEntitlement);
   // registerBunnyMediaRoutes owns its final handlers. Intercept its DELETE
@@ -1441,6 +1499,9 @@ export async function registerRoutes(
         companyName: typeof companyName === "string" ? companyName.slice(0, 200) : "",
         emailVerificationRequired: true,
       });
+      // This is a platform entitlement, not a Stripe trial. A duplicate-email
+      // registration exits above before an account/trial can be created.
+      await ensureNoCardTrial(user.id);
       const verificationCode = createNumericVerificationCode();
       await storage.createAuthToken(user.id, "email_verification", hashEmailVerificationCode(user.id, verificationCode), new Date(Date.now() + 10 * 60 * 1000));
       await sendTransactionalMail({
@@ -1680,7 +1741,17 @@ export async function registerRoutes(
   app.get("/api/webinars/stats/summary", requireAdmin, async (req, res) => {
     try {
       const allWebinars = await storage.getWebinarsByUser(req.session.userId!);
-      const stats: Record<string, { registered: number; attended: number; engaged: number; onlineCount: number }> = {};
+      const sessionRegistrationCounts = await getBatchSessionRegistrationCounts(
+        req.session.userId!,
+        allWebinars.map(webinar => webinar.id),
+      );
+      const stats: Record<string, {
+        registered: number;
+        attended: number;
+        engaged: number;
+        onlineCount: number;
+        sessionRegistrationCounts: SessionRegistrationCountsDto;
+      }> = {};
       
       for (const webinar of allWebinars) {
         const regs = await storage.getRegistrationsByWebinar(webinar.id);
@@ -1696,7 +1767,13 @@ export async function registerRoutes(
         
         const onlineCount = webinarSessions.get(webinar.id)?.size || 0;
         
-        stats[webinar.id] = { registered, attended, engaged, onlineCount };
+        stats[webinar.id] = {
+          registered,
+          attended,
+          engaged,
+          onlineCount,
+          sessionRegistrationCounts: sessionRegistrationCounts[webinar.id] || { counts: [], totalRegistered: 0 },
+        };
       }
       
       res.json(stats);
@@ -1771,8 +1848,18 @@ export async function registerRoutes(
     }
 
     const unlimited = owner.isSuperAdmin || owner.subscriptionPlan === "enterprise";
-    const reservation = unlimited ? null : await storage.reserveAiCredits(ownerId, AI_WEBINAR_WIZARD_POINTS);
-    if (!unlimited && !reservation) {
+    // The wizard performs three provider requests. During an active no-card
+    // trial each is ledgered independently, rather than reserving 30 paid
+    // points or touching users.ai_points.
+    const trialActive = !unlimited && owner.subscriptionPlan === "free"
+      ? await getActiveNoCardTrial(ownerId)
+      : null;
+    const trialReservation = trialActive ? await reserveTrialAiCall(ownerId, 3) : null;
+    const reservation = unlimited || trialActive ? null : await storage.reserveAiCredits(ownerId, AI_WEBINAR_WIZARD_POINTS);
+    if (trialActive && !trialReservation) {
+      return res.status(402).json({ message: `試用期 AI 額度已用完（共 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次）` });
+    }
+    if (!unlimited && !trialActive && !reservation) {
       return res.status(402).json({ message: `AI 點數不足，建立精靈需要 ${AI_WEBINAR_WIZARD_POINTS} 點` });
     }
 
@@ -1826,12 +1913,16 @@ export async function registerRoutes(
         interactions: { ...interactions, ctas: safeCtas },
         emails,
       });
+      for (const reservationId of trialReservation?.reservationIds || []) {
+        if (!await completeTrialAiCall(reservationId)) throw new Error("Trial AI reservation could not be completed");
+      }
 
       res.json({
         success: true,
         webinar,
-        pointsUsed: unlimited ? 0 : AI_WEBINAR_WIZARD_POINTS,
-        remainingPoints: unlimited ? null : reservation!.remaining,
+        pointsUsed: unlimited || trialReservation ? 0 : AI_WEBINAR_WIZARD_POINTS,
+        remainingPoints: unlimited || trialReservation ? null : reservation!.remaining,
+        trialCallsUsed: trialReservation?.reservationIds.length || 0,
         counts: {
           messages: interactions.messages.length,
           polls: interactions.polls.length,
@@ -1841,13 +1932,22 @@ export async function registerRoutes(
         },
       });
     } catch (error: any) {
-      let refunded = !reservation;
+      let refunded = !reservation && !trialReservation;
       if (reservation) {
         try {
           await storage.refundAiCreditReservation(reservation.reservationId);
           refunded = true;
         } catch (refundError) {
           console.error("AI wizard credit refund failed:", refundError);
+          void persistProductionError(refundError, req, 500).catch(() => {});
+        }
+      }
+      if (trialReservation) {
+        try {
+          await Promise.all(trialReservation.reservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
+          refunded = true;
+        } catch (refundError) {
+          console.error("AI wizard trial reservation refund failed:", refundError);
           void persistProductionError(refundError, req, 500).catch(() => {});
         }
       }
@@ -2077,6 +2177,37 @@ export async function registerRoutes(
     }
   });
 
+  // ============ No-card trial ============
+  app.get("/api/trial", requireAdmin, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.session.userId!);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      return res.json(await getNoCardTrialStatus(user.id));
+    } catch (error: any) {
+      return res.status(500).json({ message: error.message || "Unable to read trial status" });
+    }
+  });
+
+  // Existing free accounts must opt in explicitly. New accounts are started
+  // during registration, and the server re-checks all historical eligibility.
+  app.post("/api/trial/activate", requireAdmin, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.session.userId!);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const trial = await ensureNoCardTrial(user.id);
+      if (!trial) {
+        return res.status(409).json({
+          message: "NO_CARD_TRIAL_INELIGIBLE",
+          code: "NO_CARD_TRIAL_INELIGIBLE",
+          trial: await getNoCardTrialStatus(user.id),
+        });
+      }
+      return res.status(201).json(await getNoCardTrialStatus(user.id));
+    } catch (error: any) {
+      return res.status(500).json({ message: error.message || "Unable to activate trial" });
+    }
+  });
+
   // ============ Stripe Routes ============
   app.get("/api/stripe/publishable-key", async (_req, res) => {
     try {
@@ -2089,9 +2220,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: NEW_MEMBER_TRIAL_DAYS },
-      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: NEW_MEMBER_TRIAL_DAYS },
-      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: NEW_MEMBER_TRIAL_DAYS },
+      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 0 },
+      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 0 },
+      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 0 },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -2181,7 +2312,6 @@ export async function registerRoutes(
           throw new Error("ACTIVE_SUBSCRIPTION_EXISTS");
         }
 
-        let previousTrialSessionExpired = false;
         const openSessions = await stripe.checkout.sessions.list({
           customer: customerId,
           status: "open",
@@ -2199,17 +2329,8 @@ export async function registerRoutes(
             return openSession;
           }
           await stripe.checkout.sessions.expire(openSession.id);
-          if (openSession.id === lockedUser.stripeSubscriptionCheckoutSessionId) {
-            previousTrialSessionExpired = true;
-          }
-        }
-        if (lockedUser.stripeSubscriptionCheckoutSessionId && !previousTrialSessionExpired) {
-          const priorSession = await stripe.checkout.sessions.retrieve(lockedUser.stripeSubscriptionCheckoutSessionId);
-          previousTrialSessionExpired = priorSession.status === "expired";
         }
 
-        const trialEligible = previousSubscriptions.data.length === 0
-          && (!lockedUser.stripeTrialClaimedAt || previousTrialSessionExpired);
         const created = await stripe.checkout.sessions.create({
           customer: customerId,
           payment_method_types: ["card"],
@@ -2226,16 +2347,17 @@ export async function registerRoutes(
             billingInterval,
             addonWebinars: String(addonWebinars),
           },
-          subscription_data: {
-            metadata: { userId: lockedUser.id, planKey, billingInterval, addonWebinars: String(addonWebinars) },
-            ...(trialEligible ? { trial_period_days: NEW_MEMBER_TRIAL_DAYS } : {}),
-          },
+          subscription_data: immediatePaidSubscriptionData({
+            userId: lockedUser.id,
+            planKey,
+            billingInterval,
+            addonWebinars,
+          }),
           success_url: `${baseUrl}/admin/dashboard?checkout=success`,
           cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
         });
         await tx.update(users).set({
           stripeSubscriptionCheckoutSessionId: created.id,
-          ...(trialEligible ? { stripeTrialClaimedAt: new Date() } : {}),
         }).where(eq(users.id, lockedUser.id));
         return created;
       });
@@ -2653,10 +2775,26 @@ export async function registerRoutes(
     res.json(registrations);
   });
 
+  app.get("/api/webinars/:id/session-registration-counts", requireWebinarOwner, async (req, res) => {
+    try {
+      const webinar = await storage.getWebinar(req.params.id as string);
+      if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+      const counts = await getSessionRegistrationCounts(
+        webinar.userId || req.session.userId!,
+        webinar.id,
+      );
+      if (!counts) return res.status(404).json({ message: "Webinar not found" });
+      res.json(counts);
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || "Unable to load session registration counts" });
+    }
+  });
+
   // Owner-only, read-only deterministic sales insights.
   app.get("/api/webinars/:id/lead-insights", requireWebinarOwner, async (req, res) => {
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+    if (await denyAdvancedTrialOnly(res, webinar.userId)) return;
     const rawLimit = Number(req.query.limit ?? 50);
     const rawOffset = Number(req.query.offset ?? 0);
     const limit = Number.isInteger(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 50;
@@ -2679,6 +2817,7 @@ export async function registerRoutes(
   app.get("/api/webinars/:id/registrations/:registrationId/insights", requireWebinarOwner, async (req, res) => {
     const webinar = await storage.getWebinar(req.params.id as string);
     if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+    if (await denyAdvancedTrialOnly(res, webinar.userId)) return;
     const registration = await storage.getRegistration(req.params.registrationId as string);
     if (!registration || registration.webinarId !== req.params.id) {
       return res.status(404).json({ message: "Registration not found" });
@@ -3908,6 +4047,7 @@ export async function registerRoutes(
       const webinarId = req.params.id as string;
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) return res.status(404).json({ message: "Webinar not found" });
+      if (await denyAdvancedTrialOnly(res, webinar.userId)) return;
       const parseDate = (value: unknown, endOfDay = false): Date | undefined => {
         if (typeof value !== "string" || !value) return undefined;
         const date = new Date(value);
@@ -3935,6 +4075,7 @@ export async function registerRoutes(
     if (!webinar) {
       return res.status(404).json({ message: "Webinar not found" });
     }
+    if (await denyAdvancedTrialOnly(res, webinar.userId)) return;
 
     const analytics = await storage.getWebinarAnalytics(webinarId);
     const registrations = await storage.getRegistrationsByWebinar(webinarId);
@@ -4495,18 +4636,26 @@ export async function registerRoutes(
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }
-  async function reserveGenerationPoints(webinarId: string): Promise<{ ok: true; reservationId: string | null } | { ok: false; status: number; message: string }> {
+  async function reserveGenerationPoints(webinarId: string): Promise<{ ok: true; reservationId: string | null; trialReservationIds: string[] } | { ok: false; status: number; message: string }> {
     const webinar = await storage.getWebinar(webinarId);
     if (!webinar) return { ok: false, status: 404, message: "找不到直播間" };
     const ownerId = webinar.userId || null;
     const owner = ownerId ? await storage.getUser(ownerId) : undefined;
     const unlimited = !!owner && (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise");
-    if (unlimited || !ownerId) return { ok: true, reservationId: null };
+    if (unlimited || !ownerId) return { ok: true, reservationId: null, trialReservationIds: [] };
+    const trial = owner?.subscriptionPlan === "free" ? await getActiveNoCardTrial(ownerId) : null;
+    if (trial) {
+      const reservation = await reserveTrialAiCall(ownerId);
+      if (!reservation) {
+        return { ok: false, status: 402, message: `試用期 AI 額度已用完（共 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次）` };
+      }
+      return { ok: true, reservationId: null, trialReservationIds: reservation.reservationIds };
+    }
     const reservation = await storage.reserveAiCredits(ownerId, AI_POINTS_PER_GENERATION);
     if (!reservation) {
       return { ok: false, status: 402, message: `AI 點數不足，本次生成需要 ${AI_POINTS_PER_GENERATION} 點，請先儲值` };
     }
-    return { ok: true, reservationId: reservation.reservationId };
+    return { ok: true, reservationId: reservation.reservationId, trialReservationIds: [] };
   }
 
   // 1. 一鍵生成互動（假人聊天 / CTA / 投票 / 提示卡，含時間點）
@@ -4518,6 +4667,7 @@ export async function registerRoutes(
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -4529,6 +4679,7 @@ export async function registerRoutes(
       const result = await generateInteractions(webinar.title, transcript, webinar.videoDuration || 0, goal);
       if (!result) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
 
@@ -4540,12 +4691,14 @@ export async function registerRoutes(
         requestText: JSON.stringify({ goal, transcript }),
         result,
       });
+      await Promise.all(reserve.trialReservationIds.map((reservationId) => completeTrialAiCall(reservationId)));
       res.json({
         success: true,
         counts,
       });
     } catch (error: any) {
       if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+      await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });
@@ -4559,6 +4712,7 @@ export async function registerRoutes(
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -4567,6 +4721,7 @@ export async function registerRoutes(
       const emails = await generateEmailSequence(webinar.title, goal, knowledge);
       if (!emails || emails.length === 0) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
       const created = await storage.persistGeneratedEmailSequences({
@@ -4577,9 +4732,11 @@ export async function registerRoutes(
         requestText: JSON.stringify({ goal, knowledge }),
         emails,
       });
+      await Promise.all(reserve.trialReservationIds.map((reservationId) => completeTrialAiCall(reservationId)));
       res.json({ success: true, count: created.length, sequences: created });
     } catch (error: any) {
       if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+      await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });
@@ -4593,6 +4750,7 @@ export async function registerRoutes(
       const webinar = await storage.getWebinar(webinarId);
       if (!webinar) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(404).json({ message: "找不到直播間" });
       }
       const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
@@ -4601,6 +4759,7 @@ export async function registerRoutes(
       const posts = await generateSocialPosts(webinar.title, goal, knowledge);
       if (!posts || posts.length === 0) {
         if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
         return res.status(502).json({ message: "AI 生成失敗，請稍後再試（未扣點）" });
       }
       const created = await storage.persistGeneratedSocialPosts({
@@ -4611,9 +4770,11 @@ export async function registerRoutes(
         requestText: JSON.stringify({ goal, knowledge }),
         posts,
       });
+      await Promise.all(reserve.trialReservationIds.map((reservationId) => completeTrialAiCall(reservationId)));
       res.json({ success: true, count: created.length, posts: created });
     } catch (error: any) {
-      if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        if (reserve.reservationId) await storage.refundAiCreditReservation(reserve.reservationId);
+        await Promise.all(reserve.trialReservationIds.map((reservationId) => refundTrialAiCall(reservationId)));
       res.status(500).json({ message: error.message || "生成失敗（已退點）" });
     }
   });

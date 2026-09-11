@@ -15,6 +15,7 @@ import {
 import { db } from "./db";
 import { postgresRateLimit } from "./rateLimit";
 import { verifyWatchToken } from "./watchTokens";
+import { isNoCardTrialOnlyAccount } from "./noCardTrial";
 
 const DEFAULT_SETTINGS: ExternalJourneySettingsInput = {
   landingMode: "builtin", thankYouMode: "builtin", approvedOrigins: [], approvedEmbedOrigins: [],
@@ -127,6 +128,14 @@ async function requireMember(req: Request, res: Response) {
   const owner = await activeOwner(id);
   if (!owner) { res.status(403).json({ message: "Forbidden" }); return; }
   return id;
+}
+async function denyTrialExternalJourney(res: Response, userId: string) {
+  if (!await isNoCardTrialOnlyAccount(userId)) return false;
+  res.status(403).json({
+    message: "EXTERNAL_JOURNEY_REQUIRES_PAID_OR_MANUAL_ENTITLEMENT",
+    code: "EXTERNAL_JOURNEY_REQUIRES_PAID_OR_MANUAL_ENTITLEMENT",
+  });
+  return true;
 }
 function requestOrigin(req: Request) {
   const origin = req.get("Origin");
@@ -289,6 +298,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
   });
   app.get("/api/webinars/:id/external-journey", async (req, res) => {
     const userId = await requireMember(req, res); if (!userId) return;
+    if (await denyTrialExternalJourney(res, userId)) return;
     const [webinar] = await db.select().from(webinars).where(and(eq(webinars.id, String(req.params.id)), eq(webinars.userId, userId))).limit(1);
     if (!webinar) return res.status(404).json({ message: "Webinar not found" });
     const [row] = await db.select().from(externalJourneySettings).where(eq(externalJourneySettings.webinarId, webinar.id)).limit(1);
@@ -297,6 +307,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
   app.put("/api/webinars/:id/external-journey", async (req, res) => {
     try {
       const userId = await requireMember(req, res); if (!userId) return;
+      if (await denyTrialExternalJourney(res, userId)) return;
       const input = externalJourneySaveSchema.parse(req.body);
       for (const candidate of [...input.settings.approvedOrigins, ...input.settings.approvedEmbedOrigins, ...[input.settings.landingUrl, input.settings.thankYouUrl].filter(Boolean) as string[]]) await assertExternalJourneyUrl(candidate, req.get("host") || undefined);
       const [webinar] = await db.select().from(webinars).where(and(eq(webinars.id, String(req.params.id)), eq(webinars.userId, userId))).limit(1);
@@ -316,6 +327,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
   app.post("/api/webinars/:id/external-journey/publish", async (req, res) => {
     try {
       const userId = await requireMember(req, res); if (!userId) return;
+      if (await denyTrialExternalJourney(res, userId)) return;
       const input = externalJourneyPublishSchema.parse(req.body);
       const [webinar] = await db.select().from(webinars).where(and(eq(webinars.id, String(req.params.id)), eq(webinars.userId, userId))).limit(1);
       if (!webinar || webinar.publishStatus !== "published") return res.status(409).json({ message: "Publish the webinar before publishing its external journey" });

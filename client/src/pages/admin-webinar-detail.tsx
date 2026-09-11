@@ -46,6 +46,7 @@ import { VideoSourcePicker } from "@/components/media-picker";
 import { SalesTemplateChooser, type SalesTemplate } from "@/components/sales-template-chooser";
 import { createSalesPageTemplate } from "@shared/salesPageTemplates";
 import { ExternalJourneyPanel } from "@/components/external-journey-panel";
+import { SessionRegistrationCounts, type SessionRegistrationCountsDto } from "@/components/session-registration-counts";
 
 function toLocalDateTimeInput(value: Date | string) {
   const date = new Date(value);
@@ -1337,6 +1338,15 @@ export default function AdminWebinarDetail() {
     enabled: !!id,
   });
 
+  const sessionRegistrationCountsQuery = useQuery<SessionRegistrationCountsDto>({
+    queryKey: ["/api/webinars", id, "session-registration-counts"],
+    enabled: !!id,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    staleTime: 0,
+    retry: false,
+  });
+
   const funnelQuery = useQuery<FunnelAnalyticsResponse>({
     queryKey: [`/api/webinars/${id}/funnel-analytics?from=${encodeURIComponent(funnelFrom)}&to=${encodeURIComponent(funnelTo)}`],
     enabled: !!id && !!funnelFrom && !!funnelTo,
@@ -1380,6 +1390,9 @@ export default function AdminWebinarDetail() {
   const { data: aiPointBalance, isLoading: isAiPointBalanceLoading } = useQuery<{ points: number; unlimited: boolean }>({
     queryKey: ["/api/ai-points"],
   });
+  const { data: noCardTrial } = useQuery<{ state: string; remainingAI: number }>({
+    queryKey: ["/api/trial"],
+  });
   const aiKnowledgeCharacters = (documents || []).reduce((total, document) => total + document.content.length, 0);
   const aiTrainingReady = (documents?.length || 0) > 0;
 
@@ -1396,6 +1409,10 @@ export default function AdminWebinarDetail() {
 
   const handleAiError = (err: any) => {
     if (isAiPointsError(err)) {
+      if (noCardTrial?.state === "active") {
+        toast({ title: "試用 AI 次數不足", description: `免信用卡試用剩餘 ${noCardTrial.remainingAI} 次 AI；升級後可使用付費 AI 點數。`, variant: "destructive" });
+        return;
+      }
       toast({ title: s.aiGenNoPoints, description: "請先購買 AI 點數後再使用此功能。", variant: "destructive" });
       setLocation("/admin/dashboard?buy-points=1");
       return;
@@ -1413,6 +1430,7 @@ export default function AdminWebinarDetail() {
     onSuccess: (result) => {
       setAiTestAnswer(result.answer);
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
     },
     onError: (error: any) => {
       setAiTestAnswer("");
@@ -1428,6 +1446,7 @@ export default function AdminWebinarDetail() {
       });
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "scheduled-messages"] });
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "ctas"] });
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "polls"] });
@@ -1446,6 +1465,7 @@ export default function AdminWebinarDetail() {
       });
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "email-sequences"] });
       toast({ title: s.seqGenSuccess });
     },
@@ -1460,6 +1480,7 @@ export default function AdminWebinarDetail() {
       });
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/trial"] });
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "social-posts"] });
       toast({ title: s.postGenSuccess });
     },
@@ -5004,6 +5025,15 @@ export default function AdminWebinarDetail() {
                     </CardContent>
                   </Card>
                 </div>
+
+                <SessionRegistrationCounts
+                  summary={sessionRegistrationCountsQuery.data}
+                  lang={lang}
+                  isLoading={sessionRegistrationCountsQuery.isLoading}
+                  isError={sessionRegistrationCountsQuery.isError}
+                  error={sessionRegistrationCountsQuery.error}
+                  onRetry={() => void sessionRegistrationCountsQuery.refetch()}
+                />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <Card>

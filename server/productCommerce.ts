@@ -37,6 +37,15 @@ import { activePublishingOverride } from "./adminManagementRoutes";
 import { activeMemberManualPlan } from "./manualPlanEntitlements";
 import { safeRequestMetadata, sha256 } from "./funnelAnalytics";
 import { appendMemberOrderEvent } from "./memberOrders";
+import {
+  assertTrialCommercePublication,
+  createTrialCommerceSalesPage,
+  hasActiveNoCardTrial,
+  hasPaidOrManualCommerceEntitlement,
+  isLeadCaptureOnlyTrialCommercePage,
+  registerTrialCommerceRoutes,
+  TrialCommerceLimitError,
+} from "./trialCommerce";
 
 type SessionRequest = Request & { session: { userId?: string } };
 
@@ -466,17 +475,23 @@ export function registerProductCommerceRoutes(
       await verifyReferencedMediaUrls(input.blocks);
       const offer = await ownedOffer(req.session.userId!, input.offerId);
       if (!offer?.active) return res.status(400).json({ message: "Product is unavailable" });
-      const [page] = await db.insert(offerSalesPages).values({
-        userId: req.session.userId!,
-        webinarId: offer.webinarId,
-        offerId: offer.id,
-        slug: input.slug,
-        title: input.title,
-        orderedBlocks: input.blocks,
-        checkoutSettings: input.checkoutSettings,
-      }).returning();
+       const ownerId = req.session.userId!;
+       // For a no-card trial this call is still the existing sales-page editor
+       // API, but page creation and the one-page ownership fence commit
+       // atomically. Paid/manual commerce retains its original code path.
+       const trialPage = await createTrialCommerceSalesPage(ownerId, offer, input);
+       const [page] = trialPage ? [trialPage] : await db.insert(offerSalesPages).values({
+         userId: ownerId,
+         webinarId: offer.webinarId,
+         offerId: offer.id,
+         slug: input.slug,
+         title: input.title,
+         orderedBlocks: input.blocks,
+         checkoutSettings: input.checkoutSettings,
+       }).returning();
       res.status(201).json(page);
     } catch (error: any) {
+       if (error instanceof TrialCommerceLimitError) return res.status(409).json({ message: error.message, code: "TRIAL_PRODUCT_PAGE_LIMIT" });
       if (error?.code === "23505") return res.status(409).json({ message: "Slug or product already has a sales page" });
       res.status(400).json({ message: error.message });
     }
@@ -531,7 +546,10 @@ export function registerProductCommerceRoutes(
         return res.status(409).json({ message: "Linked product is unavailable" });
       }
       const [owner] = await db.select().from(users).where(eq(users.id, req.session.userId!)).limit(1);
-      if (!await storedEntitlement(owner)) {
+       const paidEntitlement = await hasPaidOrManualCommerceEntitlement(req.session.userId!);
+       const noCardTrial = !paidEntitlement && await hasActiveNoCardTrial(req.session.userId!);
+       if (noCardTrial) await assertTrialCommercePublication(req.session.userId!, page.id);
+       if (!paidEntitlement && !noCardTrial && !await storedEntitlement(owner)) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       await verifyReferencedMediaUrls(page.orderedBlocks);
@@ -620,6 +638,12 @@ export function registerProductCommerceRoutes(
   app.post("/api/products/:offerId/checkout", checkoutRateLimit, async (req, res) => {
     try {
       const input = productCheckoutSchema.parse(req.body);
+      if (await isLeadCaptureOnlyTrialCommercePage(req.params.offerId, input.salesPageId)) {
+        return res.status(409).json({
+          code: "TRIAL_LEAD_CAPTURE_ONLY",
+          message: "This sales page accepts leads instead of checkout",
+        });
+      }
       const context = await publicProductContext(req.params.offerId, input.salesPageId);
       if (!context) return res.status(404).json({ message: "Sales page or product is unavailable" });
       const source = await validatedSource({ ...input, ownerId: context.ownerId, offerId: context.offer.id });
@@ -633,6 +657,12 @@ export function registerProductCommerceRoutes(
   app.post("/api/products/:offerId/events", eventRateLimit, async (req, res) => {
     try {
       const input = productEventSchema.parse(req.body);
+      if (await isLeadCaptureOnlyTrialCommercePage(req.params.offerId, input.pageId)) {
+        return res.status(409).json({
+          code: "TRIAL_LEAD_CAPTURE_ONLY",
+          message: "Use the trial commerce view-event endpoint for this page",
+        });
+      }
       const context = await publicProductContext(req.params.offerId, input.pageId);
       if (!context) return res.status(404).json({ message: "Sales page or product is unavailable" });
       const source = await validatedSource({
@@ -700,4 +730,6 @@ export function registerProductCommerceRoutes(
     if (!await storedEntitlement(owner)) return res.status(404).json({ message: "CTA target is unavailable" });
     res.redirect(302, `/sales/${encodeURIComponent(row.page.slug)}?sourceCtaId=${encodeURIComponent(row.cta.id)}&sourceWebinarId=${encodeURIComponent(row.webinar.id)}`);
   });
+
+  registerTrialCommerceRoutes(app, requireAdmin);
 }

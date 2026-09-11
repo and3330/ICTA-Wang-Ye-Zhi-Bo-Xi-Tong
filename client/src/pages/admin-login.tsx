@@ -13,6 +13,7 @@ import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardTrial";
 
 const langLabels: Record<LangFull, string> = {
   "zh-TW": "繁體中文",
@@ -421,6 +422,13 @@ export default function AdminLogin() {
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {s.createBtn}
               </Button>
+              <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-center text-xs leading-5 text-emerald-950" data-testid="text-no-card-trial-signup">
+                {lang === "en"
+                  ? `No card required: your new account starts a ${NO_CARD_TRIAL_DAYS}-day trial with one published product page and ${NO_CARD_TRIAL_AI_CALL_LIMIT} AI calls. It ends without a charge.`
+                  : lang === "zh-CN"
+                    ? `免信用卡：新账号自动开始 ${NO_CARD_TRIAL_DAYS} 天试用，含 1 个已发布商品页与 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次 AI；到期不扣款。`
+                    : `免信用卡：新帳號自動開始 ${NO_CARD_TRIAL_DAYS} 天試用，含 1 個已發布商品頁與 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次 AI；到期不扣款。`}
+              </p>
             </form>
           )}
 
