@@ -26,3 +26,25 @@
 }
 .sc-site .sc-home--redesigned .sc-room header,.sc-site .sc-home--redesigned .sc-room header span,.sc-site .sc-home--redesigned .sc-room header b{color:#315a57}.sc-site .sc-home--redesigned .sc-room header i{background:var(--sc-coral)}.sc-site .sc-home--redesigned .sc-room-bottom,.sc-site .sc-home--redesigned .sc-room-bottom article,.sc-site .sc-home--redesigned .sc-room-bottom aside{color:var(--sc-ink)}.sc-site .sc-home--redesigned .sc-room-bottom p,.sc-site .sc-home--redesigned .sc-room-bottom b{color:#234e4d}.sc-site .sc-home--redesigned .sc-room-bottom small{color:#527471}.sc-site .sc-home--redesigned .sc-room-bottom article>span{color:#315a57}.sc-site .sc-home--redesigned .sc-room-bottom article>span i{background:var(--sc-coral)}.sc-site .sc-home--redesigned .sc-room-bottom article svg,.sc-site .sc-home--redesigned .sc-room-bottom aside svg{color:var(--sc-teal)}.sc-site .sc-home--redesigned .sc-room-bottom aside>small{color:#35655d}.sc-site .sc-home--redesigned .sc-room-bottom aside>span{color:var(--sc-teal);border-color:#b6d4be}.sc-site .sc-home--redesigned .sc-room-bottom aside>span:hover{background:#f3e4cc;color:#0b5254}.sc-site .sc-home--redesigned .sc-plan-grid article.featured h3,.sc-site .sc-home--redesigned .sc-plan-grid article.featured .sc-price,.sc-site .sc-home--redesigned .sc-plan-grid article.featured .sc-price small,.sc-site .sc-home--redesigned .sc-plan-grid article.featured strong{color:#fff8e9}.sc-site .sc-home--redesigned .sc-plan-grid article.featured button{background:#f3d4aa;color:var(--sc-ink)}.sc-site .sc-home--redesigned .sc-plan-grid article.featured button:hover{background:var(--sc-coral);color:#fff8e9}
 html:lang(zh-TW) .sc-site .sc-home--redesigned h1,html:lang(zh-CN) .sc-site .sc-home--redesigned h1,html:lang(zh-TW) .sc-site .sc-home--redesigned h2,html:lang(zh-CN) .sc-site .sc-home--redesigned h2{line-height:1.1;letter-spacing:-.045em}.sc-site .sc-home--redesigned .sc-hero-copy h1 em{line-height:1.12;letter-spacing:-.035em}
+
+/* Keep plan actions readable in both normal and hover states. */
+.sc-site .sc-home--redesigned .sc-plan-grid article button {
+  background: var(--sc-teal);
+  border-color: var(--sc-teal);
+  color: #fff8e9;
+}
+.sc-site .sc-home--redesigned .sc-plan-grid article button:hover {
+  background: var(--sc-ink);
+  border-color: var(--sc-ink);
+  color: #fff8e9;
+}
+.sc-site .sc-home--redesigned .sc-plan-grid article.featured button {
+  background: #ef705f;
+  border-color: #ef705f;
+  color: #102c2d;
+}
+.sc-site .sc-home--redesigned .sc-plan-grid article.featured button:hover {
+  background: #f58a79;
+  border-color: #f58a79;
+  color: #102c2d;
+}

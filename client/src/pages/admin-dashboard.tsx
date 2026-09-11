@@ -20,11 +20,12 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
+import { AdminDashboardNavigation } from "@/components/admin-dashboard-navigation";
 import { 
   Plus, Video, Calendar, Crown,
-  ExternalLink, Loader2, LogOut, Radio, Copy,
+  ExternalLink, Loader2, Radio, Copy,
   BarChart3, Users, Pencil, Share2, MessageCircle,
-  Eye, Code, Trash2, MoreVertical, Languages, Sparkles, ImagePlus, Upload, X, ShoppingBag, FolderOpen
+  Eye, Code, Trash2, MoreVertical, Sparkles, ImagePlus, Upload, X, ShoppingBag, FolderOpen
 } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { NEW_MEMBER_TRIAL_DAYS } from "@shared/subscriptionTrial";
@@ -841,40 +842,17 @@ export default function AdminDashboard() {
             <SellCaseLogo className="h-auto w-[148px] sm:w-[178px]" />
             <h1 className="sr-only">開賣啦 SellCase｜AI 自動銷講成交系統</h1>
           </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={() => setLocation("/admin/products")} data-testid="button-products">
-              <ShoppingBag className="h-4 w-4 mr-1" />商品
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setLocation("/admin/media")} data-testid="button-media-library">
-              <FolderOpen className="h-4 w-4 mr-1" />素材庫
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setLang(lang === "zh-TW" ? "zh-CN" : "zh-TW")}
-              data-testid="button-admin-lang-toggle"
-            >
-              <Languages className="h-4 w-4 mr-1" />
-              {lang === "zh-TW" ? "繁" : "简"}
-            </Button>
-            {subscription?.isSuperAdmin && (
-              <Button variant="ghost" size="sm" onClick={() => setLocation("/super-admin")} data-testid="button-super-admin">
-                <Crown className="h-4 w-4 mr-1" />
-                {s.superAdminPanel}
-              </Button>
-            )}
-            <Button variant="ghost" size="sm" onClick={() => setIsSupportOpen(true)} data-testid="button-open-support">
-              <MessageCircle className="h-4 w-4 mr-1" />
-              {lang === "zh-CN" ? "客服" : "客服支援"}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setIsEcpayOpen(true)} data-testid="button-open-ecpay">
-              綠界金流
-            </Button>
-            <Button variant="ghost" onClick={handleLogout} data-testid="button-logout">
-              <LogOut className="h-4 w-4 mr-2" />
-              {s.logout}
-            </Button>
-          </div>
+          <AdminDashboardNavigation
+            lang={lang}
+            isSuperAdmin={!!subscription?.isSuperAdmin}
+            adminLabel={s.superAdminPanel}
+            logoutLabel={s.logout}
+            navigate={setLocation}
+            toggleLanguage={() => setLang(lang === "zh-TW" ? "zh-CN" : "zh-TW")}
+            openSupport={() => setIsSupportOpen(true)}
+            openEcpay={() => setIsEcpayOpen(true)}
+            logout={handleLogout}
+          />
         </div>
       </header>
 

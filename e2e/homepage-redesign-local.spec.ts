@@ -96,6 +96,7 @@ test("homepage product preview, proof notes and pricing retain readable text con
     ".sc-room-bottom aside > span",
     ".sc-plan-grid .featured .sc-price", ".sc-plan-grid .featured .sc-price small",
     ".sc-proof-notes article h3", ".sc-proof-notes article p", ".sc-proof-notes article > svg",
+    ".sc-plan-grid article button",
   ];
   for (const selector of selectors) {
     const ratios = await page.locator(selector).evaluateAll(elements => {
@@ -122,5 +123,21 @@ test("homepage product preview, proof notes and pricing retain readable text con
     });
     expect(ratios.length, selector).toBeGreaterThan(0);
     for (const ratio of ratios) expect(ratio, selector).toBeGreaterThanOrEqual(4.5);
+  }
+  const buttons = page.locator(".sc-plan-grid article button");
+  for (let index = 0; index < await buttons.count(); index++) {
+    const button = buttons.nth(index);
+    await button.hover();
+    await expect.poll(() => button.evaluate(element => {
+      const luminance = (value: string) => (value.match(/[\d.]+/g) || [])
+        .slice(0, 3).map(Number).map(channel => {
+          const s = channel / 255;
+          return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+      const style = getComputedStyle(element);
+      const foreground = luminance(style.color);
+      const background = luminance(style.backgroundColor);
+      return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+    })).toBeGreaterThanOrEqual(4.5);
   }
 });
