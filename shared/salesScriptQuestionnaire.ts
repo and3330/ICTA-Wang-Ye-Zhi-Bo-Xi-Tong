@@ -116,8 +116,8 @@ export const SALES_SCRIPT_QUESTIONNAIRE_GROUPS: readonly SalesScriptQuestionGrou
   },
   {
     id: "story",
-    title: "故事與可信度",
-    description: "只使用講師真實且可核對的背景。",
+    title: "講師與公開資料",
+    description: "只填會出現在活動說明中的真實資料。",
     fields: [
       field("instructor", "講師姓名與背景", true, "可公開的經歷、專業與目前角色。", "示例：王小明，產品設計師與課程講師（僅示意）", true),
       field("instructorInitialProblem", "講師最初遇到的問題", false, "只寫本人親身經歷。", "示例：我曾花很多時間整理素材仍無法按時發布（僅示意）", true),
@@ -128,14 +128,14 @@ export const SALES_SCRIPT_QUESTIONNAIRE_GROUPS: readonly SalesScriptQuestionGrou
   },
   {
     id: "difference",
-    title: "方法與差異",
-    description: "交代舊方法、你的解法與實際價值。",
+    title: "背景補充",
+    description: "可補充現況、服務內容與適用情境。",
     fields: [
-      field("oldMethod", "舊方法／替代方案的限制", false, "描述方法限制，不捏造競爭者資料。", "示例：只在有靈感時發文，導致節奏中斷（僅示意）", true),
-      field("solution", "你的解決方法", false, "你實際教什麼、解決哪個阻礙。", "示例：用可重複的主題到成品流程降低開始門檻（僅示意）", true),
-      field("methodDiscovery", "方法如何被發現／整理", false, "寫真實的研究、實作或迭代過程。", "示例：整理多次專案回顧後歸納三個步驟（僅示意）", true),
-      field("methodValue", "方法帶來的價值", false, "描述省時、降低風險或變容易的事。", "示例：讓每次規劃都從同一張表開始（僅示意）", true),
-      field("benefitsScenarios", "利益與使用情境", false, "何時使用、能得到什麼實際幫助。", "示例：每週規劃與檢查成效時使用（僅示意）", true),
+      field("oldMethod", "目前做法或替代選項", false, "描述目前安排即可，不比較或捏造他人資料。", "例如：目前以零散筆記整理內容（僅示意）", true),
+      field("solution", "本方案提供的協助", false, "簡述實際會提供的內容或服務。", "例如：提供固定的規劃與回顧安排（僅示意）", true),
+      field("methodDiscovery", "內容來源或整理背景", false, "可填研究、實作或編排背景。", "例如：依過往專案整理出的主題（僅示意）", true),
+      field("methodValue", "參加者可使用的資源", false, "填可交付的工具、流程或支援。", "例如：每週使用的檢查表（僅示意）", true),
+      field("benefitsScenarios", "適用工作情境", false, "說明何時可使用這項內容。", "例如：每週規劃與整理時（僅示意）", true),
     ],
   },
   {
@@ -146,7 +146,7 @@ export const SALES_SCRIPT_QUESTIONNAIRE_GROUPS: readonly SalesScriptQuestionGrou
       field("productName", "產品／課程顯示名稱", false, "若與正式方案名不同再填寫。", "示例：內容流程工作坊（僅示意）"),
       field("productImageDescription", "產品圖片／畫面描述", false, "輸出是文字稿，不需要圖片 URL。", "示例：展示課程平台的模組列表截圖（僅示意）", true),
       field("tagline", "產品一句話標語", false, "說明產品定位，不做成效保證。", "示例：把想法整理成可持續執行的流程（僅示意）"),
-      field("modules", "課程模組與教學內容", true, "逐一列模組、教什麼與學會後能做什麼。", "示例：模組一｜主題規劃：建立一週內容清單（僅示意）", true),
+       field("modules", "商品包含什麼", true, "列出包含的單元、服務或交付內容。", "例如：單元一｜主題規劃；單元二｜製作流程（僅示意）", true),
       field("modulesUniqueHelp", "模組的獨特協助", false, "填範本、回饋、社群等實際支援。", "示例：每模組附檢核表與一次作業回饋（僅示意）", true),
       field("educationWhyBuy", "為什麼需要這個教育／方案", false, "解釋價值，不製造不實恐懼。", "示例：明確順序與回饋能減少重複試錯（僅示意）", true),
       field("commonObjections", "常見疑慮", false, "填觀眾真實問過的問題。", "示例：我沒有固定時間，還能跟上嗎？（僅示意）", true),

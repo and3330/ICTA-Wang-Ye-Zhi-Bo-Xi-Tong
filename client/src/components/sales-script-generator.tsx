@@ -3,7 +3,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
   Clock3,
   Copy,
   Download,
@@ -14,12 +13,6 @@ import {
   Sparkles,
   WalletCards,
 } from "lucide-react";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -48,6 +41,8 @@ import {
 } from "@shared/salesScriptQuestionnaire";
 
 const GENERATION_FEE_POINTS = 3600;
+const BASIC_QUESTION_IDS = ["planName", "audience", "painPoints", "modules", "pricing"] as const;
+const BASIC_QUESTION_ID_SET = new Set<string>(BASIC_QUESTION_IDS);
 const STATE_ENDPOINT = (webinarId: string) =>
   `/api/webinars/${encodeURIComponent(webinarId)}/sales-script`;
 const DRAFT_ENDPOINT = (webinarId: string) =>
@@ -57,7 +52,6 @@ const JOBS_ENDPOINT = (webinarId: string) =>
 const JOB_ENDPOINT = (webinarId: string, jobId: string) =>
   `${JOBS_ENDPOINT(webinarId)}/${encodeURIComponent(jobId)}`;
 
-type Balance = { points?: number; unlimited?: boolean };
 type DraftPayload = {
   answers?: SalesScriptQuestionnaireAnswers;
   questionnaire?: SalesScriptQuestionnaireAnswers;
@@ -108,6 +102,10 @@ type SalesScriptState = {
   draft?: { answers?: SalesScriptQuestionnaireAnswers; updatedAt?: string } | null;
   jobs?: Generation[];
 };
+type PendingSalesScriptRequest = {
+  idempotencyKey: string;
+  answers: SalesScriptQuestionnaireAnswers;
+};
 
 class SalesScriptTimeoutError extends Error {
   idempotencyKey: string;
@@ -152,7 +150,7 @@ function outputFor(item: Generation | null | undefined) {
   const result = item?.result;
   if (!result?.sections?.length) return "";
   return [
-    `# 銷售演講逐字稿`,
+    "# 銷售演講逐字稿",
     `\n總時長：${result.totalDurationMinutes ?? "請核對"} 分鐘`,
     ...result.sections.map((section) => [
       `\n## 【段落 ${section.sectionNumber}：${section.title}】⏱ ${section.durationMinutes} 分鐘`,
@@ -222,8 +220,34 @@ async function requestWithTimeout(
   }
 }
 
+function pendingStorageKey(webinarId: string) {
+  return `sales-script-pending-request:${webinarId}`;
+}
+
+function readPendingRequest(webinarId: string): PendingSalesScriptRequest | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(pendingStorageKey(webinarId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingSalesScriptRequest>;
+    if (!parsed.idempotencyKey || !parsed.answers || typeof parsed.answers !== "object") {
+      return null;
+    }
+    return {
+      idempotencyKey: parsed.idempotencyKey,
+      answers: parsed.answers as SalesScriptQuestionnaireAnswers,
+    };
+  } catch {
+    return null;
+  }
+}
+
 const handoffPrompt =
-  "請把以下銷講逐字稿整理成 PPT：保留六段式架構，逐頁給出投影片標題、重點、講者備註與互動提示；只使用稿件中的真實資料，不新增見證、數字、折扣或保證。";
+  "請把以下銷講逐字稿整理成 PPT：逐頁給出投影片標題、重點、講者備註與互動提示；只使用稿件中的真實資料，不新增見證、數字、折扣或保證。";
+
+function fieldFor(id: string) {
+  return salesScriptQuestionnaireFields.find((field) => field.id === id);
+}
 
 export interface SalesScriptGeneratorProps {
   webinarId: string;
@@ -240,11 +264,17 @@ export function SalesScriptGenerator({
   const [answers, setAnswers] = useState<SalesScriptQuestionnaireAnswers>(
     createEmptySalesScriptQuestionnaire,
   );
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [confirmCharge, setConfirmCharge] = useState(false);
   const [activeJobId, setActiveJobId] = useState("");
   const [viewedOutputId, setViewedOutputId] = useState("");
-  const [timedOutKey, setTimedOutKey] = useState("");
+  const [timedOutKey, setTimedOutKey] = useState(
+    () => readPendingRequest(webinarId)?.idempotencyKey || "",
+  );
+  const [pendingRequest, setPendingRequest] = useState<PendingSalesScriptRequest | null>(
+    () => readPendingRequest(webinarId),
+  );
   const [lastCompleted, setLastCompleted] = useState<Generation | null>(null);
   const [isEditingOutput, setIsEditingOutput] = useState(false);
   const [editableOutput, setEditableOutput] = useState("");
@@ -253,10 +283,6 @@ export function SalesScriptGenerator({
   const stateQuery = useQuery<SalesScriptState>({
     queryKey: [STATE_ENDPOINT(webinarId)],
     enabled: !!webinarId,
-    staleTime: 0,
-  });
-  const balanceQuery = useQuery<Balance>({
-    queryKey: ["/api/ai-points"],
     staleTime: 0,
   });
   const trialQuery = useQuery<{ state?: string; remainingAI?: number }>({
@@ -281,25 +307,37 @@ export function SalesScriptGenerator({
     refetchInterval: polledJobId ? 2000 : false,
     refetchIntervalInBackground: true,
   });
-  const activeGeneration = statusQuery.data || (activeJobId ? history.find((item) => generationId(item) === activeJobId) : null);
+  const activeGeneration =
+    statusQuery.data ||
+    (activeJobId
+      ? history.find((item) => generationId(item) === activeJobId)
+      : null);
   const viewedQuery = useQuery<Generation>({
     queryKey: [JOB_ENDPOINT(webinarId, viewedOutputId)],
     enabled: !!viewedOutputId && viewedOutputId !== polledJobId,
     staleTime: 0,
     refetchInterval: false,
   });
-  const selectedGeneration = viewedQuery.data || (
-    viewedOutputId ? history.find((item) => generationId(item) === viewedOutputId) : null
-  );
+  const selectedGeneration =
+    viewedQuery.data ||
+    (viewedOutputId
+      ? history.find((item) => generationId(item) === viewedOutputId)
+      : null);
   const effectiveGeneration = activeGeneration || lastCompleted;
   const displayGeneration = selectedGeneration || lastCompleted;
+  const basicMissing = BASIC_QUESTION_IDS.filter(
+    (id) => !String(answers[id] || "").trim(),
+  );
   const missingRequired = missingSalesScriptQuestionIds(answers);
-  const points = Number(stateQuery.data?.availablePoints ?? balanceQuery.data?.points ?? 0);
-  // The worker always reserves a real credit lot. An "unlimited" plan flag
-  // from the general AI assistant must never turn this feature into free use.
+  // availablePoints is the feature's authoritative balance. In particular,
+  // an unlimited flag from another AI product must never make this charge free.
+  const points = Number(stateQuery.data?.availablePoints ?? 0);
   const canAfford = points >= GENERATION_FEE_POINTS;
   const canGenerate =
-    missingRequired.length === 0 && canAfford && !isRunning(activeGeneration);
+    missingRequired.length === 0 &&
+    canAfford &&
+    !isRunning(activeGeneration) &&
+    !pendingRequest;
   const status = generationStatus(effectiveGeneration);
   const statusProgress = Math.max(
     0,
@@ -312,12 +350,37 @@ export function SalesScriptGenerator({
     ),
   );
 
+  const rememberPending = (request: PendingSalesScriptRequest | null) => {
+    setPendingRequest(request);
+    if (typeof window === "undefined") return;
+    try {
+      if (request) {
+        window.sessionStorage.setItem(
+          pendingStorageKey(webinarId),
+          JSON.stringify(request),
+        );
+      } else {
+        window.sessionStorage.removeItem(pendingStorageKey(webinarId));
+      }
+    } catch {
+      // A storage policy can reject sessionStorage; in-memory state still
+      // blocks a second request for the lifetime of this mounted component.
+    }
+  };
+
+  useEffect(() => {
+    const restored = readPendingRequest(webinarId);
+    setPendingRequest(restored);
+    setTimedOutKey(restored?.idempotencyKey || "");
+    hydratedFor.current = "";
+  }, [webinarId]);
+
   useEffect(() => {
     if (!stateQuery.isFetched || hydratedFor.current === webinarId) return;
     hydratedFor.current = webinarId;
     const saved = stateQuery.data?.draft?.answers || {};
     setAnswers((current) => {
-      const merged = { ...current, ...saved };
+      const merged = { ...current, ...saved, ...(pendingRequest?.answers || {}) };
       // These values come from the already-saved webinar, never from an
       // example. Existing non-empty draft answers always win.
       if (!String(merged.planName || "").trim() && webinarTitle?.trim()) {
@@ -328,7 +391,14 @@ export function SalesScriptGenerator({
       }
       return merged;
     });
-  }, [stateQuery.data, stateQuery.isFetched, webinarDescription, webinarId, webinarTitle]);
+  }, [
+    pendingRequest,
+    stateQuery.data,
+    stateQuery.isFetched,
+    webinarDescription,
+    webinarId,
+    webinarTitle,
+  ]);
 
   useEffect(() => {
     if (lastCompleted || !history.length) return;
@@ -346,11 +416,24 @@ export function SalesScriptGenerator({
   }, [activeJobId, history, lastCompleted, viewedOutputId]);
 
   useEffect(() => {
+    if (!pendingRequest || !history.length) return;
+    // Summaries intentionally do not expose idempotency keys. Adopt the
+    // owner's running job rather than blindly creating a second charge.
+    const matching =
+      history.find(isRunning) ||
+      history.find((item) => item.idempotencyKey === pendingRequest.idempotencyKey);
+    if (matching && generationId(matching)) {
+      setActiveJobId(generationId(matching));
+    }
+  }, [history, pendingRequest]);
+
+  useEffect(() => {
     if (!statusQuery.data) return;
     if (isComplete(statusQuery.data)) {
       setLastCompleted(statusQuery.data);
       setActiveJobId("");
       setTimedOutKey("");
+      if (pendingRequest) rememberPending(null);
       queryClient.invalidateQueries({ queryKey: [STATE_ENDPOINT(webinarId)] });
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
       return;
@@ -358,17 +441,18 @@ export function SalesScriptGenerator({
     if (["failed", "error", "refunded"].includes(generationStatus(statusQuery.data))) {
       setLastCompleted(statusQuery.data);
       setActiveJobId("");
+      setTimedOutKey("");
+      if (pendingRequest) rememberPending(null);
       queryClient.invalidateQueries({ queryKey: [STATE_ENDPOINT(webinarId)] });
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
     }
-  }, [statusQuery.data, webinarId]);
+  }, [pendingRequest, statusQuery.data, webinarId]);
 
   const saveDraft = useMutation({
     mutationFn: async (nextAnswers: SalesScriptQuestionnaireAnswers) => {
-      const response = await apiRequest("PUT", DRAFT_ENDPOINT(webinarId), {
+      return apiRequest("PUT", DRAFT_ENDPOINT(webinarId), {
         answers: nextAnswers,
       });
-      return response;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [STATE_ENDPOINT(webinarId)] });
@@ -384,17 +468,22 @@ export function SalesScriptGenerator({
   });
 
   const generate = useMutation({
-    mutationFn: async (idempotencyKey: string) =>
+    mutationFn: async (request: PendingSalesScriptRequest) =>
       requestWithTimeout(
         JOBS_ENDPOINT(webinarId),
-        { answers, ackCost: GENERATION_FEE_POINTS, idempotencyKey },
-        idempotencyKey,
+        {
+          answers: request.answers,
+          ackCost: GENERATION_FEE_POINTS,
+          idempotencyKey: request.idempotencyKey,
+        },
+        request.idempotencyKey,
       ),
     onSuccess: (payload: Generation) => {
-      const jobId = generationId(payload);
       setIsConfirmOpen(false);
       setConfirmCharge(false);
       setTimedOutKey("");
+      rememberPending(null);
+      const jobId = generationId(payload);
       if (jobId) setActiveJobId(jobId);
       queryClient.invalidateQueries({ queryKey: [STATE_ENDPOINT(webinarId)] });
       queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
@@ -403,9 +492,13 @@ export function SalesScriptGenerator({
         description: "可留在此頁查看進度；重新載入後也會繼續顯示執行中的工作。",
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, request: PendingSalesScriptRequest) => {
       if (error instanceof SalesScriptTimeoutError) {
-        setTimedOutKey(error.idempotencyKey);
+        // Keep both values immutable until the server reports a matching
+        // terminal job. A retry must never create a fresh charge.
+        setAnswers(request.answers);
+        setTimedOutKey(request.idempotencyKey);
+        rememberPending(request);
         queryClient.invalidateQueries({ queryKey: [STATE_ENDPOINT(webinarId)] });
         toast({
           title: "生成要求逾時",
@@ -414,6 +507,8 @@ export function SalesScriptGenerator({
         });
         return;
       }
+      rememberPending(null);
+      setTimedOutKey("");
       toast({
         title: "生成失敗",
         description: error.message,
@@ -422,18 +517,20 @@ export function SalesScriptGenerator({
     },
   });
 
-  useEffect(() => {
-    if (!timedOutKey || !history.length) return;
-    // Summaries intentionally do not expose idempotency keys. Adopt the
-    // owner's running job rather than blindly creating a second charge.
-    const matching = history.find(isRunning);
-    if (matching && generationId(matching)) {
-      setActiveJobId(generationId(matching));
-    }
-  }, [history, timedOutKey]);
-
-  const updateAnswer = (id: keyof SalesScriptQuestionnaireAnswers, value: string) => {
+  const updateAnswer = (
+    id: keyof SalesScriptQuestionnaireAnswers,
+    value: string,
+  ) => {
     setAnswers((current) => ({ ...current, [id]: value }));
+  };
+
+  const transition = async (next: 1 | 2 | 3) => {
+    try {
+      await saveDraft.mutateAsync(answers);
+      setStep(next);
+    } catch {
+      // The save mutation displays the error; do not advance on failure.
+    }
   };
 
   const askGenerate = () => {
@@ -448,8 +545,15 @@ export function SalesScriptGenerator({
       await saveDraft.mutateAsync(answers);
       setViewedOutputId("");
       setLastCompleted(null);
-      const key = createIdempotencyKey();
-      await generate.mutateAsync(key);
+      const request: PendingSalesScriptRequest = {
+        idempotencyKey: createIdempotencyKey(),
+        answers: { ...answers },
+      };
+      // Persist before starting the POST as well as on timeout. If the page
+      // is closed while the response is in flight, a remount must still
+      // reconcile this exact request instead of creating another charge.
+      rememberPending(request);
+      await generate.mutateAsync(request);
     } catch {
       // Mutations already surface an actionable error and keep all answers.
     }
@@ -469,7 +573,9 @@ export function SalesScriptGenerator({
   };
 
   const download = (extension: "md" | "txt") => {
-    const output = isEditingOutput ? editableOutput : outputFor(displayGeneration);
+    const output = isEditingOutput
+      ? editableOutput
+      : outputFor(displayGeneration);
     if (!output) return;
     const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -486,46 +592,68 @@ export function SalesScriptGenerator({
   };
 
   const isFailure = ["failed", "error", "refunded"].includes(status);
-  const failureText = effectiveGeneration?.errorMessage || effectiveGeneration?.error || "伺服器生成失敗。";
+  const failureText =
+    effectiveGeneration?.errorMessage ||
+    effectiveGeneration?.error ||
+    "伺服器生成失敗。";
+  const genericGroups = useMemo(
+    () =>
+      SALES_SCRIPT_QUESTIONNAIRE_GROUPS.map((group) => ({
+        ...group,
+        fields: group.fields.filter(
+          (field) =>
+            !BASIC_QUESTION_ID_SET.has(field.id) &&
+            !["instructor", "bonuses"].includes(field.id),
+        ),
+      })).filter((group) => group.fields.length > 0),
+    [],
+  );
 
   return (
     <div className="space-y-5" data-testid="sales-script-generator">
-      <Card className="border-primary/30 bg-gradient-to-br from-primary/10 via-background to-background">
-        <CardHeader className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      <Card className="overflow-hidden border-[#75d6ca]/60 bg-gradient-to-br from-[#e7f7f4] via-card to-[#edf5fa]">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <CardTitle className="flex items-center gap-2 text-xl">
-                <Sparkles className="h-5 w-5 text-primary" />
-                銷售演講生成器
+              <Badge className="mb-3 bg-[#123d59] text-[#dff8f7]">
+                文字輸出 · 銷講內容
+              </Badge>
+              <CardTitle className="text-2xl text-[#123d59]">
+                把你的商品資訊，變成一份可直接練習的銷售演講稿
               </CardTitle>
-              <CardDescription className="mt-2 max-w-3xl">
-                填寫真實資料後，生成六段式專業銷講架構、逐頁簡報建議與可直接念的逐字稿，再自行交給其他 AI 美化成 PPT。
+              <CardDescription className="mt-2 max-w-2xl">
+                交付文字稿與簡報建議，非PPT檔；請自行審閱內容，不保證銷售成果。
               </CardDescription>
+              <p className="mt-3 text-sm font-semibold text-[#0b8b86]">
+                每次製作3,600AI點數・填寫資料不扣點
+              </p>
             </div>
-            <Badge variant="secondary" className="gap-1.5 whitespace-nowrap">
-              <FileText className="h-3.5 w-3.5" />
-              文字輸出，不改動 Webinar
-            </Badge>
+            <FileText className="h-9 w-9 text-[#0b8b86]" />
           </div>
-          <div className="grid gap-2 sm:grid-cols-4">
-            {["六段式專業銷講架構", "逐頁簡報建議", "可直接念逐字稿", "自行交其他 AI 美化"].map((item) => (
-              <div key={item} className="rounded-lg border bg-background/70 px-3 py-2 text-sm">
-                <CheckCircle2 className="mr-1.5 inline h-4 w-4 text-emerald-600" />
-                {item}
-              </div>
-            ))}
+          <div className="mt-4 grid gap-2 sm:grid-cols-4">
+            {["投影片內容建議", "可直接練習的逐字稿", "互動與時間安排", "可讀文字匯出"].map(
+              (item) => (
+                <div
+                  key={item}
+                  className="rounded-md border border-[#b9dfda] bg-background/70 px-3 py-2 text-xs font-semibold text-[#123d59]"
+                >
+                  <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-[#0b8b86]" />
+                  {item}
+                </div>
+              ),
+            )}
           </div>
         </CardHeader>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_21rem]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
         <Card data-testid="sales-script-form-card">
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <CardTitle className="text-lg">銷講資料問卷</CardTitle>
+                <CardTitle className="text-lg">建立內容資料</CardTitle>
                 <CardDescription>
-                  必填欄位有七個。每個示例都標示「示例」，只作提示，不會成為你的使用者主張。
+                  步驟 {step} / 3。草稿可隨時儲存，返回不會清除內容。
                 </CardDescription>
               </div>
               <Button
@@ -545,149 +673,279 @@ export function SalesScriptGenerator({
             </div>
           </CardHeader>
           <CardContent>
-            <Accordion type="multiple" defaultValue={["foundation", "story"]} className="w-full">
-              {SALES_SCRIPT_QUESTIONNAIRE_GROUPS.map((group) => (
-                <AccordionItem value={group.id} key={group.id}>
-                  <AccordionTrigger className="text-left hover:no-underline">
-                    <span>
-                      <span className="block">{group.title}</span>
-                      <span className="mt-1 block text-xs font-normal text-muted-foreground">
-                        {group.description}
-                      </span>
-                    </span>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className="grid gap-5 md:grid-cols-2">
-                      {group.fields.map((question) => {
-                        const value = answers[question.id] || "";
-                        return (
-                          <div
-                            key={question.id}
-                            className={question.multiline ? "space-y-2 md:col-span-2" : "space-y-2"}
-                          >
-                            <Label htmlFor={`sales-script-${question.id}`}>
-                              {question.label}
-                              {question.required ? (
-                                <span className="ml-1 text-destructive" aria-label="必填">
-                                  *
-                                </span>
-                              ) : null}
-                            </Label>
-                            <p className="text-xs text-muted-foreground">{question.help}</p>
-                            {question.multiline ? (
-                              <Textarea
-                                id={`sales-script-${question.id}`}
-                                value={value}
-                                onChange={(event) => updateAnswer(question.id, event.target.value)}
-                                placeholder={question.example}
-                                rows={4}
-                                data-testid={`input-sales-script-${question.id}`}
-                              />
-                            ) : (
-                              <Input
-                                id={`sales-script-${question.id}`}
-                                value={value}
-                                onChange={(event) => updateAnswer(question.id, event.target.value)}
-                                placeholder={question.example}
-                                data-testid={`input-sales-script-${question.id}`}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
+            <div className="mb-6 flex gap-2">
+              {["基本資料", "內容確認", "補充資料"].map((label, index) => (
+                <div
+                  key={label}
+                  className={`flex-1 border-t-2 pt-2 text-xs font-bold ${
+                    step >= index + 1
+                      ? "border-[#0b8b86] text-[#123d59]"
+                      : "border-muted text-muted-foreground"
+                  }`}
+                >
+                  {index + 1}. {label}
+                </div>
               ))}
-            </Accordion>
+            </div>
+
+            {step === 1 ? (
+              <div data-testid="sales-script-step-basics" className="space-y-5">
+                {BASIC_QUESTION_IDS.map((id) => {
+                  const field = fieldFor(id)!;
+                  return (
+                    <Question
+                      key={id}
+                      field={field}
+                      value={answers[id] || ""}
+                      onChange={updateAnswer}
+                    />
+                  );
+                })}
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      if (basicMissing.length) {
+                        toast({
+                          title: "請完成五項基本資料",
+                          description: basicMissing
+                            .map((id) => fieldFor(id)?.label)
+                            .join("、"),
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+                      void transition(2);
+                    }}
+                    data-testid="button-sales-script-to-summary"
+                  >
+                    查看內容確認
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {step === 2 ? (
+              <div data-testid="sales-script-step-summary" className="space-y-5">
+                <div className="rounded-xl border border-[#b9dfda] bg-[#f2fbf9] p-5">
+                  <p className="text-xs font-bold tracking-widest text-[#0b8b86]">
+                    你的內容摘要
+                  </p>
+                  <h3 className="mt-2 text-xl font-bold text-[#123d59]">
+                    {answers.planName}
+                  </h3>
+                  <dl className="mt-4 space-y-3">
+                    {BASIC_QUESTION_IDS.slice(1).map((id) => (
+                      <div key={id}>
+                        <dt className="text-xs font-bold text-muted-foreground">
+                          {fieldFor(id)?.label}
+                        </dt>
+                        <dd className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                          {answers[id]}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+                <div className="rounded-lg border border-[#0b8b86]/30 bg-[#f7fcfb] p-4">
+                  <p className="font-semibold text-[#123d59]">你會收到什麼</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                    <li>可直接練習的完整銷售演講文字稿</li>
+                    <li>逐頁簡報內容建議、目的與講者說明</li>
+                    <li>每頁互動提示與建議時間安排</li>
+                    <li>可複製並下載的文字版本</li>
+                  </ul>
+                </div>
+                <div className="rounded-lg border border-[#123d59]/20 p-4">
+                  <p className="font-semibold text-[#123d59]">
+                    要用3,600 AI點數製作這份專屬銷售演講稿嗎？
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    此步驟不收費。點擊後先補上講師與贈品等事實資料，再於最後確認是否送出。
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-between gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setStep(1)}
+                    data-testid="button-sales-script-back-basics"
+                  >
+                    返回修改
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => void transition(3)}
+                    data-testid="button-sales-script-buy-intent"
+                  >
+                    我要製作專屬銷講稿
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {step === 3 ? (
+              <div data-testid="sales-script-step-details" className="space-y-5">
+                <p className="text-sm text-muted-foreground">
+                  請補充真實事實資料。講師與贈品為生成前必填；其餘欄位依實際情況填寫，留白即可。
+                </p>
+                {["instructor", "bonuses"].map((id) => (
+                  <Question
+                    key={id}
+                    field={fieldFor(id)!}
+                    value={answers[id as keyof SalesScriptQuestionnaireAnswers] || ""}
+                    onChange={updateAnswer}
+                  />
+                ))}
+                {genericGroups.map((group) => (
+                  <details key={group.id} className="rounded-lg border p-4">
+                    <summary className="cursor-pointer font-semibold text-[#123d59]">
+                      {group.title}
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        選填補充
+                      </span>
+                    </summary>
+                    <div className="mt-5 grid gap-5">
+                      {group.fields.map((field) => (
+                        <Question
+                          key={field.id}
+                          field={field}
+                          value={answers[field.id] || ""}
+                          onChange={updateAnswer}
+                        />
+                      ))}
+                    </div>
+                  </details>
+                ))}
+                <div className="flex flex-wrap justify-between gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setStep(2)}
+                    data-testid="button-sales-script-back-summary"
+                  >
+                    返回摘要
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      if (missingRequired.length) {
+                        toast({
+                          title: "請完成生成所需資料",
+                          description: missingRequired
+                            .map((id) => fieldFor(id)?.label)
+                            .join("、"),
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+                      askGenerate();
+                    }}
+                    disabled={
+                      !canGenerate ||
+                      generate.isPending ||
+                      saveDraft.isPending
+                    }
+                    data-testid="button-generate-sales-script"
+                  >
+                    {generate.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="mr-2 h-4 w-4" />
+                    )}
+                    確認生成（3,600 點）
+                  </Button>
+                </div>
+                {missingRequired.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    尚缺必填：
+                    {missingRequired
+                      .map((id) => fieldFor(id)?.label || id)
+                      .join("、")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
-        <div className="space-y-5">
-          <Card className="border-amber-400/70 bg-amber-50/60 dark:bg-amber-950/20">
+        <aside className="space-y-5">
+          <Card className="border-[#e6bc5d] bg-[#fff9e9]">
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <WalletCards className="h-5 w-5 text-amber-700" />
-                本次生成費用
+              <CardTitle className="flex gap-2 text-base text-[#123d59]">
+                <WalletCards className="h-5 w-5 text-[#aa7213]" />
+                價格與點數
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="rounded-xl border border-amber-500/40 bg-background p-4 text-center">
-                <p className="text-3xl font-bold tabular-nums text-amber-700">
-                  {GENERATION_FEE_POINTS.toLocaleString()} 點
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">每次生成／重新生成都會重新收取</p>
-              </div>
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="text-muted-foreground">目前可用點數</span>
-                <span className="font-semibold tabular-nums" data-testid="text-sales-script-points">
-                  {balanceQuery.isLoading ? "—" : points.toLocaleString()}
-                </span>
+            <CardContent className="space-y-3">
+              <p
+                className="text-3xl font-bold text-[#aa7213]"
+                data-testid="sales-script-final-fee"
+              >
+                3,600 點
+              </p>
+              <p className="text-xs text-muted-foreground">
+                只在最終「確認並收取」後保留點數。成功後可免費下載；每次重新生成會再次收取
+                3,600 點。若失敗，系統自動退款。
+              </p>
+              <div className="flex justify-between border-t pt-3 text-sm">
+                <span>可用點數</span>
+                <b data-testid="text-sales-script-points">
+                  {stateQuery.isLoading ? "—" : points.toLocaleString()}
+                </b>
               </div>
               {trialQuery.data?.state === "active" ? (
-                <p className="rounded-md border border-amber-300 bg-amber-100/70 p-2 text-xs text-amber-900">
-                  試用額度不能用於此生成器；已購買的點數可以使用。試用不會被當成免費生成。
+                <p className="text-xs text-muted-foreground">
+                  試用額度不適用此生成器。
                 </p>
               ) : null}
               {!canAfford ? (
-                <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
-                  <p className="font-medium text-destructive">點數不足，生成按鈕已停用。</p>
-                  <p className="text-xs text-muted-foreground">
-                    需要 {GENERATION_FEE_POINTS.toLocaleString()} 點；先購買點數後再回來，草稿不會遺失。
+                <div className="rounded-md border border-destructive/30 p-3 text-sm">
+                  <b className="text-destructive">點數不足</b>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    需要 3,600 點；草稿會保留，購買點數後可繼續。
                   </p>
-                  <a className="inline-block font-medium text-primary underline" href="/admin/dashboard?buy-points=1">
+                  <a
+                    className="mt-2 inline-block text-sm font-semibold text-primary underline"
+                    href="/admin/dashboard?buy-points=1"
+                  >
                     購買 AI 點數
                   </a>
                 </div>
-              ) : null}
-              <Button
-                type="button"
-                className="w-full"
-                onClick={askGenerate}
-                disabled={!canGenerate || generate.isPending || saveDraft.isPending}
-                data-testid="button-generate-sales-script"
-              >
-                {generate.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles className="mr-2 h-4 w-4" />
-                )}
-                生成銷售演講（{GENERATION_FEE_POINTS.toLocaleString()} 點）
-              </Button>
-              {missingRequired.length > 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  尚缺必填：{missingRequired.map((id) => salesScriptQuestionnaireFields.find((item) => item.id === id)?.label || id).join("、")}
-                </p>
               ) : null}
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle className="text-base">生成狀態</CardTitle>
-              <CardDescription>離開或重新載入頁面後，會從伺服器恢復草稿與歷史版本。</CardDescription>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">工作狀態</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {activeGeneration && isRunning(activeGeneration) ? (
-                <div className="space-y-3 rounded-lg border bg-muted/30 p-3" data-testid="sales-script-running">
-                  <div className="flex items-center gap-2 text-sm font-medium">
+              {effectiveGeneration && isRunning(effectiveGeneration) ? (
+                <div className="space-y-3" data-testid="sales-script-running">
+                  <div className="flex gap-2 text-sm font-semibold">
                     <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    {activeGeneration.stageLabel || activeGeneration.stage || "伺服器處理中"}
+                    {effectiveGeneration.stageLabel ||
+                      effectiveGeneration.stage ||
+                      "伺服器處理中"}
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full bg-primary transition-[width]"
+                      className="h-full bg-[#0b8b86] transition-[width]"
                       style={{ width: `${statusProgress}%` }}
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {statusProgress > 0 ? `${statusProgress}% · ` : ""}
-                    工作編號 {generationId(activeGeneration) || "等待伺服器回傳"}
+                    工作編號 {generationId(effectiveGeneration) || "等待伺服器回傳"}
                   </p>
                 </div>
               ) : null}
               {timedOutKey ? (
-                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" data-testid="sales-script-timeout">
+                <div
+                  className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+                  data-testid="sales-script-timeout"
+                >
                   <p className="font-medium">要求仍可能在伺服器執行</p>
                   <p className="mt-1 text-xs">
                     已保留辨識碼 {timedOutKey}，系統會先檢查執行中工作，不會盲目重新收費。
@@ -700,34 +958,45 @@ export function SalesScriptGenerator({
                     onClick={() => stateQuery.refetch()}
                     data-testid="button-check-sales-script-status"
                   >
-                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新檢查
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                    重新檢查
                   </Button>
                 </div>
               ) : null}
               {isFailure ? (
-                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="sales-script-failed">
+                <div
+                  className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+                  data-testid="sales-script-failed"
+                >
                   <p className="flex items-center gap-2 font-medium">
-                    <AlertCircle className="h-4 w-4" />生成失敗
+                    <AlertCircle className="h-4 w-4" />
+                    生成失敗
                   </p>
                   <p className="mt-1 text-xs">{failureText}</p>
-                  <p className="mt-2 text-xs font-medium">本次 3,600 點已退款，沒有產生成功稿件。</p>
+                  <p className="mt-2 text-xs font-medium">
+                    本次 3,600 點已退款，沒有產生成功稿件。
+                  </p>
                 </div>
               ) : null}
-              {!activeGeneration && !selectedGeneration && !timedOutKey ? (
-                <p className="text-sm text-muted-foreground">尚未生成。先儲存資料，再確認費用即可開始。</p>
+              {!effectiveGeneration && !selectedGeneration && !timedOutKey ? (
+                <p className="text-sm text-muted-foreground">
+                  尚未生成。先儲存資料，再確認費用即可開始。
+                </p>
               ) : null}
             </CardContent>
           </Card>
-        </div>
+        </aside>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
+          <CardTitle className="flex gap-2 text-lg">
             <Clock3 className="h-5 w-5" />
             歷史版本
           </CardTitle>
-          <CardDescription>只有伺服器回報已完成且已扣款成功的版本可以查看、複製或下載。</CardDescription>
+          <CardDescription>
+            已完成且已扣款成功的版本可隨時開啟、複製或下載。
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {history.length === 0 ? (
@@ -736,20 +1005,32 @@ export function SalesScriptGenerator({
             history.map((item) => {
               const itemId = generationId(item);
               const completed = isComplete(item);
-              const failed = ["failed", "error", "refunded"].includes(generationStatus(item));
+              const failed = ["failed", "error", "refunded"].includes(
+                generationStatus(item),
+              );
               return (
                 <div
                   key={itemId || item.createdAt}
-                  className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
                   data-testid={`sales-script-history-${itemId}`}
                 >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">
-                      {completed ? "已完成" : failed ? "失敗（已退款）" : isRunning(item) ? "生成中" : "尚未完成"}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {item.createdAt ? new Date(item.createdAt).toLocaleString("zh-TW") : "時間未提供"}
-                      {item.pointsCharged ? ` · ${item.pointsCharged.toLocaleString()} 點` : ""}
+                  <div>
+                    <b className="text-sm">
+                      {completed
+                        ? "已完成"
+                        : failed
+                          ? "失敗（已退款）"
+                          : isRunning(item)
+                            ? "生成中"
+                            : "尚未完成"}
+                    </b>
+                    <p className="text-xs text-muted-foreground">
+                      {item.createdAt
+                        ? new Date(item.createdAt).toLocaleString("zh-TW")
+                        : "時間未提供"}
+                      {item.pointsCharged || item.costPoints
+                        ? ` · ${(item.pointsCharged || item.costPoints)?.toLocaleString()} 點`
+                        : ""}
                     </p>
                   </div>
                   {completed ? (
@@ -775,7 +1056,9 @@ export function SalesScriptGenerator({
         </CardContent>
       </Card>
 
-      {displayGeneration && isComplete(displayGeneration) && outputFor(displayGeneration) ? (
+      {displayGeneration &&
+      isComplete(displayGeneration) &&
+      outputFor(displayGeneration) ? (
         <Card data-testid="sales-script-output">
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -790,18 +1073,44 @@ export function SalesScriptGenerator({
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => copyText(isEditingOutput ? editableOutput : outputFor(displayGeneration))}
+                  onClick={() =>
+                    copyText(
+                      isEditingOutput
+                        ? editableOutput
+                        : outputFor(displayGeneration),
+                    )
+                  }
                   data-testid="button-copy-sales-script"
                 >
-                  <Copy className="mr-1.5 h-4 w-4" />複製
+                  <Copy className="mr-1 h-4 w-4" />
+                  複製
                 </Button>
-                <Button type="button" size="sm" variant="outline" onClick={() => download("md")} data-testid="button-download-sales-script-md">
-                  <Download className="mr-1.5 h-4 w-4" />.md
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => download("md")}
+                  data-testid="button-download-sales-script-md"
+                >
+                  <Download className="mr-1 h-4 w-4" />
+                  .md
                 </Button>
-                <Button type="button" size="sm" variant="outline" onClick={() => download("txt")} data-testid="button-download-sales-script-txt">
-                  <Download className="mr-1.5 h-4 w-4" />.txt
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => download("txt")}
+                  data-testid="button-download-sales-script-txt"
+                >
+                  <Download className="mr-1 h-4 w-4" />
+                  .txt
                 </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={setOutputForEditing}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={setOutputForEditing}
+                >
                   編輯副本
                 </Button>
               </div>
@@ -817,24 +1126,37 @@ export function SalesScriptGenerator({
                 data-testid="textarea-sales-script-local-copy"
               />
             ) : (
-              <pre className="max-h-[42rem] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/20 p-4 text-sm leading-6" data-testid="text-sales-script-output">
+              <pre
+                className="max-h-[42rem] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/20 p-4 text-sm leading-6"
+                data-testid="text-sales-script-output"
+              >
                 {outputFor(displayGeneration)}
               </pre>
             )}
             <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
-              <p className="text-sm font-semibold">交給其他 AI 美化成 PPT</p>
+              <b className="text-sm">交給其他 AI 排版</b>
               <p className="mt-1 text-sm text-muted-foreground">
-                複製稿件後，連同以下提示詞貼到你選擇的 AI；請人工核對所有真實資料。
+                可把真實稿件整理成投影片；請保留原稿結構，勿新增見證、數字、折扣或保證。
               </p>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 className="mt-3"
-                onClick={() => copyText(`${handoffPrompt}\n\n${isEditingOutput ? editableOutput : outputFor(displayGeneration)}`, "已複製 PPT 交接提示詞與稿件")}
+                onClick={() =>
+                  copyText(
+                    `${handoffPrompt}\n\n${
+                      isEditingOutput
+                        ? editableOutput
+                        : outputFor(displayGeneration)
+                    }`,
+                    "已複製交接提示詞與稿件",
+                  )
+                }
                 data-testid="button-copy-sales-script-handoff"
               >
-                <Copy className="mr-1.5 h-4 w-4" />複製交接提示詞與稿件
+                <Copy className="mr-1 h-4 w-4" />
+                複製交接提示詞與稿件
               </Button>
             </div>
           </CardContent>
@@ -846,33 +1168,83 @@ export function SalesScriptGenerator({
           <AlertDialogHeader>
             <AlertDialogTitle>確認生成銷售演講</AlertDialogTitle>
             <AlertDialogDescription>
-              本次將收取 <strong>{GENERATION_FEE_POINTS.toLocaleString()} 點</strong>。重新生成也是新的收費工作；伺服器失敗時會退款。
+              本次將收取 <strong>3,600 點</strong>。成功後文字下載免費；重新生成會是新的收費工作。
+              如伺服器失敗，系統會自動退款。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+          <label className="flex gap-3 rounded-lg border p-3 text-sm">
             <Checkbox
               checked={confirmCharge}
               onCheckedChange={(checked) => setConfirmCharge(checked === true)}
               data-testid="checkbox-confirm-sales-script-fee"
             />
-            <span>我已確認本次生成會收取 3,600 點，並同意送出這次工作。</span>
+            <span>我確認本次生成收取 3,600 點，並同意送出工作。</span>
           </label>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              disabled={!confirmCharge || generate.isPending || saveDraft.isPending}
+              disabled={
+                !confirmCharge ||
+                generate.isPending ||
+                saveDraft.isPending
+              }
               onClick={(event) => {
                 event.preventDefault();
                 void confirmGenerate();
               }}
               data-testid="button-confirm-sales-script-fee"
             >
-              {generate.isPending || saveDraft.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+              {generate.isPending || saveDraft.isPending ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : null}
               確認並收取 3,600 點
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function Question({
+  field,
+  value,
+  onChange,
+}: {
+  field: NonNullable<ReturnType<typeof fieldFor>>;
+  value: string;
+  onChange: (
+    id: keyof SalesScriptQuestionnaireAnswers,
+    value: string,
+  ) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={`sales-script-${field.id}`}>
+        {field.label}
+        {field.required ? (
+          <span className="ml-1 text-destructive">*</span>
+        ) : null}
+      </Label>
+      <p className="text-xs text-muted-foreground">{field.help}</p>
+      {field.multiline ? (
+        <Textarea
+          id={`sales-script-${field.id}`}
+          value={value}
+          onChange={(event) => onChange(field.id, event.target.value)}
+          placeholder={field.example}
+          rows={4}
+          data-testid={`input-sales-script-${field.id}`}
+        />
+      ) : (
+        <Input
+          id={`sales-script-${field.id}`}
+          value={value}
+          onChange={(event) => onChange(field.id, event.target.value)}
+          placeholder={field.example}
+          data-testid={`input-sales-script-${field.id}`}
+        />
+      )}
     </div>
   );
 }
