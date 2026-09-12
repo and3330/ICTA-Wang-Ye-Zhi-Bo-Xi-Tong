@@ -120,6 +120,7 @@ import {
 import { processVerifiedEcpayPayment } from "./offerPayments";
 import { productSalesPageTargetUrl, registerProductCommerceRoutes } from "./productCommerce";
 import { registerAiSalesPageRoutes } from "./aiSalesPage";
+import { registerSalesScriptRoutes } from "./salesScriptRoutes";
 import { appendMemberOrderEvent, registerMemberOrderRoutes } from "./memberOrders";
 import {
   createSalesPageSchema,
@@ -4633,6 +4634,7 @@ export async function registerRoutes(
 
   registerAiKnowledgeRoutes(app, requireWebinarOwner);
   registerAiManagementRoutes(app, requireWebinarOwner);
+  registerSalesScriptRoutes(app, requireWebinarOwner);
   registerAdminManagementRoutes(app, revokeUserSessions);
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============

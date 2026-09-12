@@ -27,12 +27,31 @@ import {
   emailSequences, type InsertEmailSequence, type EmailSequence,
   socialPosts, type InsertSocialPost, type SocialPost,
   aiPointTransactions, aiCreditLots, aiCreditReservations, aiCreditRevocations, aiResponseArtifacts,
+  salesScriptDrafts, salesScriptJobs, salesScriptJobCheckpoints, type SalesScriptJob,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
   offerSalesPages, type OfferSalesPage, type InsertOfferSalesPage,
   webinarLandingPages, type WebinarLandingPage, type InsertWebinarLandingPage,
 } from "@shared/schema";
+import type { SalesScriptOutput } from "@shared/salesScript";
+
+export class SalesScriptIdempotencyConflictError extends Error {
+  constructor() {
+    super("Idempotency key body does not match its original request");
+  }
+}
+
+// A shared development database must never allow test workers to claim normal
+// work. The scope is generated entirely on the server and is not client input.
+export const salesScriptQueueScope = process.env.NODE_ENV === "test"
+  ? `test-${process.pid}`
+  : "app";
+
+function canonicalSalesScriptAnswers(answers: Record<string, string>) {
+  const canonical = JSON.stringify(Object.fromEntries(Object.entries(answers).sort(([a], [b]) => a.localeCompare(b))));
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
 
 export function allocateAiCreditLots(
   lots: Array<{ id: string; remainingPoints: number }>,
@@ -118,6 +137,16 @@ export interface IStorage {
   }): Promise<{ valid: boolean; added: number; revoked: number }>;
   creditPointPurchase(data: { userId: string; points: number; amountTwd: number; stripeSessionId: string }): Promise<{ points: number; alreadyProcessed: boolean }>;
   getPointTransactionOwner(stripeSessionId: string): Promise<string | null>;
+  saveSalesScriptDraft(data: { ownerId: string; webinarId: string; answers: Record<string, string> }): Promise<void>;
+  getSalesScriptDraft(ownerId: string, webinarId: string): Promise<{ answers: Record<string, string>; updatedAt: Date } | null>;
+  getSalesScriptJobs(ownerId: string, webinarId: string): Promise<SalesScriptJob[]>;
+  getSalesScriptJob(ownerId: string, webinarId: string, jobId: string): Promise<SalesScriptJob | null>;
+  admitSalesScriptJob(data: { ownerId: string; webinarId: string; idempotencyKey: string; answers: Record<string, string>; points: number }): Promise<{ job: SalesScriptJob; created: boolean } | null>;
+  claimNextSalesScriptJob(leaseToken: string, leaseExpiresAt: Date): Promise<SalesScriptJob | null>;
+  renewSalesScriptJobLease(data: { jobId: string; leaseToken: string; leaseExpiresAt: Date }): Promise<boolean>;
+  saveSalesScriptCheckpoint(data: { jobId: string; leaseToken: string; stage: number; section: SalesScriptOutput["sections"][number] }): Promise<boolean>;
+  completeSalesScriptJob(data: { jobId: string; ownerId: string; reservationId: string; leaseToken: string; result: SalesScriptOutput }): Promise<boolean>;
+  failSalesScriptJob(data: { jobId: string; ownerId: string; reservationId: string; leaseToken?: string; message: string }): Promise<boolean>;
   
   // Webinars
   createWebinar(data: InsertWebinar): Promise<Webinar>;
@@ -493,6 +522,261 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async saveSalesScriptDraft(data: { ownerId: string; webinarId: string; answers: Record<string, string> }): Promise<void> {
+    await db.insert(salesScriptDrafts).values(data).onConflictDoUpdate({
+      target: salesScriptDrafts.webinarId,
+      set: { ownerId: data.ownerId, answers: data.answers, updatedAt: new Date() },
+    });
+  }
+
+  async getSalesScriptDraft(ownerId: string, webinarId: string) {
+    const [draft] = await db.select({
+      answers: salesScriptDrafts.answers,
+      updatedAt: salesScriptDrafts.updatedAt,
+    }).from(salesScriptDrafts).where(and(
+      eq(salesScriptDrafts.ownerId, ownerId),
+      eq(salesScriptDrafts.webinarId, webinarId),
+    )).limit(1);
+    return draft || null;
+  }
+
+  async getSalesScriptJobs(ownerId: string, webinarId: string): Promise<SalesScriptJob[]> {
+    return db.select().from(salesScriptJobs).where(and(
+      eq(salesScriptJobs.ownerId, ownerId),
+      eq(salesScriptJobs.webinarId, webinarId),
+    )).orderBy(desc(salesScriptJobs.createdAt));
+  }
+
+  async getSalesScriptJob(ownerId: string, webinarId: string, jobId: string): Promise<SalesScriptJob | null> {
+    const [job] = await db.select().from(salesScriptJobs).where(and(
+      eq(salesScriptJobs.id, jobId),
+      eq(salesScriptJobs.ownerId, ownerId),
+      eq(salesScriptJobs.webinarId, webinarId),
+    )).limit(1);
+    return job || null;
+  }
+
+  async admitSalesScriptJob(data: {
+    ownerId: string; webinarId: string; idempotencyKey: string; answers: Record<string, string>; points: number;
+  }): Promise<{ job: SalesScriptJob; created: boolean } | null> {
+    if (!Number.isInteger(data.points) || data.points <= 0) throw new Error("Invalid credit reservation");
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.ownerId}`}))`);
+      const [existing] = await tx.select().from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.ownerId, data.ownerId),
+        eq(salesScriptJobs.idempotencyKey, data.idempotencyKey),
+      )).for("update");
+      if (existing) {
+        if (existing.webinarId !== data.webinarId) throw new Error("Idempotency key was already used for another webinar");
+        if (existing.costPoints !== data.points
+          || canonicalSalesScriptAnswers(existing.answers) !== canonicalSalesScriptAnswers(data.answers)) {
+          throw new SalesScriptIdempotencyConflictError();
+        }
+        return { job: existing, created: false };
+      }
+      const now = new Date();
+      // Keep the established reservation reconciliation semantics for old
+      // reply/generator reservations while fencing durable sales-script work.
+      // The advisory lock is already held, so a stale refund and this new
+      // charge cannot interleave.
+      const stale = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.userId, data.ownerId),
+        eq(aiCreditReservations.status, "reserved"),
+        lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
+      )).for("update");
+      for (const reservation of stale) {
+        const [salesJob] = await tx.select({ status: salesScriptJobs.status }).from(salesScriptJobs)
+          .where(eq(salesScriptJobs.reservationId, reservation.id)).limit(1);
+        if (salesJob && (salesJob.status === "queued" || salesJob.status === "running")) continue;
+        const [artifact] = await tx.select({ id: aiResponseArtifacts.id }).from(aiResponseArtifacts)
+          .where(eq(aiResponseArtifacts.reservationId, reservation.id)).limit(1);
+        if (artifact) {
+          await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: now })
+            .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+          continue;
+        }
+        for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
+          await tx.update(aiCreditLots)
+            .set({ remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})` })
+            .where(and(eq(aiCreditLots.id, allocation.lotId), sql`NOT EXISTS (
+              SELECT 1 FROM ${aiCreditRevocations}
+              WHERE ${aiCreditRevocations.idempotencyKey} = ${aiCreditLots.idempotencyKey}
+            )`));
+        }
+        await tx.update(aiCreditReservations).set({ status: "refunded", completedAt: now })
+          .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+      }
+      const lots = await tx.select().from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, data.ownerId),
+        gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, now)),
+      )).orderBy(sql`${aiCreditLots.expiresAt} ASC NULLS LAST`, asc(aiCreditLots.grantedAt)).for("update");
+      const available = lots.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+      const allocations = allocateAiCreditLots(lots, data.points);
+      if (!allocations) return null;
+      for (const allocation of allocations) {
+        const lot = lots.find((candidate) => candidate.id === allocation.lotId)!;
+        await tx.update(aiCreditLots).set({ remainingPoints: lot.remainingPoints - allocation.points })
+          .where(eq(aiCreditLots.id, lot.id));
+      }
+      const reservationId = crypto.randomUUID();
+      await tx.insert(aiCreditReservations).values({
+        id: reservationId, userId: data.ownerId, points: data.points, allocations, status: "reserved",
+      });
+      const [job] = await tx.insert(salesScriptJobs).values({
+        webinarId: data.webinarId,
+        ownerId: data.ownerId,
+        reservationId,
+        idempotencyKey: data.idempotencyKey,
+        answers: data.answers,
+        costPoints: data.points,
+        queueScope: salesScriptQueueScope,
+      }).returning();
+      await tx.update(users).set({ aiPoints: available - data.points }).where(eq(users.id, data.ownerId));
+      return { job, created: true };
+    });
+  }
+
+  async claimNextSalesScriptJob(leaseToken: string, leaseExpiresAt: Date): Promise<SalesScriptJob | null> {
+    return db.transaction(async (tx) => {
+      const now = new Date();
+      const [candidate] = await tx.select().from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+        or(
+          eq(salesScriptJobs.status, "queued"),
+          and(eq(salesScriptJobs.status, "running"), or(
+            isNull(salesScriptJobs.leaseExpiresAt),
+            lt(salesScriptJobs.leaseExpiresAt, now),
+          )),
+        ),
+      )).orderBy(asc(salesScriptJobs.createdAt)).limit(1).for("update", { skipLocked: true });
+      if (!candidate) return null;
+      const [claimed] = await tx.update(salesScriptJobs).set({
+        status: "running",
+        leaseToken,
+        leaseExpiresAt,
+        attemptCount: candidate.attemptCount + 1,
+        updatedAt: now,
+      }).where(and(
+        eq(salesScriptJobs.id, candidate.id),
+        eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+      )).returning();
+      return claimed || null;
+    });
+  }
+
+  async renewSalesScriptJobLease(data: { jobId: string; leaseToken: string; leaseExpiresAt: Date }): Promise<boolean> {
+    const renewed = await db.update(salesScriptJobs).set({
+      leaseExpiresAt: data.leaseExpiresAt,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(salesScriptJobs.id, data.jobId),
+      eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+      eq(salesScriptJobs.status, "running"),
+      eq(salesScriptJobs.leaseToken, data.leaseToken),
+    )).returning({ id: salesScriptJobs.id });
+    return renewed.length === 1;
+  }
+
+  async saveSalesScriptCheckpoint(data: {
+    jobId: string; leaseToken: string; stage: number; section: SalesScriptOutput["sections"][number];
+  }): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [job] = await tx.select({ id: salesScriptJobs.id }).from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.id, data.jobId),
+        eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+        eq(salesScriptJobs.status, "running"),
+        eq(salesScriptJobs.leaseToken, data.leaseToken),
+      )).for("update");
+      if (!job) return false;
+      await tx.insert(salesScriptJobCheckpoints).values({
+        jobId: data.jobId, stage: data.stage, section: data.section,
+      }).onConflictDoNothing();
+      await tx.update(salesScriptJobs).set({
+        completedStages: sql`GREATEST(${salesScriptJobs.completedStages}, ${data.stage})`,
+        updatedAt: new Date(),
+      }).where(eq(salesScriptJobs.id, data.jobId));
+      return true;
+    });
+  }
+
+  async completeSalesScriptJob(data: {
+    jobId: string; ownerId: string; reservationId: string; leaseToken: string; result: SalesScriptOutput;
+  }): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.ownerId}`}))`);
+      const [reservation] = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.id, data.reservationId),
+        eq(aiCreditReservations.userId, data.ownerId),
+      )).for("update");
+      const [job] = await tx.select().from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.id, data.jobId),
+        eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+      )).for("update");
+      if (!reservation || !job || job.ownerId !== data.ownerId || job.reservationId !== data.reservationId) return false;
+      if (job.status === "completed" && reservation.status === "consumed") return true;
+      if (job.status !== "running" || job.leaseToken !== data.leaseToken || reservation.status !== "reserved") return false;
+      await tx.insert(aiResponseArtifacts).values({
+        reservationId: data.reservationId,
+        userId: data.ownerId,
+        webinarId: job.webinarId,
+        kind: "sales_script",
+        requestText: JSON.stringify(job.answers),
+        responseText: JSON.stringify(data.result),
+      });
+      await tx.update(salesScriptJobs).set({
+        status: "completed", completedStages: 6, result: data.result, completedAt: new Date(),
+        leaseToken: null, leaseExpiresAt: null, errorMessage: null, updatedAt: new Date(),
+      }).where(eq(salesScriptJobs.id, data.jobId));
+      await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: new Date() })
+        .where(and(eq(aiCreditReservations.id, data.reservationId), eq(aiCreditReservations.status, "reserved")));
+      return true;
+    });
+  }
+
+  async failSalesScriptJob(data: {
+    jobId: string; ownerId: string; reservationId: string; leaseToken?: string; message: string;
+  }): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.ownerId}`}))`);
+      const [reservation] = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.id, data.reservationId),
+        eq(aiCreditReservations.userId, data.ownerId),
+      )).for("update");
+      const [job] = await tx.select().from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.id, data.jobId),
+        eq(salesScriptJobs.queueScope, salesScriptQueueScope),
+      )).for("update");
+      if (!reservation || !job || job.ownerId !== data.ownerId || job.reservationId !== data.reservationId) return false;
+      if (job.status === "failed" || job.status === "cancelled") return true;
+      if (job.status === "completed" || (data.leaseToken && job.leaseToken !== data.leaseToken)) return false;
+      if (reservation.status === "reserved") {
+        for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
+          await tx.update(aiCreditLots)
+            .set({ remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})` })
+            .where(and(eq(aiCreditLots.id, allocation.lotId), sql`NOT EXISTS (
+              SELECT 1 FROM ${aiCreditRevocations}
+              WHERE ${aiCreditRevocations.idempotencyKey} = ${aiCreditLots.idempotencyKey}
+            )`));
+        }
+        await tx.update(aiCreditReservations).set({ status: "refunded", completedAt: new Date() })
+          .where(and(eq(aiCreditReservations.id, data.reservationId), eq(aiCreditReservations.status, "reserved")));
+        const activeLots = await tx.select({ remainingPoints: aiCreditLots.remainingPoints }).from(aiCreditLots).where(and(
+          eq(aiCreditLots.userId, data.ownerId),
+          gt(aiCreditLots.remainingPoints, 0),
+          or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, new Date())),
+        ));
+        await tx.update(users).set({ aiPoints: activeLots.reduce((sum, lot) => sum + lot.remainingPoints, 0) })
+          .where(eq(users.id, data.ownerId));
+      }
+      await tx.update(salesScriptJobs).set({
+        status: "failed", leaseToken: null, leaseExpiresAt: null,
+        errorMessage: data.message.slice(0, 1000), updatedAt: new Date(),
+      }).where(eq(salesScriptJobs.id, data.jobId));
+      return true;
+    });
+  }
+
   async reserveAiCredits(userId: string, points: number): Promise<{ reservationId: string; remaining: number } | null> {
     if (!Number.isInteger(points) || points <= 0) throw new Error("Invalid credit reservation");
     return db.transaction(async (tx) => {
@@ -504,6 +788,14 @@ export class DatabaseStorage implements IStorage {
         lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
       )).for("update");
       for (const reservation of stale) {
+        // A sales-script job can legitimately run longer than the legacy
+        // 15-minute reply reservation window. Its worker lease is recovered
+        // after restart; never refund it while it can still produce output.
+        const [salesJob] = await tx.select({
+          id: salesScriptJobs.id,
+          status: salesScriptJobs.status,
+        }).from(salesScriptJobs).where(eq(salesScriptJobs.reservationId, reservation.id)).limit(1);
+        if (salesJob && (salesJob.status === "queued" || salesJob.status === "running")) continue;
         const [artifact] = await tx.select({ id: aiResponseArtifacts.id }).from(aiResponseArtifacts)
           .where(eq(aiResponseArtifacts.reservationId, reservation.id)).limit(1);
         if (artifact) {

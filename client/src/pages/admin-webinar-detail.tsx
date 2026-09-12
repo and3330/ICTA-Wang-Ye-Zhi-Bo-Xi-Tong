@@ -47,6 +47,7 @@ import { SalesTemplateChooser, type SalesTemplate } from "@/components/sales-tem
 import { createSalesPageTemplate } from "@shared/salesPageTemplates";
 import { ExternalJourneyPanel } from "@/components/external-journey-panel";
 import { SessionRegistrationCounts, type SessionRegistrationCountsDto } from "@/components/session-registration-counts";
+import { SalesScriptGenerator } from "@/components/sales-script-generator";
 
 function toLocalDateTimeInput(value: Date | string) {
   const date = new Date(value);
@@ -2378,6 +2379,10 @@ export default function AdminWebinarDetail() {
             <TabsTrigger value="ai" data-testid="tab-ai">
               <Bot className="h-4 w-4 mr-1" />
               {s.tabAi}
+            </TabsTrigger>
+            <TabsTrigger value="salesScript" data-testid="tab-sales-script">
+              <Sparkles className="h-4 w-4 mr-1" />
+              銷售演講生成器
             </TabsTrigger>
           </TabsList>
 
@@ -5908,7 +5913,15 @@ export default function AdminWebinarDetail() {
               </div>
           </TabsContent>
 
-          {/* ===== AI 助教 Tab ===== */}
+           <TabsContent value="salesScript">
+             <SalesScriptGenerator
+               webinarId={id!}
+               webinarTitle={webinar.title}
+               webinarDescription={webinar.description}
+             />
+           </TabsContent>
+
+           {/* ===== AI 助教 Tab ===== */}
           <TabsContent value="ai">
             <div className="admin-workspace-grid">
               {contextualRail([

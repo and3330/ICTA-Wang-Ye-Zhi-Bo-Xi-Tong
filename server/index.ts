@@ -22,6 +22,7 @@ import {
   isAcceptingWork,
   stopRegisteredResources,
 } from "./operationsRuntime";
+import { startSalesScriptWorker } from "./salesScriptGenerator";
 
 const app = express();
 const httpServer = createServer(app);
@@ -252,6 +253,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   registerPricingRegionRoutes(app);
   await registerRoutes(httpServer, app, sessionMiddleware);
   startAnnualSubscriptionCreditScheduler();
+  startSalesScriptWorker();
 
   if (process.env.NODE_ENV === "production" && process.env.UPLOADS_DIR) {
     console.warn("UPLOADS_DIR is only used for legacy local assets; new uploads use Replit App Storage");

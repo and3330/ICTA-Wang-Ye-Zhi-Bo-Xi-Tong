@@ -7,6 +7,11 @@ description: Concurrency/consistency rules for the per-tenant AI point billing &
 
 AI replies deduct points from the **webinar owner** (webinar.userId), not the viewer. Super admin / enterprise plan = unlimited (skip all point logic).
 
+## Exception: premium sales-script generation is always metered
+The sales-script add-on requires real AI credit lots even for enterprise/admin accounts; free trial calls cannot pay for it. Trial members with sufficient purchased credits may use it. Only the webinar owner may authorize this charge, not an administrator browsing another owner's webinar.
+**Why:** The user explicitly made this a separately paid add-on to prevent free use; ordinary unlimited AI privileges must not waive its fee or authorize spending another member's balance.
+**How to apply:** Keep add-on admission separate from ordinary unlimited/trial AI paths. Reveal the finished script only after its output and credit consumption commit together; partial checkpoints must not become free content after a refund.
+
 ## Rule: reserve points BEFORE calling the LLM, refund on failure
 Deduct 1 point atomically first; only then call Anthropic. If the LLM call fails, add the point back.
 **Why:** the old order (call LLM → then deduct) let "only 1 point left + concurrent questions" fire multiple paid Anthropic calls before any deduction landed — wasted spend. A pre-check is not enough under concurrency; you must actually reserve atomically.

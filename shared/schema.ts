@@ -4,6 +4,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
 import type { ExternalJourneySettingsInput } from "./externalJourneys";
+import type { SalesScriptOutput, SalesScriptJobState } from "./salesScript";
 export {
   canonicalLandingVideoSchema,
   canonicalizeLandingVideoUrl,
@@ -983,6 +984,52 @@ export const aiResponseArtifacts = pgTable("ai_response_artifacts", {
   responseText: text("response_text").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Private, immutable long-running sales-script work. Checkpoints are not
+// exposed to clients: only the atomically completed output can be read.
+export const salesScriptDrafts = pgTable("sales_script_drafts", {
+  webinarId: varchar("webinar_id").primaryKey().references(() => webinars.id, { onDelete: "cascade" }),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  answers: jsonb("answers").$type<Record<string, string>>().notNull().default({}),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const salesScriptJobs = pgTable("sales_script_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  reservationId: varchar("reservation_id").notNull().references(() => aiCreditReservations.id, { onDelete: "restrict" }).unique(),
+  idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+  answers: jsonb("answers").$type<Record<string, string>>().notNull(),
+  costPoints: integer("cost_points").notNull().default(3600),
+  // Internal worker partition. Never accepted from a client request.
+  queueScope: varchar("queue_scope", { length: 120 }).notNull().default("app"),
+  status: text("status").$type<SalesScriptJobState>().notNull().default("queued"),
+  completedStages: integer("completed_stages").notNull().default(0),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  leaseToken: varchar("lease_token", { length: 64 }),
+  leaseExpiresAt: timestamp("lease_expires_at"),
+  result: jsonb("result").$type<SalesScriptOutput>(),
+  errorMessage: text("error_message"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  ownerIdempotencyUnique: uniqueIndex("sales_script_jobs_owner_idempotency_uniq").on(table.ownerId, table.idempotencyKey),
+  ownerWebinarCreatedIndex: index("sales_script_jobs_owner_webinar_created_idx").on(table.ownerId, table.webinarId, table.createdAt),
+  claimIndex: index("sales_script_jobs_claim_idx").on(table.queueScope, table.status, table.leaseExpiresAt),
+}));
+export type SalesScriptJob = typeof salesScriptJobs.$inferSelect;
+
+export const salesScriptJobCheckpoints = pgTable("sales_script_job_checkpoints", {
+  jobId: varchar("job_id").notNull().references(() => salesScriptJobs.id, { onDelete: "cascade" }),
+  stage: integer("stage").notNull(),
+  section: jsonb("section").$type<SalesScriptOutput["sections"][number]>().notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  jobStageUnique: uniqueIndex("sales_script_job_checkpoints_job_stage_uniq").on(table.jobId, table.stage),
+}));
 
 export const aiReplyLogs = pgTable("ai_reply_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
