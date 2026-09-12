@@ -1,21 +1,80 @@
 import type { User } from "@shared/schema";
+import { PLAN_PRICING } from "@shared/pricing";
 import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
 
 export const SUBSCRIPTION_PLANS = {
-  starter: { label: "Starter", amountUsd: 39, annualAmountUsd: 397.8, baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly", annualLookupKey: "icta_webinar_starter_annual" },
-  growth: { label: "Growth", amountUsd: 99, annualAmountUsd: 1009.8, baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly", annualLookupKey: "icta_webinar_growth_annual" },
-  scale: { label: "Scale", amountUsd: 199, annualAmountUsd: 2029.8, baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly", annualLookupKey: "icta_webinar_scale_annual" },
+  starter: { label: "Starter", amountUsd: PLAN_PRICING.starter.monthlyUSD, annualAmountUsd: PLAN_PRICING.starter.annualUSD, baseWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, lookupKey: "icta_webinar_starter_monthly_usd29", annualLookupKey: "icta_webinar_starter_annual_usd29580" },
+  growth: { label: "Growth", amountUsd: PLAN_PRICING.growth.monthlyUSD, annualAmountUsd: PLAN_PRICING.growth.annualUSD, baseWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, lookupKey: "icta_webinar_growth_monthly", annualLookupKey: "icta_webinar_growth_annual" },
+  scale: { label: "Scale", amountUsd: PLAN_PRICING.scale.monthlyUSD, annualAmountUsd: PLAN_PRICING.scale.annualUSD, baseWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, lookupKey: "icta_webinar_scale_monthly", annualLookupKey: "icta_webinar_scale_annual" },
 } as const;
+
+/** Prices charged before the public Starter price changed to USD 29. */
+export const STARTER_GRANDFATHERED_MONTHLY_AMOUNT_USD = 39;
+export const STARTER_GRANDFATHERED_ANNUAL_AMOUNT_USD = 397.8;
+/** The original three-room subscription is not part of the public catalog. */
+export const LEGACY_MONTHLY_AMOUNT_USD = 49;
 
 export const ADDON_LOOKUP_KEY = "icta_webinar_room_addon_monthly";
 export const ANNUAL_ADDON_LOOKUP_KEY = "icta_webinar_room_addon_annual";
 export type BillingInterval = "month" | "year";
 export type SubscriptionPlanKey = keyof typeof SUBSCRIPTION_PLANS;
 
+/**
+ * Starter's old keys must remain active for the currently deployed checkout.
+ * New checkout deliberately uses price-versioned keys, so publishing this
+ * code cannot transfer or archive the old USD 39 prices.
+ */
+export const STARTER_LEGACY_LOOKUP_KEYS = {
+  month: "icta_webinar_starter_monthly",
+  year: "icta_webinar_starter_annual",
+} as const;
+
+export const STARTER_NEW_LOOKUP_KEYS = {
+  month: "icta_webinar_starter_monthly_usd29",
+  year: "icta_webinar_starter_annual_usd29580",
+} as const;
+
+export const STARTER_NEW_FALLBACK_LOOKUP_KEYS = {
+  month: "icta_webinar_starter_monthly_usd29_v2",
+  year: "icta_webinar_starter_annual_usd29580_v2",
+} as const;
+
 export function planLookupKey(planKey: SubscriptionPlanKey, interval: BillingInterval): string {
   const plan = SUBSCRIPTION_PLANS[planKey];
   return interval === "year" ? plan.annualLookupKey : plan.lookupKey;
+}
+
+export function approvedLookupKeys(planKey: SubscriptionPlanKey, interval: BillingInterval): string[] {
+  const canonical = planLookupKey(planKey, interval);
+  if (planKey !== "starter") return [canonical];
+  const fallback = interval === "year"
+    ? STARTER_NEW_FALLBACK_LOOKUP_KEYS.year
+    : STARTER_NEW_FALLBACK_LOOKUP_KEYS.month;
+  return [canonical, fallback];
+}
+
+export function planKeyForLookupKey(lookupKey: string | null | undefined): SubscriptionPlanKey | null {
+  if (!lookupKey) return null;
+  for (const [planKey] of Object.entries(SUBSCRIPTION_PLANS) as [SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]][]) {
+    if (
+      approvedLookupKeys(planKey, "month").includes(lookupKey)
+      || approvedLookupKeys(planKey, "year").includes(lookupKey)
+      || (planKey === "starter" && (
+        lookupKey === STARTER_LEGACY_LOOKUP_KEYS.month
+        || lookupKey === STARTER_LEGACY_LOOKUP_KEYS.year
+        || lookupKey === STARTER_NEW_FALLBACK_LOOKUP_KEYS.month
+        || lookupKey === STARTER_NEW_FALLBACK_LOOKUP_KEYS.year
+      ))
+    ) {
+      return planKey;
+    }
+  }
+  return null;
+}
+
+export function isAddonLookupKey(lookupKey: string | null | undefined): boolean {
+  return lookupKey === ADDON_LOOKUP_KEY || lookupKey === ANNUAL_ADDON_LOOKUP_KEY;
 }
 
 export function getMonthlyRegistrantLimit(plan: string): number | null {
@@ -53,6 +112,7 @@ export type EntitlementSubscription = {
         lookup_key?: string | null;
         unit_amount?: number | null;
         currency?: string;
+        recurring?: { interval?: BillingInterval | null } | null;
       };
     }>;
   };
@@ -78,8 +138,15 @@ export function computeSubscriptionEntitlement(
   planKey: SubscriptionPlanKey | "legacy",
   addonWebinars: number,
   now = new Date(),
-  amountUsd = planKey === "legacy" ? 49 : SUBSCRIPTION_PLANS[planKey].amountUsd,
+  amountUsd?: number,
 ): SubscriptionEntitlement {
+  const subscribedAmountUsd = amountUsd ?? (
+    planKey === "legacy"
+      ? LEGACY_MONTHLY_AMOUNT_USD
+      : subscription.items.data.some((item) => item.price.recurring?.interval === "year")
+        ? SUBSCRIPTION_PLANS[planKey].annualAmountUsd
+        : SUBSCRIPTION_PLANS[planKey].amountUsd
+  );
   const periodStart = subscription.current_period_start
     || subscription.items.data[0]?.current_period_start;
   const periodEnd = subscription.current_period_end
@@ -93,7 +160,7 @@ export function computeSubscriptionEntitlement(
     plan: planKey,
     status: subscription.status,
     active,
-    amountUsd,
+    amountUsd: subscribedAmountUsd,
     maxWebinars: active
       ? (planKey === "legacy" ? 3 : SUBSCRIPTION_PLANS[planKey].baseWebinars) + addonWebinars
       : 0,
@@ -110,27 +177,44 @@ export function computeSubscriptionEntitlement(
 export async function getApprovedPriceIds() {
   const stripe = await getUncachableStripeClient();
   const lookupKeys = [
-    ...Object.values(SUBSCRIPTION_PLANS).flatMap((plan) => [plan.lookupKey, plan.annualLookupKey]),
+    ...Object.entries(SUBSCRIPTION_PLANS).flatMap(([planKey]) => [
+      ...approvedLookupKeys(planKey as SubscriptionPlanKey, "month"),
+      ...approvedLookupKeys(planKey as SubscriptionPlanKey, "year"),
+    ]),
     ADDON_LOOKUP_KEY,
     ANNUAL_ADDON_LOOKUP_KEY,
   ];
-  const prices = await stripe.prices.list({ active: true, lookup_keys: lookupKeys, limit: 10 });
-  const expectedAmounts = new Map<string, number>(
-    (Object.values(SUBSCRIPTION_PLANS)).flatMap((plan) => [
-      [plan.lookupKey, plan.amountUsd * 100] as const,
-      [plan.annualLookupKey, plan.annualAmountUsd * 100] as const,
-    ]),
-  );
-  expectedAmounts.set(ADDON_LOOKUP_KEY, 2_000);
-  expectedAmounts.set(ANNUAL_ADDON_LOOKUP_KEY, 20_400);
-  const byLookupKey = new Map(prices.data.flatMap((price) => {
-    const expectedAmount = price.lookup_key ? expectedAmounts.get(price.lookup_key) : undefined;
-    const valid = expectedAmount !== undefined
-      && price.unit_amount === expectedAmount
+  const prices = await stripe.prices.list({ active: true, lookup_keys: lookupKeys, limit: 100 });
+  const expectedAmounts = new Map<string, { amount: number; interval: BillingInterval; canonical: string }>();
+  for (const [planKey, plan] of Object.entries(SUBSCRIPTION_PLANS) as [SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]][]) {
+    for (const lookupKey of approvedLookupKeys(planKey, "month")) {
+      expectedAmounts.set(lookupKey, { amount: plan.amountUsd * 100, interval: "month", canonical: plan.lookupKey });
+    }
+    for (const lookupKey of approvedLookupKeys(planKey, "year")) {
+      expectedAmounts.set(lookupKey, { amount: plan.annualAmountUsd * 100, interval: "year", canonical: plan.annualLookupKey });
+    }
+  }
+  expectedAmounts.set(ADDON_LOOKUP_KEY, { amount: 2_000, interval: "month", canonical: ADDON_LOOKUP_KEY });
+  expectedAmounts.set(ANNUAL_ADDON_LOOKUP_KEY, { amount: 20_400, interval: "year", canonical: ANNUAL_ADDON_LOOKUP_KEY });
+  const validPrices = prices.data.flatMap((price) => {
+    const expectation = price.lookup_key ? expectedAmounts.get(price.lookup_key) : undefined;
+    const valid = expectation !== undefined
+      && price.unit_amount === expectation.amount
       && price.currency === "usd"
-      && price.recurring?.interval === (price.lookup_key?.endsWith("_annual") ? "year" : "month");
-    return valid && price.lookup_key ? [[price.lookup_key, price.id] as const] : [];
-  }));
+      && price.recurring?.interval === expectation.interval;
+    return valid && price.lookup_key ? [{ price, expectation }] : [];
+  });
+  const byLookupKey = new Map<string, string>();
+  for (const price of prices.data) {
+    const valid = validPrices.find((candidate) => candidate.price.id === price.id);
+    if (!valid || !price.lookup_key) continue;
+    // Keep both the Stripe key and the canonical key.  This also makes the
+    // catalog map safe for future price-versioned keys.
+    byLookupKey.set(price.lookup_key, price.id);
+    if (!byLookupKey.has(valid.expectation.canonical) || price.lookup_key === valid.expectation.canonical) {
+      byLookupKey.set(valid.expectation.canonical, price.id);
+    }
+  }
   return { stripe, byLookupKey };
 }
 
@@ -184,8 +268,10 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
   let addonWebinars = 0;
   for (const item of subscription.items.data) {
     const lookupKey = item.price.lookup_key;
-    const matchingPlan = (Object.entries(SUBSCRIPTION_PLANS) as [SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]][])
-      .find(([, plan]) => plan.lookupKey === lookupKey || plan.annualLookupKey === lookupKey);
+    const matchingPlanKey = planKeyForLookupKey(lookupKey);
+    const matchingPlan = matchingPlanKey
+      ? [matchingPlanKey, SUBSCRIPTION_PLANS[matchingPlanKey]] as const
+      : undefined;
     if (matchingPlan) {
       planKey = matchingPlan[0];
       baseAmountUsd = item.price.currency === "usd" && item.price.unit_amount !== null
@@ -196,7 +282,9 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
       const product = typeof item.price.product === "string"
         ? await stripe.products.retrieve(item.price.product)
         : item.price.product;
-      const catalogKey = !("deleted" in product) ? product.metadata?.ictaCatalogKey : undefined;
+      const catalogKey = !("deleted" in product)
+        ? product.metadata?.ictaCatalogKey || product.metadata?.planKey
+        : undefined;
       if (catalogKey && catalogKey in SUBSCRIPTION_PLANS) {
         planKey = catalogKey as SubscriptionPlanKey;
         baseAmountUsd = item.price.currency === "usd" && item.price.unit_amount !== null
@@ -211,7 +299,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
     for (const item of subscription.items.data) {
       const price = item.price;
       if (
-        price.unit_amount !== 4900 ||
+        price.unit_amount !== LEGACY_MONTHLY_AMOUNT_USD * 100 ||
         price.currency !== "usd" ||
         price.recurring?.interval !== "month"
       ) continue;
@@ -225,7 +313,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
         product.metadata?.maxWebinars === "3"
       ) {
         planKey = "legacy";
-        baseAmountUsd = 49;
+        baseAmountUsd = LEGACY_MONTHLY_AMOUNT_USD;
         break;
       }
     }
@@ -249,7 +337,7 @@ export async function refreshSubscriptionEntitlement(user: User): Promise<Subscr
     planKey,
     addonWebinars,
     new Date(),
-    baseAmountUsd ?? (planKey === "legacy" ? 49 : SUBSCRIPTION_PLANS[planKey].amountUsd),
+    baseAmountUsd ?? (planKey === "legacy" ? LEGACY_MONTHLY_AMOUNT_USD : SUBSCRIPTION_PLANS[planKey].amountUsd),
   );
 
   await storage.updateUser(user.id, {

@@ -3,9 +3,13 @@ import test from "node:test";
 import {
   computeSubscriptionEntitlement,
   planLookupKey,
+  planKeyForLookupKey,
+  STARTER_LEGACY_LOOKUP_KEYS,
+  STARTER_NEW_LOOKUP_KEYS,
   type EntitlementSubscription,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
+import { monthlyGiftForLookupKeys } from "./subscriptionCreditGrants";
 
 const NOW = new Date("2026-08-31T12:00:00.000Z");
 
@@ -51,17 +55,27 @@ test("Starter, Growth, Scale, and add-on quantities map to the correct quota", (
   assert.equal(entitlement("active", "scale", 0).maxWebinars, 15);
 });
 
-test("Starter reports the actual subscribed price for new and grandfathered customers", () => {
-  assert.equal(entitlement("active", "starter").amountUsd, 39);
+test("Starter reports the new price while preserving the actual grandfathered amount", () => {
+  assert.equal(entitlement("active", "starter").amountUsd, 29);
   assert.equal(
-    computeSubscriptionEntitlement(subscription("active"), "starter", 0, NOW, 49).amountUsd,
-    49,
+    computeSubscriptionEntitlement(subscription("active"), "starter", 0, NOW, 39).amountUsd,
+    39,
+  );
+  assert.equal(
+    computeSubscriptionEntitlement(subscription("active"), "starter", 0, NOW, 397.8).amountUsd,
+    397.8,
   );
 });
 
 test("monthly and annual plans use separate approved Stripe lookup keys", () => {
-  assert.equal(planLookupKey("starter", "month"), "icta_webinar_starter_monthly");
-  assert.equal(planLookupKey("starter", "year"), "icta_webinar_starter_annual");
+  assert.equal(planLookupKey("starter", "month"), STARTER_NEW_LOOKUP_KEYS.month);
+  assert.equal(planLookupKey("starter", "year"), STARTER_NEW_LOOKUP_KEYS.year);
+  assert.equal(planKeyForLookupKey(STARTER_LEGACY_LOOKUP_KEYS.month), "starter");
+  assert.equal(planKeyForLookupKey(STARTER_LEGACY_LOOKUP_KEYS.year), "starter");
+  assert.deepEqual(
+    monthlyGiftForLookupKeys([STARTER_LEGACY_LOOKUP_KEYS.year]),
+    { planKey: "starter", points: 100 },
+  );
 });
 
 test("past_due, canceled, and expired subscriptions cannot add publications", () => {

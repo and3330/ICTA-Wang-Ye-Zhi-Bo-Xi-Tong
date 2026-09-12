@@ -93,6 +93,7 @@ import {
   refreshSubscriptionEntitlement,
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
+import { PLAN_PRICING } from "@shared/pricing";
 import { isPaidBillableSubscriptionInvoice, reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
 import { canRetainViewerWsAccess, canViewWebinar, webinarWatchEligibility } from "./webinarAccess";
 import { appBaseUrl, emailVerificationMail, sendTransactionalMail } from "./mail";
@@ -2220,9 +2221,9 @@ export async function registerRoutes(
 
   app.get("/api/stripe/config", async (_req, res) => {
     const planDefinitions = [
-      { key: "starter", amountUsd: 39, annualAmountUsd: 397.8, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 0 },
-      { key: "growth", amountUsd: 99, annualAmountUsd: 1009.8, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 0 },
-      { key: "scale", amountUsd: 199, annualAmountUsd: 2029.8, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 0 },
+      { key: "starter", amountUsd: PLAN_PRICING.starter.monthlyUSD, annualAmountUsd: PLAN_PRICING.starter.annualUSD, includedWebinars: 1, monthlyRegistrants: 1_000, monthlyAiPoints: 100, trialDays: 0 },
+      { key: "growth", amountUsd: PLAN_PRICING.growth.monthlyUSD, annualAmountUsd: PLAN_PRICING.growth.annualUSD, includedWebinars: 5, monthlyRegistrants: 3_000, monthlyAiPoints: 200, trialDays: 0 },
+      { key: "scale", amountUsd: PLAN_PRICING.scale.monthlyUSD, annualAmountUsd: PLAN_PRICING.scale.annualUSD, includedWebinars: 15, monthlyRegistrants: 5_000, monthlyAiPoints: 300, trialDays: 0 },
     ];
     try {
       const key = await getStripePublishableKey();
@@ -2251,7 +2252,7 @@ export async function registerRoutes(
         publishableKey: "",
         billingAvailable: false,
         catalogReady: false,
-        plans: planDefinitions.map((plan) => ({ ...plan, available: false })),
+        plans: planDefinitions.map((plan) => ({ ...plan, available: false, annualAvailable: false })),
         addonAmountUsd: 20,
         annualAddonAmountUsd: 204,
       });

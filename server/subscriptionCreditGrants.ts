@@ -1,7 +1,7 @@
 import type Stripe from "stripe";
 import { storage } from "./storage";
 import { getUncachableStripeClient } from "./stripeClient";
-import { SUBSCRIPTION_PLANS, type SubscriptionPlanKey } from "./subscriptionEntitlements";
+import { planKeyForLookupKey, SUBSCRIPTION_PLANS, type SubscriptionPlanKey } from "./subscriptionEntitlements";
 import {
   isAcceptingWork,
   registerStopper,
@@ -69,7 +69,7 @@ async function annualInvoiceHasRemainingPayment(stripe: Stripe, invoiceId: strin
 
 export function monthlyGiftForLookupKeys(lookupKeys: Array<string | null | undefined>): { planKey: SubscriptionPlanKey; points: number } | null {
   for (const [planKey, plan] of Object.entries(SUBSCRIPTION_PLANS) as Array<[SubscriptionPlanKey, typeof SUBSCRIPTION_PLANS[SubscriptionPlanKey]]>) {
-    if (lookupKeys.includes(plan.lookupKey) || lookupKeys.includes(plan.annualLookupKey)) {
+    if (lookupKeys.some((lookupKey) => planKeyForLookupKey(lookupKey) === planKey)) {
       return { planKey, points: plan.monthlyAiPoints };
     }
   }

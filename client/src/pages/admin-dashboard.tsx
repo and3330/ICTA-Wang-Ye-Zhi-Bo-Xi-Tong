@@ -33,6 +33,8 @@ import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCo
 import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS, NO_CARD_TRIAL_MILESTONES, type NoCardTrialState } from "@shared/noCardTrial";
 import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
 import { SessionRegistrationCounts } from "@/components/session-registration-counts";
+import { PricingAmount, RegionalPricingNote } from "@/components/regional-pricing";
+import { DEFAULT_PRICING_REGION, usePricingRegion } from "@/hooks/use-pricing-region";
 
 type WebinarStats = Record<string, {
   registered: number;
@@ -427,6 +429,8 @@ export default function AdminDashboard() {
   const [ecpayForm, setEcpayForm] = useState({ merchantId: "", hashKey: "", hashIv: "", environment: "stage" as "stage" | "production", enabled: false });
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
+  const { data: pricingRegion } = usePricingRegion();
+  const regionalPricing = pricingRegion ?? DEFAULT_PRICING_REGION;
 
   const webinarSchema = createWebinarSchema(s);
 
@@ -1168,6 +1172,9 @@ export default function AdminDashboard() {
               <DialogTitle>選擇發布方案</DialogTitle>
               <DialogDescription>付費方案會立即進入安全結帳並依方案收費；不會建立新的信用卡試用。免信用卡試用與付費 AI 點數、Stripe 帳務分開計算。</DialogDescription>
             </DialogHeader>
+            <RegionalPricingNote region={regionalPricing}>
+              幣別只影響本頁顯示，選擇方案後仍會以美元向付款方式請款。
+            </RegionalPricingNote>
             <div className="mx-auto flex rounded-lg border bg-muted/50 p-1">
               <button type="button" onClick={() => setBillingInterval("month")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "month" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>月繳</button>
               <button type="button" onClick={() => setBillingInterval("year")} className={`rounded-md px-4 py-2 text-sm font-medium ${billingInterval === "year" ? "bg-background shadow-sm" : "text-muted-foreground"}`}>年繳 <span className="text-emerald-700">85 折</span></button>
@@ -1185,9 +1192,11 @@ export default function AdminDashboard() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-semibold">{plan.key === "starter" ? "Starter" : plan.key === "growth" ? "Growth" : "Scale"}</span>
-                    <span className="text-2xl font-bold">${billingInterval === "year" ? plan.annualAmountUsd.toLocaleString() : plan.amountUsd}<span className="text-sm font-normal text-muted-foreground">／{billingInterval === "year" ? "年" : "月"}</span></span>
+                    <span className="text-2xl font-bold">
+                      <PricingAmount planKey={plan.key} interval={billingInterval} region={regionalPricing} />
+                    </span>
                   </div>
-                  {billingInterval === "year" && <p className="mt-1 text-xs font-semibold text-emerald-700">年繳 85 折，平均每月 ${(plan.annualAmountUsd / 12).toFixed(2)}</p>}
+                  {billingInterval === "year" && <p className="mt-1 text-xs font-semibold text-emerald-700">年繳 85 折；實際以美元年繳預付</p>}
                   <p className="text-sm text-muted-foreground mt-2">最多發布 {plan.includedWebinars} 個直播間</p>
                   <p className="text-sm text-muted-foreground">每月 {plan.monthlyRegistrants.toLocaleString()} 位報名者</p>
                   <p className="text-sm font-medium text-primary">正式首次扣款後，每月發放 {plan.monthlyAiPoints} AI 點</p>
@@ -1207,6 +1216,14 @@ export default function AdminDashboard() {
                 <Button variant="outline" size="icon" onClick={() => setAddonWebinars(Math.min(50, addonWebinars + 1))}>+</Button>
               </div>
             </div>
+            <p className="text-sm text-muted-foreground" data-testid="checkout-currency-confirmation">
+              {(() => {
+                const selected = stripeConfig?.plans.find((plan) => plan.key === selectedPlan);
+                return selected ? (
+                  <>確認方案：{selectedPlan === "starter" ? "Starter" : selectedPlan === "growth" ? "Growth" : "Scale"} · <PricingAmount planKey={selectedPlan} interval={billingInterval} region={regionalPricing} showTestIds={false} />。結帳幣別：USD。</>
+                ) : "結帳幣別：USD。";
+              })()}
+            </p>
             <Button
               onClick={() => checkoutMutation.mutate()}
               disabled={checkoutMutation.isPending || !stripeConfig?.billingAvailable || !(billingInterval === "year" ? stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.annualAvailable : stripeConfig.plans.find((plan) => plan.key === selectedPlan)?.available)}

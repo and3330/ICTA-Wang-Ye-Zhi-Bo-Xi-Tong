@@ -14,7 +14,7 @@ for (const width of [390, 768, 1280]) {
     await expect(page.locator("main h1")).toBeVisible();
     await expect(page.locator("#how")).toBeAttached();
     const pricing = page.locator("#pricing");
-    for (const amount of ["$39", "$99", "$199", "$397.80", "$1,009.80", "$2,029.80"]) {
+    for (const amount of ["US$29", "US$99", "US$199", "US$295.80", "US$1,009.80", "US$2,029.80"]) {
       await expect(pricing).toContainText(amount);
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);

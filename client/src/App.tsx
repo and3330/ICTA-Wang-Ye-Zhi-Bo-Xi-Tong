@@ -27,6 +27,7 @@ import LandingPageEditor from "@/pages/landing-page-editor";
 import AdminProducts from "@/pages/admin-products";
 import AdminOrders from "@/pages/admin-orders";
 import AdminMedia from "@/pages/admin-media";
+import PricingPage from "@/pages/pricing";
 import { MarketingConsentBanner } from "@/components/marketing-consent";
 import { PlatformPixel } from "@/components/platform-pixel";
 
@@ -44,6 +45,7 @@ function Router() {
        <Route path="/form/:id" component={Registration} />
       <Route path="/webinar/:id" component={WebinarRoom} />
       <Route path="/legal/:kind" component={Legal} />
+       <Route path="/pricing" component={PricingPage} />
        <Route path="/features" component={FeaturesPage} />
        <Route path="/features/:slug" component={FeatureDetail} />
        <Route path="/solutions" component={SolutionsPage} />

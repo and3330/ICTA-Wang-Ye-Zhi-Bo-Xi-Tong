@@ -7,7 +7,7 @@
 - [Funnel event trust boundaries](funnel-event-trust-boundaries.md) — revenue is webhook-authoritative; refund delivery must tolerate replay, concurrency, and out-of-order events.
 - [Stripe account split](stripe-account-split.md) — workspace Stripe connector and the app's live billing client target different accounts; mutate the subscription catalog through the app client.
 - [Stripe archived lookup keys](stripe-archived-lookup-keys.md) — an inactive Price still owns its lookup key; inspect and reactivate the exact Price instead of trying to create a duplicate.
-- [Subscription price grandfathering](subscription-price-grandfathering.md) — Starter is $39 for new subscriptions; preserve old subscribed prices, entitlements, credits, and accurate dashboard display.
+- [Subscription price grandfathering](subscription-price-grandfathering.md) — Starter is $29 for new subscriptions; preserve old bills and old-deployment checkout during price rollouts.
 - [Annual billing credits](annual-billing-credits.md) — annual plans cost 85% of 12 monthly payments, while paid AI gifts still release monthly and stop after a full refund.
 - [AI credit and trial rules](ai-credit-expiry.md) — free/trial users receive no AI points; paid monthly gifts expire after one year; purchases remain permanent.
 - [Member-owned ECPay checkout](member-owned-ecpay.md) — webinar商品優先用會員自有綠界帳號直收；平台代收是管理員核准的後續模式，SaaS訂閱仍由Stripe負責。
@@ -25,3 +25,4 @@
 - [Management financial browsing](management-financial-browsing.md) — keep payment categories independently paginated; merging and truncating source pages silently loses transactions.
 - [Order fulfillment concurrency](order-fulfillment-concurrency.md) — provider changes must invalidate stale seller edits; payment and fulfillment remain separate histories.
 - [Pixel tenant isolation](pixel-tenant-isolation.md) — SPA navigation retains initialized pixels; route all events to specific pixels and disable platform automatic events.
+- [Taiwan reference pricing](taiwan-reference-pricing.md) — Taiwan IPs see owner-selected TWD reference prices; subscriptions still charge USD, not a live FX conversion.
