@@ -32,11 +32,21 @@ type SalesScriptMockOptions = {
   initialRunning?: boolean;
   existingCompleted?: boolean;
   draftSaveFailure?: boolean;
+  initiallyPurchased?: boolean;
+  questionnaireFailure?: boolean;
+  purchaseTimeout?: boolean;
+  purchaseNeverReached?: boolean;
+  jobNeverReached?: boolean;
+  draftSaveFailureOnce?: boolean;
+  draftSaveFailureAfterPurchaseOnce?: boolean;
+  initialCompleted?: boolean;
 };
 
 type SalesScriptMock = {
   getJobPostCount: () => number;
+  getPurchasePostCount: () => number;
   getIdempotencyKeys: () => string[];
+  getPurchaseBodies: () => unknown[];
   getDraftBodies: () => unknown[];
   getJobBodies: () => unknown[];
 };
@@ -45,11 +55,18 @@ async function mockSalesScript(
   page: Page,
   options: SalesScriptMockOptions = {},
 ): Promise<SalesScriptMock> {
-  let savedAnswers: Record<string, string> = {};
+  let savedAnswers: Record<string, string> = options.initiallyPurchased
+    ? { ...answers }
+    : {};
   let statusCalls = 0;
-  let generated = options.initialRunning === true;
+  let generated = options.initialRunning === true || options.initialCompleted === true;
+  let purchased = options.initiallyPurchased === true;
+  let repurchased = false;
   let jobPostCount = 0;
+  let purchasePostCount = 0;
+  let draftPutCount = 0;
   const idempotencyKeys: string[] = [];
+  const purchaseBodies: unknown[] = [];
   const draftBodies: unknown[] = [];
   const jobBodies: unknown[] = [];
 
@@ -85,6 +102,13 @@ async function mockSalesScript(
         json: {
           availablePoints: options.points ?? 7200,
           requiredPoints: 3600,
+          // The server keeps completed/running paid history readable, while a
+          // refunded failed job does not grant active questionnaire access.
+          hasPurchasedAccess: options.failure
+            ? purchased && !generated
+            : purchased || generated,
+          purchaseId: purchased ? "sales-purchase-1" : null,
+          canGenerate: purchased && (!generated || repurchased),
           draft: { answers: savedAnswers, updatedAt: "2026-01-01T01:00:00.000Z" },
           jobs: [
             ...(options.existingCompleted
@@ -107,7 +131,7 @@ async function mockSalesScript(
                     id: "sales-job-1",
                     status: options.failure
                       ? "failed"
-                      : statusCalls > 1
+                      : options.initialCompleted || statusCalls > 1
                         ? "completed"
                         : "running",
                     costPoints: 3600,
@@ -126,13 +150,60 @@ async function mockSalesScript(
         },
       });
     }
+    if (path === `/api/webinars/${webinarId}/sales-script/questionnaire`) {
+      if (!purchased || options.questionnaireFailure) {
+        return route.fulfill({ status: options.questionnaireFailure ? 500 : 403, json: { message: "paid only" } });
+      }
+      const fields = [
+        ["planName", "課程名稱", true],
+        ["instructor", "講師姓名與背景", true],
+        ["audience", "目標受眾", true],
+        ["painPoints", "核心痛點", true],
+        ["modules", "商品包含什麼", true],
+        ["pricing", "定價策略", true],
+        ["bonuses", "贈品總覽", true],
+        ["instructorAuthority", "可核對的專業依據", false],
+      ].map(([id, label, required]) => ({
+        id,
+        label,
+        required,
+        help: `伺服器回傳的 ${label}`,
+        example: `伺服器回傳的 ${label} 示例`,
+        multiline: true,
+      }));
+      return route.fulfill({
+        json: {
+          fields,
+          groups: [
+            {
+              id: "server-private",
+              title: "購買後專屬問卷",
+              description: "只在付款確認後回傳。",
+              fields,
+            },
+          ],
+          requiredIds: fields.filter((field) => field.required).map((field) => field.id),
+        },
+      });
+    }
     if (path === `/api/webinars/${webinarId}/sales-script/draft`) {
       if (request.method() === "PUT") {
+        draftPutCount += 1;
         const body = (await request.postDataJSON()) as {
           answers?: Record<string, string>;
         };
         draftBodies.push(body);
-        if (options.draftSaveFailure) {
+        if (
+          options.draftSaveFailure ||
+          (options.draftSaveFailureOnce && draftPutCount === 1)
+          || (
+            options.draftSaveFailureAfterPurchaseOnce &&
+            Object.keys(body.answers || {}).length > 5 &&
+            !draftBodies.slice(0, -1).some((entry) =>
+              Object.keys((entry as { answers?: Record<string, string> }).answers || {}).length > 5,
+            )
+          )
+        ) {
           return route.fulfill({
             status: 500,
             json: { message: "draft save failed in local fixture" },
@@ -143,10 +214,53 @@ async function mockSalesScript(
       }
       return route.fulfill({ status: 204 });
     }
+    if (path === `/api/webinars/${webinarId}/sales-script/purchase`) {
+      purchasePostCount += 1;
+      const body = await request.postDataJSON();
+      purchaseBodies.push(body);
+      if ((options.points ?? 7200) < 3600) {
+        return route.fulfill({ status: 402, json: { message: "AI 點數不足" } });
+      }
+      const purchaseFirstTimeout =
+        options.purchaseTimeout &&
+        (!options.purchaseNeverReached || purchasePostCount === 1);
+      if (purchaseFirstTimeout) {
+        if (!options.purchaseNeverReached) purchased = true;
+        await new Promise((resolve) => setTimeout(resolve, 11_000));
+        try {
+          return route.fulfill({
+            json: {
+              purchase: { id: "sales-purchase-1", status: "paid" },
+              hasPurchasedAccess: true,
+              canGenerate: true,
+            },
+          });
+        } catch {
+          return;
+        }
+      }
+      if (options.initialCompleted) repurchased = true;
+      purchased = true;
+      return route.fulfill({
+        json: {
+          purchase: { id: "sales-purchase-1", status: "paid" },
+          hasPurchasedAccess: true,
+          canGenerate: true,
+        },
+      });
+    }
     if (path === `/api/webinars/${webinarId}/sales-script/jobs`) {
       jobPostCount += 1;
       jobBodies.push(await request.postDataJSON());
       idempotencyKeys.push(request.headers()["idempotency-key"] || "");
+      if (options.jobNeverReached && jobPostCount === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 11_000));
+        try {
+          return route.fulfill({ json: { id: "sales-job-1", status: "queued" } });
+        } catch {
+          return;
+        }
+      }
       generated = true;
       if (options.timeout) {
         await new Promise((resolve) => setTimeout(resolve, 11_000));
@@ -255,7 +369,9 @@ async function mockSalesScript(
 
   return {
     getJobPostCount: () => jobPostCount,
+    getPurchasePostCount: () => purchasePostCount,
     getIdempotencyKeys: () => [...idempotencyKeys],
+    getPurchaseBodies: () => [...purchaseBodies],
     getDraftBodies: () => [...draftBodies],
     getJobBodies: () => [...jobBodies],
   };
@@ -278,8 +394,10 @@ async function fillAdditionalQuestions(page: Page, includeOptional = false) {
   await page.getByTestId("input-sales-script-instructor").fill(answers.instructor);
   await page.getByTestId("input-sales-script-bonuses").fill(answers.bonuses);
   if (includeOptional) {
-    const storyDetails = page.locator("details").filter({ hasText: "講師與公開資料" });
-    await storyDetails.locator("summary").click();
+    const storyDetails = page.locator("details").first();
+    if ((await storyDetails.getAttribute("open")) === null) {
+      await storyDetails.locator("summary").click();
+    }
     await page.getByTestId("input-sales-script-instructorAuthority").fill(optionalAnswer);
   }
 }
@@ -289,18 +407,25 @@ async function advanceToDetails(page: Page, includeOptional = false) {
   await page.getByTestId("button-sales-script-to-summary").click();
   await expect(page.getByTestId("sales-script-step-summary")).toBeVisible();
   await page.getByTestId("button-sales-script-buy-intent").click();
+  const feeModal = page.getByTestId("sales-script-fee-modal");
+  if ((await feeModal.count()) > 0) {
+    await feeModal.waitFor({ state: "visible", timeout: 2_000 }).catch(() => undefined);
+  }
+  if ((await feeModal.count()) > 0 && (await feeModal.isVisible().catch(() => false))) {
+    const confirmCheckbox = page.getByTestId("checkbox-confirm-sales-script-fee");
+    await confirmCheckbox.check();
+    await expect(confirmCheckbox).toBeChecked();
+    await page.getByTestId("button-confirm-sales-script-fee").click();
+  }
   await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
   await fillAdditionalQuestions(page, includeOptional);
 }
 
 async function confirmGeneration(page: Page) {
   await page.getByTestId("button-generate-sales-script").click();
-  await expect(page.getByTestId("sales-script-fee-modal")).toContainText("3,600 點");
-  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
-  await page.getByTestId("button-confirm-sales-script-fee").click();
 }
 
-test("value flow keeps unpaid intro private, reviews basics, and posts only after final fee confirmation", async ({
+test("value flow keeps unpaid intro private, buys before private questions, and posts one prepaid job", async ({
   page,
 }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
@@ -316,6 +441,7 @@ test("value flow keeps unpaid intro private, reviews basics, and posts only afte
 
   const unpaidPage = page.getByTestId("sales-script-generator");
   for (const text of unpaidOnlyText) await expect(unpaidPage).not.toContainText(text);
+  await expect(page.getByTestId("input-sales-script-instructor")).toHaveCount(0);
   expect(fixture.getJobPostCount()).toBe(0);
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -363,7 +489,26 @@ test("value flow keeps unpaid intro private, reviews basics, and posts only afte
   await expect(page.getByTestId("input-sales-script-modules")).toHaveValue(answers.modules);
   await page.getByTestId("button-sales-script-to-summary").click();
   await page.getByTestId("button-sales-script-buy-intent").click();
+  await expect(page.getByTestId("sales-script-fee-modal")).toContainText("3,600 AI 點數");
+  expect(fixture.getPurchasePostCount()).toBe(0);
+  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
+  await page.getByTestId("button-confirm-sales-script-fee").click();
   await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  await page.getByTestId("sales-script-step-details").screenshot({
+    path: "/tmp/sales-paid-gate.png",
+  });
+  await expect(page.getByTestId("input-sales-script-instructor")).toBeVisible();
+  expect(fixture.getPurchasePostCount()).toBe(1);
+  expect(fixture.getPurchaseBodies()[0]).toMatchObject({
+    ackCost: 3600,
+    answers: {
+      planName: answers.planName,
+      audience: answers.audience,
+      painPoints: answers.painPoints,
+      modules: answers.modules,
+      pricing: answers.pricing,
+    },
+  });
   await fillAdditionalQuestions(page, true);
   for (const text of unpaidOnlyText) await expect(unpaidPage).not.toContainText(text);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -374,10 +519,6 @@ test("value flow keeps unpaid intro private, reviews basics, and posts only afte
 
   await expect(page.getByTestId("button-generate-sales-script")).toBeEnabled();
   await page.getByTestId("button-generate-sales-script").click();
-  await expect(page.getByTestId("sales-script-fee-modal")).toContainText("3,600 點");
-  expect(fixture.getJobPostCount()).toBe(0);
-  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
-  await page.getByTestId("button-confirm-sales-script-fee").click();
   await expect.poll(() => fixture.getJobPostCount()).toBe(1);
   const jobBody = fixture.getJobBodies()[0] as {
     ackCost?: number;
@@ -385,13 +526,14 @@ test("value flow keeps unpaid intro private, reviews basics, and posts only afte
     answers?: Record<string, string>;
   };
   expect(jobBody).toMatchObject({
-    ackCost: 3600,
+    purchaseId: "sales-purchase-1",
     answers: expect.objectContaining({
       ...answers,
       instructorAuthority: optionalAnswer,
     }),
   });
   expect(jobBody.idempotencyKey).toMatch(/^[A-Za-z0-9._:-]{16,}$/);
+  expect(fixture.getPurchasePostCount()).toBe(1);
   await expect(page.getByTestId("sales-script-running")).toBeVisible();
   await expect(page.getByTestId("sales-script-output")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("text-sales-script-output")).toContainText("真實資料輸出");
@@ -469,9 +611,14 @@ test("sales script generator explains insufficient points and failure refund", a
   await page.goto(`/admin/webinar/${webinarId}`);
   await dismissCookieConsent(page);
   await page.getByTestId("tab-sales-script").click();
-  await advanceToDetails(page);
-  await expect(page.getByText("點數不足", { exact: false })).toBeVisible();
-  await expect(page.getByTestId("button-generate-sales-script")).toBeDisabled();
+  await fillBasicQuestions(page);
+  await page.getByTestId("button-sales-script-to-summary").click();
+  await page.getByTestId("button-sales-script-buy-intent").click();
+  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
+  await page.getByTestId("button-confirm-sales-script-fee").click();
+  await expect(page.getByText("購買失敗", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("sales-script-step-details")).toHaveCount(0);
+  expect(insufficientFixture.getPurchasePostCount()).toBe(1);
   expect(insufficientFixture.getJobPostCount()).toBe(0);
 
   await page.unroute("**/api/**");
@@ -486,7 +633,9 @@ test("sales script generator explains insufficient points and failure refund", a
     timeout: 10_000,
   });
   await expect(page.getByTestId("sales-script-output")).toHaveCount(0);
+  await expect(page.getByTestId("sales-script-step-details")).toHaveCount(0);
   expect(failureFixture.getJobPostCount()).toBe(1);
+  expect(failureFixture.getPurchasePostCount()).toBe(1);
 });
 
 test("unknown job POST timeout keeps its idempotency key and never double-charges", async ({ page }) => {
@@ -502,13 +651,113 @@ test("unknown job POST timeout keeps its idempotency key and never double-charge
   expect(idempotencyKey).toMatch(/^[A-Za-z0-9._:-]{16,}$/);
   expect(fixture.getJobBodies()[0]).toMatchObject({
     idempotencyKey,
-    ackCost: 3600,
+    purchaseId: "sales-purchase-1",
   });
   await expect(page.getByTestId("sales-script-timeout")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("sales-script-timeout")).toContainText(idempotencyKey);
   await expect(page.getByTestId("sales-script-output")).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(1_000);
   expect(fixture.getJobPostCount()).toBe(1);
+});
+
+test("unknown purchase POST timeout reconciles paid access without a second purchase", async ({ page }) => {
+  test.setTimeout(40_000);
+  const fixture = await mockSalesScript(page, { purchaseTimeout: true });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await fillBasicQuestions(page);
+  await page.getByTestId("button-sales-script-to-summary").click();
+  await page.getByTestId("button-sales-script-buy-intent").click();
+  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
+  await page.getByTestId("button-confirm-sales-script-fee").click();
+  await expect.poll(() => fixture.getPurchasePostCount()).toBe(1);
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible({ timeout: 15_000 });
+  await page.reload();
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  expect(fixture.getPurchasePostCount()).toBe(1);
+});
+
+test("never-reached purchase can be retried with the exact same key and body", async ({ page }) => {
+  test.setTimeout(40_000);
+  const fixture = await mockSalesScript(page, {
+    purchaseTimeout: true,
+    purchaseNeverReached: true,
+  });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await fillBasicQuestions(page);
+  await page.getByTestId("button-sales-script-to-summary").click();
+  await page.getByTestId("button-sales-script-buy-intent").click();
+  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
+  await page.getByTestId("button-confirm-sales-script-fee").click();
+  await expect(page.getByTestId("button-retry-sales-script-purchase")).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.getByTestId("button-retry-sales-script-purchase").click();
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  await expect.poll(() => fixture.getPurchasePostCount()).toBe(2);
+  expect(fixture.getPurchaseBodies()[1]).toEqual(fixture.getPurchaseBodies()[0]);
+});
+
+test("never-reached generation can be retried with the exact same key and body", async ({ page }) => {
+  test.setTimeout(40_000);
+  const fixture = await mockSalesScript(page, { jobNeverReached: true });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await advanceToDetails(page);
+  await confirmGeneration(page);
+  await expect(page.getByTestId("button-retry-sales-script-generation")).toBeVisible({
+    timeout: 15_000,
+  });
+  const firstBody = fixture.getJobBodies()[0];
+  await page.getByTestId("button-retry-sales-script-generation").click();
+  await expect.poll(() => fixture.getJobPostCount()).toBe(2);
+  expect(fixture.getJobBodies()[1]).toEqual(firstBody);
+  expect(fixture.getPurchasePostCount()).toBe(1);
+});
+
+test("final draft save failure does not reserve a job and retry uses the same purchase", async ({ page }) => {
+  const fixture = await mockSalesScript(page, {
+    draftSaveFailureAfterPurchaseOnce: true,
+  });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await advanceToDetails(page);
+  await fillAdditionalQuestions(page);
+  await page.getByTestId("button-generate-sales-script").click();
+  await expect(page.getByText("草稿儲存失敗", { exact: true })).toBeVisible();
+  expect(fixture.getJobPostCount()).toBe(0);
+  expect(fixture.getPurchasePostCount()).toBe(1);
+  await page.getByTestId("button-generate-sales-script").click();
+  await expect.poll(() => fixture.getJobPostCount()).toBe(1);
+  expect(fixture.getPurchasePostCount()).toBe(1);
+});
+
+test("completed paid history can start a new 3600-point purchase", async ({ page }) => {
+  const fixture = await mockSalesScript(page, {
+    initiallyPurchased: true,
+    initialCompleted: true,
+  });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  const toSummary = page.getByTestId("button-sales-script-to-summary");
+  if ((await toSummary.count()) > 0 && (await toSummary.isVisible())) {
+    await toSummary.click();
+  }
+  await expect(page.getByTestId("sales-script-step-summary")).toBeVisible();
+  await expect(page.getByTestId("button-sales-script-buy-intent")).toContainText("再次購買");
+  await page.getByTestId("button-sales-script-buy-intent").click();
+  await page.getByTestId("checkbox-confirm-sales-script-fee").click();
+  await page.getByTestId("button-confirm-sales-script-fee").click();
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  expect(fixture.getPurchasePostCount()).toBe(1);
 });
 
 test("reload resumes a new running job while an older completed history stays viewable", async ({
@@ -523,4 +772,43 @@ test("reload resumes a new running job while an older completed history stays vi
   await page.getByTestId("button-view-sales-script-sales-job-old").click();
   await expect(page.getByTestId("text-sales-script-output")).toContainText("舊版本");
   await expect(page.getByTestId("sales-script-running")).toBeVisible();
+});
+
+test("paid access restores with zero balance and submits one job without another purchase", async ({
+  page,
+}) => {
+  const fixture = await mockSalesScript(page, {
+    points: 0,
+    initiallyPurchased: true,
+  });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  await expect(page.getByTestId("input-sales-script-instructor")).toBeVisible();
+  await page.getByTestId("input-sales-script-instructor").fill(answers.instructor);
+  await page.getByTestId("input-sales-script-bonuses").fill(answers.bonuses);
+  await expect(page.getByTestId("button-generate-sales-script")).toBeEnabled();
+  await confirmGeneration(page);
+  await expect.poll(() => fixture.getJobPostCount()).toBe(1);
+  expect(fixture.getPurchasePostCount()).toBe(0);
+  expect(fixture.getJobBodies()[0]).toMatchObject({
+    purchaseId: "sales-purchase-1",
+  });
+});
+
+test("questionnaire metadata failure keeps private fields and generation locked", async ({ page }) => {
+  const fixture = await mockSalesScript(page, {
+    questionnaireFailure: true,
+    initiallyPurchased: true,
+  });
+  await page.goto(`/admin/webinar/${webinarId}`);
+  await dismissCookieConsent(page);
+  await page.getByTestId("tab-sales-script").click();
+  await expect(page.getByTestId("sales-script-step-details")).toBeVisible();
+  await expect(page.getByTestId("input-sales-script-instructor")).toHaveCount(0);
+  await expect(page.getByTestId("button-retry-sales-script-questionnaire")).toBeVisible();
+  await expect(page.getByTestId("button-generate-sales-script")).toBeDisabled();
+  expect(fixture.getPurchasePostCount()).toBe(0);
+  expect(fixture.getJobPostCount()).toBe(0);
 });

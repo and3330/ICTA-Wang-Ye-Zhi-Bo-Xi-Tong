@@ -13,8 +13,8 @@ The sales-script add-on requires real AI credit lots even for enterprise/admin a
 **How to apply:** Keep add-on admission separate from ordinary unlimited/trial AI paths. Reveal the finished script only after its output and credit consumption commit together; partial checkpoints must not become free content after a refund.
 
 The unpaid sales-script experience should explain deliverables and collect ordinary business facts, not teach or preview the proprietary framework.
-**Why:** The user wants members to purchase the service rather than reconstruct the method from the free interface. A purchase-intent click is not authorization to charge before the final generation confirmation.
-**How to apply:** Keep order previews non-generative, do not expose method names or reusable instructional samples before payment, and preserve explicit final fee confirmation during UI redesigns.
+**Why:** The user considers the supplemental questionnaire itself confidential, not just the generated script. They explicitly require payment at the content-summary step before those questions become accessible.
+**How to apply:** Keep basic order previews non-generative. After explicit purchase confirmation, debit once and unlock the server-protected questionnaire; starting that purchased generation must not charge again. Do not bundle confidential question definitions into the unpaid client.
 
 ## Rule: reserve points BEFORE calling the LLM, refund on failure
 Deduct 1 point atomically first; only then call Anthropic. If the LLM call fails, add the point back.

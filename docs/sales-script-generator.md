@@ -2,23 +2,42 @@
 
 Private owner APIs (all require the existing webinar-owner middleware):
 
-- `GET /api/webinars/:id/sales-script` returns the owner's saved questionnaire,
-  immutable job history, and the real credit-lot balance.
-- `PUT /api/webinars/:id/sales-script/draft` saves `{ answers }`.
+- `GET /api/webinars/:id/sales-script` returns balance, job history, public
+  five-field draft data before payment, and
+  `purchase: { id, status, jobId? } | null`, `hasPurchasedAccess`, and
+  `canGenerate`. It never includes confidential question definitions.
+- `PUT /api/webinars/:id/sales-script/draft` saves `{ answers }`. Before
+  purchase it accepts only the five public fields and merges them into the
+  stored draft, so pre-existing confidential data is not overwritten.
+- `POST /api/webinars/:id/sales-script/purchase` requires
+  `{ answers: <five basic fields>, ackCost: 3600, idempotencyKey }` and returns
+  `202` with the purchase/access DTO. It atomically reserves 3600 points; it
+  does not create a job or call AI.
+- `GET /api/webinars/:id/sales-script/questionnaire` returns `{ groups }` only
+  with a valid paid entitlement, otherwise `402`. This is the sole full
+  questionnaire-definition endpoint.
 - `POST /api/webinars/:id/sales-script/jobs` requires
-  `{ answers, ackCost: 3600, idempotencyKey }` and returns `202`.
+  `{ purchaseId, answers: <full answers>, idempotencyKey }` and returns `202`.
+  It transfers the existing purchase reservation and never performs a second
+  debit or balance check.
 - `GET /api/webinars/:id/sales-script/jobs/:jobId` returns a result only after
   it has completed and the 3600-point reservation is consumed.
 
-Questionnaire fields are exported from `shared/salesScriptQuestionnaire.ts`;
-required IDs are `planName`, `instructor`, `audience`, `painPoints`, `modules`,
-`pricing`, and `bonuses` (`無贈品` is a valid truthful answer). The server accepts additional string
-answers for supplied proof, guarantees, scarcity, and stories.
+`shared/salesScriptQuestionnaire.ts` is browser-safe and contains only the
+five basic ids/types (`planName`, `audience`, `painPoints`, `modules`,
+`pricing`). Full optional/required labels, help, examples and groups
+are server-only in `server/salesScriptQuestionnairePrivate.ts`. Full required
+ids are `planName`, `instructor`, `audience`, `painPoints`, `modules`,
+`pricing`, and `bonuses` (`無贈品` is valid).
 
-Every job is charged exactly 3600 points from normal AI credit lots, including
-enterprise and administrator accounts. This API never reserves no-card trial
-calls. Admission atomically reserves lots and creates the job. Worker
-checkpoints are server-only, recover under a lease after restart, and are never
-returned before the final output/artifact/reservation consumption transaction.
-Provider timeout, malformed/incomplete output, and bounded job timeout fail the
-job and refund the same reservation exactly once.
+Every purchase is charged exactly 3600 points from normal AI credit lots,
+including enterprise and administrator accounts. It never reserves no-card
+trial calls. A `ready` or `generating` purchase reservation is explicitly
+excluded from the generic 15-minute stale reservation sweep, so a customer can
+take longer than fifteen minutes to complete the confidential questionnaire.
+Only job creation starts the 45-minute worker deadline. A job consumes that
+same reservation on completion. Failure refunds it exactly once and marks the
+purchase `refunded`, revoking access unless an older completed paid job grants
+historical access. Completed paid jobs retain question/download access forever,
+but do not grant a free regeneration: another generation needs another
+purchase.

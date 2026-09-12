@@ -32,13 +32,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import {
-  createEmptySalesScriptQuestionnaire,
-  missingSalesScriptQuestionIds,
-  salesScriptQuestionnaireFields,
-  SALES_SCRIPT_QUESTIONNAIRE_GROUPS,
-  type SalesScriptQuestionnaireAnswers,
-} from "@shared/salesScriptQuestionnaire";
 
 const GENERATION_FEE_POINTS = 3600;
 const BASIC_QUESTION_IDS = ["planName", "audience", "painPoints", "modules", "pricing"] as const;
@@ -52,10 +45,33 @@ const JOBS_ENDPOINT = (webinarId: string) =>
 const JOB_ENDPOINT = (webinarId: string, jobId: string) =>
   `${JOBS_ENDPOINT(webinarId)}/${encodeURIComponent(jobId)}`;
 
-type DraftPayload = {
-  answers?: SalesScriptQuestionnaireAnswers;
-  questionnaire?: SalesScriptQuestionnaireAnswers;
-  data?: SalesScriptQuestionnaireAnswers;
+type SalesScriptAnswers = Record<string, string>;
+type QuestionnaireField = {
+  id: string;
+  label: string;
+  required?: boolean;
+  help?: string;
+  example?: string;
+  placeholder?: string;
+  multiline?: boolean;
+};
+type QuestionnaireGroup = {
+  id: string;
+  title: string;
+  description?: string;
+  fields: QuestionnaireField[];
+};
+type SalesScriptQuestionnaire = {
+  fields: QuestionnaireField[];
+  groups: QuestionnaireGroup[];
+  requiredIds: string[];
+};
+type Purchase = {
+  id?: string;
+  purchaseId?: string;
+  status?: string;
+  jobId?: string | null;
+  idempotencyKey?: string;
 };
 type Generation = {
   id?: string;
@@ -99,12 +115,22 @@ type Generation = {
 type SalesScriptState = {
   availablePoints?: number;
   requiredPoints?: number;
-  draft?: { answers?: SalesScriptQuestionnaireAnswers; updatedAt?: string } | null;
+  hasPurchasedAccess?: boolean;
+  purchasedAccess?: boolean;
+  canGenerate?: boolean;
+  purchaseId?: string | null;
+  purchase?: Purchase | null;
+  activePurchase?: Purchase | null;
+  draft?: { answers?: SalesScriptAnswers; updatedAt?: string } | null;
   jobs?: Generation[];
 };
 type PendingSalesScriptRequest = {
   idempotencyKey: string;
-  answers: SalesScriptQuestionnaireAnswers;
+  answers: SalesScriptAnswers;
+};
+type PendingPurchaseRequest = {
+  idempotencyKey: string;
+  answers: SalesScriptAnswers;
 };
 
 class SalesScriptTimeoutError extends Error {
@@ -117,12 +143,14 @@ class SalesScriptTimeoutError extends Error {
   }
 }
 
-function extractAnswers(payload: DraftPayload | SalesScriptQuestionnaireAnswers | null | undefined) {
-  if (!payload || typeof payload !== "object") return {};
-  if ("answers" in payload && payload.answers) return payload.answers;
-  if ("questionnaire" in payload && payload.questionnaire) return payload.questionnaire;
-  if ("data" in payload && payload.data) return payload.data;
-  return payload as SalesScriptQuestionnaireAnswers;
+class SalesScriptPurchaseTimeoutError extends Error {
+  idempotencyKey: string;
+
+  constructor(idempotencyKey: string) {
+    super("購買要求逾時；伺服器可能仍在處理，請先檢查購買狀態。");
+    this.name = "SalesScriptPurchaseTimeoutError";
+    this.idempotencyKey = idempotencyKey;
+  }
 }
 
 function generationId(item: Generation | null | undefined) {
@@ -220,8 +248,40 @@ async function requestWithTimeout(
   }
 }
 
+async function requestPurchaseWithTimeout(
+  url: string,
+  body: unknown,
+  idempotencyKey: string,
+  timeoutMs = 10_000,
+) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await requestJson(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") {
+      throw new SalesScriptPurchaseTimeoutError(idempotencyKey);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function pendingStorageKey(webinarId: string) {
   return `sales-script-pending-request:${webinarId}`;
+}
+
+function pendingPurchaseStorageKey(webinarId: string) {
+  return `sales-script-pending-purchase:${webinarId}`;
 }
 
 function readPendingRequest(webinarId: string): PendingSalesScriptRequest | null {
@@ -235,7 +295,25 @@ function readPendingRequest(webinarId: string): PendingSalesScriptRequest | null
     }
     return {
       idempotencyKey: parsed.idempotencyKey,
-      answers: parsed.answers as SalesScriptQuestionnaireAnswers,
+      answers: parsed.answers as SalesScriptAnswers,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readPendingPurchase(webinarId: string): PendingPurchaseRequest | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(pendingPurchaseStorageKey(webinarId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingPurchaseRequest>;
+    if (!parsed.idempotencyKey || !parsed.answers || typeof parsed.answers !== "object") {
+      return null;
+    }
+    return {
+      idempotencyKey: parsed.idempotencyKey,
+      answers: parsed.answers as SalesScriptAnswers,
     };
   } catch {
     return null;
@@ -245,8 +323,113 @@ function readPendingRequest(webinarId: string): PendingSalesScriptRequest | null
 const handoffPrompt =
   "請把以下銷講逐字稿整理成 PPT：逐頁給出投影片標題、重點、講者備註與互動提示；只使用稿件中的真實資料，不新增見證、數字、折扣或保證。";
 
-function fieldFor(id: string) {
-  return salesScriptQuestionnaireFields.find((field) => field.id === id);
+const basicQuestionnaireFields: QuestionnaireField[] = [
+  {
+    id: "planName",
+    label: "課程／方案正式名稱",
+    required: true,
+    help: "請填正式名稱；副標可另填。",
+    example: "請輸入你的方案名稱",
+  },
+  {
+    id: "audience",
+    label: "目標受眾",
+    required: true,
+    help: "誰最適合參加，以及目前處於哪個階段。",
+    example: "請描述最適合的參加者",
+    multiline: true,
+  },
+  {
+    id: "painPoints",
+    label: "核心痛點",
+    required: true,
+    help: "填觀眾真實困難與代價，不要替觀眾捏造經歷。",
+    example: "請描述觀眾真實遇到的困難",
+    multiline: true,
+  },
+  {
+    id: "modules",
+    label: "商品包含什麼",
+    required: true,
+    help: "列出包含的單元、服務或交付內容。",
+    example: "請列出課程單元或實際交付內容",
+    multiline: true,
+  },
+  {
+    id: "pricing",
+    label: "定價策略（原價／優惠價／分期／限制）",
+    required: true,
+    help: "可先填摘要；細節購買後可補充。",
+    example: "請填實際價格、付款方式與限制",
+    multiline: true,
+  },
+];
+
+function fieldFor(id: string, questionnaire?: SalesScriptQuestionnaire | null) {
+  return (
+    questionnaire?.fields.find((field) => field.id === id) ||
+    basicQuestionnaireFields.find((field) => field.id === id)
+  );
+}
+
+function basicAnswers(answers: SalesScriptAnswers): SalesScriptAnswers {
+  return Object.fromEntries(
+    BASIC_QUESTION_IDS.map((id) => [id, String(answers[id] || "")]),
+  );
+}
+
+function questionnaireFromPayload(payload: unknown): SalesScriptQuestionnaire | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as {
+    fields?: unknown;
+    groups?: unknown;
+    requiredIds?: unknown;
+    requiredQuestionIds?: unknown;
+    data?: unknown;
+  };
+  const source =
+    record.data && typeof record.data === "object"
+      ? (record.data as typeof record)
+      : record;
+  if (!Array.isArray(source.groups)) return null;
+  const rawFields = Array.isArray(source.fields)
+    ? source.fields
+    : source.groups.flatMap((group) =>
+        group && typeof group === "object" && Array.isArray((group as QuestionnaireGroup).fields)
+          ? (group as QuestionnaireGroup).fields
+          : [],
+      );
+  const fields = rawFields.filter(
+    (field): field is QuestionnaireField =>
+      !!field &&
+      typeof field === "object" &&
+      typeof (field as QuestionnaireField).id === "string" &&
+      typeof (field as QuestionnaireField).label === "string",
+  );
+  const groups = source.groups
+    .filter(
+      (group): group is QuestionnaireGroup =>
+        !!group &&
+        typeof group === "object" &&
+        typeof (group as QuestionnaireGroup).id === "string" &&
+        typeof (group as QuestionnaireGroup).title === "string" &&
+        Array.isArray((group as QuestionnaireGroup).fields),
+    )
+    .map((group) => ({
+      ...group,
+      fields: group.fields.filter((field) =>
+        fields.some((validField) => validField.id === field.id),
+      ),
+    }))
+    .filter((group) => group.fields.length > 0);
+  if (!fields.length || !groups.length) return null;
+  const requiredSource = Array.isArray(source.requiredIds)
+    ? source.requiredIds
+    : source.requiredQuestionIds;
+  const requiredIds = Array.isArray(requiredSource)
+    ? requiredSource.filter((id): id is string => typeof id === "string")
+    : fields.filter((field) => field.required).map((field) => field.id);
+  return { fields, groups, requiredIds };
 }
 
 export interface SalesScriptGeneratorProps {
@@ -258,15 +441,14 @@ export interface SalesScriptGeneratorProps {
 export function SalesScriptGenerator({
   webinarId,
   webinarTitle,
-  webinarDescription,
 }: SalesScriptGeneratorProps) {
   const { toast } = useToast();
-  const [answers, setAnswers] = useState<SalesScriptQuestionnaireAnswers>(
-    createEmptySalesScriptQuestionnaire,
+  const [answers, setAnswers] = useState<SalesScriptAnswers>(() =>
+    basicAnswers({}),
   );
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
-  const [confirmCharge, setConfirmCharge] = useState(false);
+  const [isPurchaseConfirmOpen, setIsPurchaseConfirmOpen] = useState(false);
+  const [confirmPurchase, setConfirmPurchase] = useState(false);
   const [activeJobId, setActiveJobId] = useState("");
   const [viewedOutputId, setViewedOutputId] = useState("");
   const [timedOutKey, setTimedOutKey] = useState(
@@ -275,19 +457,41 @@ export function SalesScriptGenerator({
   const [pendingRequest, setPendingRequest] = useState<PendingSalesScriptRequest | null>(
     () => readPendingRequest(webinarId),
   );
+  const [pendingPurchase, setPendingPurchase] = useState<PendingPurchaseRequest | null>(
+    () => readPendingPurchase(webinarId),
+  );
   const [lastCompleted, setLastCompleted] = useState<Generation | null>(null);
   const [isEditingOutput, setIsEditingOutput] = useState(false);
   const [editableOutput, setEditableOutput] = useState("");
-  const hydratedFor = useRef("");
+  const observedPurchasedAccess = useRef(false);
 
   const stateQuery = useQuery<SalesScriptState>({
     queryKey: [STATE_ENDPOINT(webinarId)],
     enabled: !!webinarId,
     staleTime: 0,
+    refetchInterval: pendingPurchase ? 2000 : false,
   });
-  const trialQuery = useQuery<{ state?: string; remainingAI?: number }>({
-    queryKey: ["/api/trial"],
+  const hasPurchasedAccess =
+    stateQuery.data?.hasPurchasedAccess === true ||
+    stateQuery.data?.purchasedAccess === true;
+  const statePurchaseId =
+    stateQuery.data?.purchaseId ||
+    stateQuery.data?.purchase?.id ||
+    stateQuery.data?.purchase?.purchaseId ||
+    stateQuery.data?.activePurchase?.id ||
+    stateQuery.data?.activePurchase?.purchaseId ||
+    "";
+  const questionnaireQuery = useQuery<SalesScriptQuestionnaire>({
+    queryKey: [`${STATE_ENDPOINT(webinarId)}/questionnaire`],
+    enabled: stateQuery.isSuccess && hasPurchasedAccess,
     staleTime: 0,
+    queryFn: async () => {
+      const metadata = questionnaireFromPayload(
+        await requestJson(`${STATE_ENDPOINT(webinarId)}/questionnaire`),
+      );
+      if (!metadata) throw new Error("問卷格式不完整，請重新嘗試。");
+      return metadata;
+    },
   });
 
   const history = useMemo(
@@ -328,15 +532,29 @@ export function SalesScriptGenerator({
   const basicMissing = BASIC_QUESTION_IDS.filter(
     (id) => !String(answers[id] || "").trim(),
   );
-  const missingRequired = missingSalesScriptQuestionIds(answers);
-  // availablePoints is the feature's authoritative balance. In particular,
-  // an unlimited flag from another AI product must never make this charge free.
+  const questionnaire = questionnaireQuery.data;
+  const missingRequired = questionnaire?.requiredIds.filter(
+    (id) => !String(answers[id] || "").trim(),
+  ) || [];
+  const hasActiveGeneration = Boolean(
+    isRunning(activeGeneration) || history.some(isRunning),
+  );
+  const hasUnusedPurchaseAccess = Boolean(
+    hasPurchasedAccess &&
+      stateQuery.data?.canGenerate === true &&
+      statePurchaseId &&
+      !hasActiveGeneration,
+  );
+  const questionnaireReady =
+    questionnaireQuery.isSuccess &&
+    Boolean(questionnaire?.fields.length && questionnaire?.groups.length);
   const points = Number(stateQuery.data?.availablePoints ?? 0);
-  const canAfford = points >= GENERATION_FEE_POINTS;
   const canGenerate =
+    hasUnusedPurchaseAccess &&
+    questionnaireReady &&
     missingRequired.length === 0 &&
-    canAfford &&
     !isRunning(activeGeneration) &&
+    !activeJobId &&
     !pendingRequest;
   const status = generationStatus(effectiveGeneration);
   const statusProgress = Math.max(
@@ -368,36 +586,88 @@ export function SalesScriptGenerator({
     }
   };
 
+  const rememberPendingPurchase = (request: PendingPurchaseRequest | null) => {
+    setPendingPurchase(request);
+    if (typeof window === "undefined") return;
+    try {
+      if (request) {
+        window.localStorage.setItem(
+          pendingPurchaseStorageKey(webinarId),
+          JSON.stringify(request),
+        );
+      } else {
+        window.localStorage.removeItem(pendingPurchaseStorageKey(webinarId));
+      }
+    } catch {
+      // A storage policy can reject localStorage; the mounted state still
+      // prevents a second purchase request.
+    }
+  };
+
   useEffect(() => {
     const restored = readPendingRequest(webinarId);
     setPendingRequest(restored);
     setTimedOutKey(restored?.idempotencyKey || "");
-    hydratedFor.current = "";
+    setPendingPurchase(readPendingPurchase(webinarId));
+    observedPurchasedAccess.current = false;
   }, [webinarId]);
 
   useEffect(() => {
-    if (!stateQuery.isFetched || hydratedFor.current === webinarId) return;
-    hydratedFor.current = webinarId;
+    if (!stateQuery.isSuccess) return;
     const saved = stateQuery.data?.draft?.answers || {};
     setAnswers((current) => {
-      const merged = { ...current, ...saved, ...(pendingRequest?.answers || {}) };
+      const merged = { ...current };
+      const pendingAnswers = pendingRequest?.answers || {};
+      // A timed-out generation body is immutable and must be restored exactly.
+      Object.assign(merged, pendingAnswers);
+      for (const [id, value] of Object.entries(saved)) {
+        // Never overwrite text entered in the current form. After purchase
+        // this also hydrates server-saved private fields on the second state
+        // response without disturbing typed basic answers.
+        if (!String(merged[id] || "").trim() && String(value || "").trim()) {
+          merged[id] = value;
+        }
+      }
       // These values come from the already-saved webinar, never from an
       // example. Existing non-empty draft answers always win.
       if (!String(merged.planName || "").trim() && webinarTitle?.trim()) {
         merged.planName = webinarTitle.trim();
       }
-      if (!String(merged.outcome || "").trim() && webinarDescription?.trim()) {
-        merged.outcome = webinarDescription.trim();
-      }
       return merged;
     });
   }, [
+    hasPurchasedAccess,
     pendingRequest,
     stateQuery.data,
-    stateQuery.isFetched,
-    webinarDescription,
-    webinarId,
+    stateQuery.isSuccess,
     webinarTitle,
+  ]);
+
+  useEffect(() => {
+    if (!stateQuery.isSuccess) return;
+    if (hasUnusedPurchaseAccess || hasActiveGeneration) {
+      observedPurchasedAccess.current = true;
+      if (pendingPurchase) rememberPendingPurchase(null);
+      if (step === 1 || pendingPurchase) setStep(3);
+      return;
+    }
+    if (
+      (observedPurchasedAccess.current || hasPurchasedAccess) &&
+      step === 3 &&
+      !hasActiveGeneration
+    ) {
+      // A failed/refunded or already-consumed purchase is no longer an unlock.
+      // Completed history remains available below.
+      setStep(2);
+    }
+  }, [
+    activeGeneration,
+    hasActiveGeneration,
+    hasUnusedPurchaseAccess,
+    hasPurchasedAccess,
+    pendingPurchase,
+    stateQuery.isSuccess,
+    step,
   ]);
 
   useEffect(() => {
@@ -449,7 +719,7 @@ export function SalesScriptGenerator({
   }, [pendingRequest, statusQuery.data, webinarId]);
 
   const saveDraft = useMutation({
-    mutationFn: async (nextAnswers: SalesScriptQuestionnaireAnswers) => {
+    mutationFn: async (nextAnswers: SalesScriptAnswers) => {
       return apiRequest("PUT", DRAFT_ENDPOINT(webinarId), {
         answers: nextAnswers,
       });
@@ -472,15 +742,13 @@ export function SalesScriptGenerator({
       requestWithTimeout(
         JOBS_ENDPOINT(webinarId),
         {
+          purchaseId: statePurchaseId,
           answers: request.answers,
-          ackCost: GENERATION_FEE_POINTS,
           idempotencyKey: request.idempotencyKey,
         },
         request.idempotencyKey,
       ),
     onSuccess: (payload: Generation) => {
-      setIsConfirmOpen(false);
-      setConfirmCharge(false);
       setTimedOutKey("");
       rememberPending(null);
       const jobId = generationId(payload);
@@ -493,7 +761,9 @@ export function SalesScriptGenerator({
       });
     },
     onError: (error: Error, request: PendingSalesScriptRequest) => {
-      if (error instanceof SalesScriptTimeoutError) {
+      const unresolved =
+        error instanceof SalesScriptTimeoutError || error.name === "TypeError";
+      if (unresolved) {
         // Keep both values immutable until the server reports a matching
         // terminal job. A retry must never create a fresh charge.
         setAnswers(request.answers);
@@ -517,8 +787,81 @@ export function SalesScriptGenerator({
     },
   });
 
+  const purchase = useMutation({
+    mutationFn: async (request: PendingPurchaseRequest) =>
+      requestPurchaseWithTimeout(
+        `${STATE_ENDPOINT(webinarId)}/purchase`,
+        {
+          answers: basicAnswers(request.answers),
+          ackCost: GENERATION_FEE_POINTS,
+          idempotencyKey: request.idempotencyKey,
+        },
+        request.idempotencyKey,
+      ),
+    onSuccess: async (payload: {
+      purchase?: Purchase;
+      hasPurchasedAccess?: boolean;
+      canGenerate?: boolean;
+    }) => {
+      const refreshed = await stateQuery.refetch();
+      const accessConfirmed =
+        refreshed.data?.hasPurchasedAccess === true ||
+        refreshed.data?.purchasedAccess === true;
+      if (!accessConfirmed) {
+        toast({
+          title: "購買仍在確認中",
+          description: "已保留本次購買辨識碼，確認完成前不會再次扣點。",
+        });
+        return;
+      }
+      rememberPendingPurchase(null);
+      setIsPurchaseConfirmOpen(false);
+      setConfirmPurchase(false);
+      setStep(3);
+      queryClient.invalidateQueries({
+        queryKey: [`${STATE_ENDPOINT(webinarId)}/questionnaire`],
+      });
+      toast({
+        title: "已確認購買",
+        description: "專屬問卷已解鎖；填寫並儲存後即可使用這次生成。",
+      });
+    },
+    onError: (error: Error, request: PendingPurchaseRequest) => {
+      const unresolved =
+        error instanceof SalesScriptPurchaseTimeoutError ||
+        error.name === "TypeError";
+      if (unresolved) {
+        if (
+          stateQuery.data?.hasPurchasedAccess === true ||
+          stateQuery.data?.purchasedAccess === true
+        ) {
+          rememberPendingPurchase(null);
+        } else {
+          rememberPendingPurchase(request);
+        }
+        setIsPurchaseConfirmOpen(false);
+        setConfirmPurchase(false);
+        void stateQuery.refetch();
+        toast({
+          title: "購買要求逾時",
+          description: "已保留本次購買辨識碼，請先重新檢查狀態，不會再次扣點。",
+          variant: "destructive",
+        });
+        return;
+      }
+      rememberPendingPurchase(null);
+      setIsPurchaseConfirmOpen(false);
+      setConfirmPurchase(false);
+      toast({
+        title: "購買失敗",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const updateAnswer = (
-    id: keyof SalesScriptQuestionnaireAnswers,
+    id: string,
     value: string,
   ) => {
     setAnswers((current) => ({ ...current, [id]: value }));
@@ -526,7 +869,7 @@ export function SalesScriptGenerator({
 
   const transition = async (next: 1 | 2 | 3) => {
     try {
-      await saveDraft.mutateAsync(answers);
+      await saveDraft.mutateAsync(basicAnswers(answers));
       setStep(next);
     } catch {
       // The save mutation displays the error; do not advance on failure.
@@ -535,28 +878,69 @@ export function SalesScriptGenerator({
 
   const askGenerate = () => {
     if (!canGenerate) return;
-    setConfirmCharge(false);
-    setIsConfirmOpen(true);
+    setViewedOutputId("");
+    setLastCompleted(null);
+    const request: PendingSalesScriptRequest = {
+      idempotencyKey: createIdempotencyKey(),
+      answers: { ...answers },
+    };
+    void saveDraft
+      .mutateAsync(answers)
+      .then(() => {
+        // A draft failure means no job POST was attempted, so do not leave a
+        // phantom pending request that would block the next valid attempt.
+        rememberPending(request);
+        return generate.mutateAsync(request);
+      })
+      .catch(() => {
+        // Mutations already surface an actionable error and preserve the body.
+      });
   };
 
-  const confirmGenerate = async () => {
-    if (!confirmCharge || !canGenerate) return;
+  const askPurchase = async () => {
+    if (
+      hasUnusedPurchaseAccess ||
+      hasActiveGeneration ||
+      pendingPurchase ||
+      basicMissing.length
+    ) return;
     try {
-      await saveDraft.mutateAsync(answers);
-      setViewedOutputId("");
-      setLastCompleted(null);
-      const request: PendingSalesScriptRequest = {
-        idempotencyKey: createIdempotencyKey(),
-        answers: { ...answers },
-      };
-      // Persist before starting the POST as well as on timeout. If the page
-      // is closed while the response is in flight, a remount must still
-      // reconcile this exact request instead of creating another charge.
-      rememberPending(request);
-      await generate.mutateAsync(request);
+      await saveDraft.mutateAsync(basicAnswers(answers));
+      setConfirmPurchase(false);
+      setIsPurchaseConfirmOpen(true);
     } catch {
-      // Mutations already surface an actionable error and keep all answers.
+      // The save mutation displays the error; do not open payment confirmation.
     }
+  };
+
+  const confirmPurchaseRequest = async () => {
+    if (!confirmPurchase || pendingPurchase || basicMissing.length) return;
+    const request: PendingPurchaseRequest = {
+        idempotencyKey: createIdempotencyKey(),
+        answers: basicAnswers(answers),
+    };
+    // Persist before POST so reload/network timeout can reconcile this exact
+    // purchase rather than creating another debit.
+    rememberPendingPurchase(request);
+    try {
+      await purchase.mutateAsync(request);
+    } catch {
+      // The mutation displays a retryable error and keeps its immutable request.
+    }
+  };
+
+  const retryPendingPurchase = () => {
+    if (!pendingPurchase || purchase.isPending) return;
+    void purchase.mutateAsync(pendingPurchase).catch(() => {
+      // The mutation displays a retryable error.
+    });
+  };
+
+  const retryPendingGeneration = () => {
+    if (!pendingRequest || generate.isPending) return;
+    void generate.mutateAsync(pendingRequest).catch(() => {
+      // The mutation displays a retryable error.
+    });
   };
 
   const copyText = async (text: string, title = "已複製到剪貼簿") => {
@@ -598,15 +982,13 @@ export function SalesScriptGenerator({
     "伺服器生成失敗。";
   const genericGroups = useMemo(
     () =>
-      SALES_SCRIPT_QUESTIONNAIRE_GROUPS.map((group) => ({
-        ...group,
-        fields: group.fields.filter(
-          (field) =>
-            !BASIC_QUESTION_ID_SET.has(field.id) &&
-            !["instructor", "bonuses"].includes(field.id),
-        ),
-      })).filter((group) => group.fields.length > 0),
-    [],
+      (questionnaire?.groups || [])
+        .map((group) => ({
+          ...group,
+          fields: group.fields.filter((field) => !BASIC_QUESTION_ID_SET.has(field.id)),
+        }))
+        .filter((group) => group.fields.length > 0),
+    [questionnaire],
   );
 
   return (
@@ -625,7 +1007,7 @@ export function SalesScriptGenerator({
                 交付文字稿與簡報建議，非PPT檔；請自行審閱內容，不保證銷售成果。
               </CardDescription>
               <p className="mt-3 text-sm font-semibold text-[#0b8b86]">
-                每次製作3,600AI點數・填寫資料不扣點
+                確認購買即扣除3600AI點數，解鎖專屬問卷及一次生成
               </p>
             </div>
             <FileText className="h-9 w-9 text-[#0b8b86]" />
@@ -659,7 +1041,9 @@ export function SalesScriptGenerator({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => saveDraft.mutate(answers)}
+                onClick={() =>
+                  saveDraft.mutate(hasPurchasedAccess ? answers : basicAnswers(answers))
+                }
                 disabled={saveDraft.isPending}
                 data-testid="button-save-sales-script-draft"
               >
@@ -709,7 +1093,7 @@ export function SalesScriptGenerator({
                         toast({
                           title: "請完成五項基本資料",
                           description: basicMissing
-                            .map((id) => fieldFor(id)?.label)
+                            .map((id) => fieldFor(id)?.label || id)
                             .join("、"),
                           variant: "destructive",
                         });
@@ -758,10 +1142,11 @@ export function SalesScriptGenerator({
                 </div>
                 <div className="rounded-lg border border-[#123d59]/20 p-4">
                   <p className="font-semibold text-[#123d59]">
-                    要用3,600 AI點數製作這份專屬銷售演講稿嗎？
+                    確認購買專屬銷講稿
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    此步驟不收費。點擊後先補上講師與贈品等事實資料，再於最後確認是否送出。
+                    確認購買即扣除3600AI點數，解鎖專屬問卷及一次生成。基本資料會先儲存，
+                    後續填寫、儲存、重新載入及生成不會再次扣點。
                   </p>
                 </div>
                 <div className="flex flex-wrap justify-between gap-2">
@@ -775,48 +1160,112 @@ export function SalesScriptGenerator({
                   </Button>
                   <Button
                     type="button"
-                    onClick={() => void transition(3)}
+                    onClick={() => {
+                      if (hasUnusedPurchaseAccess || hasActiveGeneration) {
+                        setStep(3);
+                      } else {
+                        void askPurchase();
+                      }
+                    }}
+                    disabled={
+                      saveDraft.isPending ||
+                      purchase.isPending ||
+                      Boolean(pendingPurchase) ||
+                      hasActiveGeneration ||
+                      (!hasUnusedPurchaseAccess &&
+                        !hasActiveGeneration &&
+                        basicMissing.length > 0)
+                    }
                     data-testid="button-sales-script-buy-intent"
                   >
-                    我要製作專屬銷講稿
+                    {hasUnusedPurchaseAccess || hasActiveGeneration
+                      ? "繼續填寫已解鎖問卷"
+                      : pendingPurchase
+                        ? "購買確認中"
+                        : hasPurchasedAccess
+                          ? "再次購買並解鎖（3,600 點）"
+                          : "確認購買並解鎖（3,600 點）"}
                   </Button>
                 </div>
+                {pendingPurchase ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                    <p>
+                      購買要求仍在確認中，已保留辨識碼；不會建立新的購買或扣點。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      onClick={retryPendingPurchase}
+                      disabled={purchase.isPending}
+                      data-testid="button-retry-sales-script-purchase"
+                    >
+                      {purchase.isPending ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : null}
+                      使用原辨識碼重試
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
             {step === 3 ? (
               <div data-testid="sales-script-step-details" className="space-y-5">
-                <p className="text-sm text-muted-foreground">
-                  請補充真實事實資料。講師與贈品為生成前必填；其餘欄位依實際情況填寫，留白即可。
-                </p>
-                {["instructor", "bonuses"].map((id) => (
-                  <Question
-                    key={id}
-                    field={fieldFor(id)!}
-                    value={answers[id as keyof SalesScriptQuestionnaireAnswers] || ""}
-                    onChange={updateAnswer}
-                  />
-                ))}
-                {genericGroups.map((group) => (
-                  <details key={group.id} className="rounded-lg border p-4">
-                    <summary className="cursor-pointer font-semibold text-[#123d59]">
-                      {group.title}
-                      <span className="ml-2 text-xs font-normal text-muted-foreground">
-                        選填補充
-                      </span>
-                    </summary>
-                    <div className="mt-5 grid gap-5">
-                      {group.fields.map((field) => (
-                        <Question
-                          key={field.id}
-                          field={field}
-                          value={answers[field.id] || ""}
-                          onChange={updateAnswer}
-                        />
-                      ))}
-                    </div>
-                  </details>
-                ))}
+                {!hasPurchasedAccess ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+                    這次專屬問卷的使用權已結束，請返回內容確認重新購買後再填寫。
+                  </div>
+                ) : questionnaireQuery.isPending ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    正在載入已購買的專屬問卷…
+                  </div>
+                ) : questionnaireQuery.isError || !questionnaireReady ? (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+                    <p className="text-destructive">
+                      無法載入專屬問卷，未顯示進階欄位，也無法生成。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-3"
+                      onClick={() => void questionnaireQuery.refetch()}
+                      data-testid="button-retry-sales-script-questionnaire"
+                    >
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      重新載入問卷
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm text-muted-foreground">
+                      請補充真實事實資料。必填欄位以星號標示；填寫、儲存、重新載入及生成不會再次扣點。
+                    </p>
+                    {genericGroups.map((group) => (
+                      <details key={group.id} open className="rounded-lg border p-4">
+                        <summary className="cursor-pointer font-semibold text-[#123d59]">
+                          {group.title}
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">
+                            選填補充
+                          </span>
+                        </summary>
+                        <div className="mt-5 grid gap-5">
+                          {group.fields.map((field) => (
+                            <Question
+                              key={field.id}
+                              field={field}
+                              value={answers[field.id] || ""}
+                              onChange={updateAnswer}
+                            />
+                          ))}
+                        </div>
+                      </details>
+                    ))}
+                  </>
+                )}
                 <div className="flex flex-wrap justify-between gap-2">
                   <Button
                     type="button"
@@ -833,7 +1282,8 @@ export function SalesScriptGenerator({
                         toast({
                           title: "請完成生成所需資料",
                           description: missingRequired
-                            .map((id) => fieldFor(id)?.label)
+                            .map((id) => questionnaire?.fields.find((field) => field.id === id)?.label)
+                            .filter((label): label is string => Boolean(label))
                             .join("、"),
                           variant: "destructive",
                         });
@@ -853,14 +1303,15 @@ export function SalesScriptGenerator({
                     ) : (
                       <Sparkles className="mr-2 h-4 w-4" />
                     )}
-                    確認生成（3,600 點）
+                    生成專屬銷講稿
                   </Button>
                 </div>
                 {missingRequired.length > 0 ? (
                   <p className="text-xs text-muted-foreground">
                     尚缺必填：
                     {missingRequired
-                      .map((id) => fieldFor(id)?.label || id)
+                      .map((id) => questionnaire?.fields.find((field) => field.id === id)?.label)
+                      .filter((label): label is string => Boolean(label))
                       .join("、")}
                   </p>
                 ) : null}
@@ -885,8 +1336,8 @@ export function SalesScriptGenerator({
                 3,600 點
               </p>
               <p className="text-xs text-muted-foreground">
-                只在最終「確認並收取」後保留點數。成功後可免費下載；每次重新生成會再次收取
-                3,600 點。若失敗，系統自動退款。
+                確認購買即扣除3600AI點數，解鎖專屬問卷及一次生成。生成失敗時，
+                未使用的專屬使用權會由伺服器退款並重新鎖定。
               </p>
               <div className="flex justify-between border-t pt-3 text-sm">
                 <span>可用點數</span>
@@ -894,24 +1345,14 @@ export function SalesScriptGenerator({
                   {stateQuery.isLoading ? "—" : points.toLocaleString()}
                 </b>
               </div>
-              {trialQuery.data?.state === "active" ? (
-                <p className="text-xs text-muted-foreground">
-                  試用額度不適用此生成器。
+              {hasPurchasedAccess ? (
+                <p className="text-xs font-medium text-[#0b8b86]">
+                  已確認購買：本次問卷與一次生成已解鎖。
                 </p>
-              ) : null}
-              {!canAfford ? (
-                <div className="rounded-md border border-destructive/30 p-3 text-sm">
-                  <b className="text-destructive">點數不足</b>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    需要 3,600 點；草稿會保留，購買點數後可繼續。
-                  </p>
-                  <a
-                    className="mt-2 inline-block text-sm font-semibold text-primary underline"
-                    href="/admin/dashboard?buy-points=1"
-                  >
-                    購買 AI 點數
-                  </a>
-                </div>
+              ) : pendingPurchase ? (
+                <p className="text-xs text-amber-700">
+                  購買確認中；重新載入也會沿用原辨識碼，不會再次扣點。
+                </p>
               ) : null}
             </CardContent>
           </Card>
@@ -961,6 +1402,20 @@ export function SalesScriptGenerator({
                     <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                     重新檢查
                   </Button>
+                   <Button
+                     type="button"
+                     size="sm"
+                     variant="outline"
+                     className="ml-2 mt-2"
+                     onClick={retryPendingGeneration}
+                     disabled={generate.isPending || !pendingRequest}
+                     data-testid="button-retry-sales-script-generation"
+                   >
+                     {generate.isPending ? (
+                       <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                     ) : null}
+                     使用原辨識碼重試
+                   </Button>
                 </div>
               ) : null}
               {isFailure ? (
@@ -980,7 +1435,7 @@ export function SalesScriptGenerator({
               ) : null}
               {!effectiveGeneration && !selectedGeneration && !timedOutKey ? (
                 <p className="text-sm text-muted-foreground">
-                  尚未生成。先儲存資料，再確認費用即可開始。
+                  尚未生成。先完成基本資料並確認購買，再填寫專屬問卷。
                 </p>
               ) : null}
             </CardContent>
@@ -1163,41 +1618,44 @@ export function SalesScriptGenerator({
         </Card>
       ) : null}
 
-      <AlertDialog open={isConfirmOpen} onOpenChange={setIsConfirmOpen}>
+      <AlertDialog
+        open={isPurchaseConfirmOpen}
+        onOpenChange={setIsPurchaseConfirmOpen}
+      >
         <AlertDialogContent data-testid="sales-script-fee-modal">
           <AlertDialogHeader>
-            <AlertDialogTitle>確認生成銷售演講</AlertDialogTitle>
+            <AlertDialogTitle>確認購買專屬銷講稿</AlertDialogTitle>
             <AlertDialogDescription>
-              本次將收取 <strong>3,600 點</strong>。成功後文字下載免費；重新生成會是新的收費工作。
-              如伺服器失敗，系統會自動退款。
+              確認購買即扣除 <strong>3,600 AI 點數</strong>，解鎖專屬問卷及一次生成。
+              這次購買只會送出一次；若伺服器未確認，重新載入也不會再次扣點。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <label className="flex gap-3 rounded-lg border p-3 text-sm">
             <Checkbox
-              checked={confirmCharge}
-              onCheckedChange={(checked) => setConfirmCharge(checked === true)}
+              checked={confirmPurchase}
+              onCheckedChange={(checked) => setConfirmPurchase(checked === true)}
               data-testid="checkbox-confirm-sales-script-fee"
             />
-            <span>我確認本次生成收取 3,600 點，並同意送出工作。</span>
+            <span>我確認現在購買並收取 3,600 點，解鎖問卷及一次生成。</span>
           </label>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               disabled={
-                !confirmCharge ||
-                generate.isPending ||
+                !confirmPurchase ||
+                purchase.isPending ||
                 saveDraft.isPending
               }
               onClick={(event) => {
                 event.preventDefault();
-                void confirmGenerate();
+                void confirmPurchaseRequest();
               }}
               data-testid="button-confirm-sales-script-fee"
             >
-              {generate.isPending || saveDraft.isPending ? (
+              {purchase.isPending || saveDraft.isPending ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : null}
-              確認並收取 3,600 點
+              確認購買並扣除 3,600 點
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1211,12 +1669,9 @@ function Question({
   value,
   onChange,
 }: {
-  field: NonNullable<ReturnType<typeof fieldFor>>;
+  field: QuestionnaireField;
   value: string;
-  onChange: (
-    id: keyof SalesScriptQuestionnaireAnswers,
-    value: string,
-  ) => void;
+  onChange: (id: string, value: string) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -1226,13 +1681,15 @@ function Question({
           <span className="ml-1 text-destructive">*</span>
         ) : null}
       </Label>
-      <p className="text-xs text-muted-foreground">{field.help}</p>
+      {field.help ? (
+        <p className="text-xs text-muted-foreground">{field.help}</p>
+      ) : null}
       {field.multiline ? (
         <Textarea
           id={`sales-script-${field.id}`}
           value={value}
           onChange={(event) => onChange(field.id, event.target.value)}
-          placeholder={field.example}
+          placeholder={field.example || field.placeholder}
           rows={4}
           data-testid={`input-sales-script-${field.id}`}
         />
@@ -1241,7 +1698,7 @@ function Question({
           id={`sales-script-${field.id}`}
           value={value}
           onChange={(event) => onChange(field.id, event.target.value)}
-          placeholder={field.example}
+          placeholder={field.example || field.placeholder}
           data-testid={`input-sales-script-${field.id}`}
         />
       )}

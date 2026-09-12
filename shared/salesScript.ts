@@ -1,18 +1,11 @@
 import { z } from "zod";
-import { requiredSalesScriptAnswerIds } from "./salesScriptQuestionnaire";
-
 export const SALES_SCRIPT_COST_POINTS = 3600;
 export const salesScriptJobStates = ["queued", "running", "completed", "failed", "cancelled"] as const;
 export type SalesScriptJobState = typeof salesScriptJobStates[number];
+export const salesScriptPurchaseStatuses = ["ready", "generating", "completed", "refunded"] as const;
+export type SalesScriptPurchaseStatus = typeof salesScriptPurchaseStatuses[number];
 
-export const salesScriptAnswersSchema = z.record(z.string().max(12_000))
-  .superRefine((answers, context) => {
-    for (const id of requiredSalesScriptAnswerIds) {
-      if (!answers[id]?.trim()) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: [id], message: "此欄位為必填" });
-      }
-    }
-  });
+export const salesScriptAnswersSchema = z.record(z.string().max(12_000));
 
 export const saveSalesScriptDraftSchema = z.object({
   answers: z.record(z.string().max(12_000)),
@@ -20,6 +13,12 @@ export const saveSalesScriptDraftSchema = z.object({
 
 export const createSalesScriptJobSchema = z.object({
   answers: salesScriptAnswersSchema,
+  purchaseId: z.string().uuid(),
+  idempotencyKey: z.string().trim().min(16).max(160).regex(/^[A-Za-z0-9._:-]+$/),
+}).strict();
+
+export const createSalesScriptPurchaseSchema = z.object({
+  answers: z.record(z.string().max(12_000)),
   ackCost: z.literal(SALES_SCRIPT_COST_POINTS),
   idempotencyKey: z.string().trim().min(16).max(160).regex(/^[A-Za-z0-9._:-]+$/),
 }).strict();
@@ -125,6 +124,9 @@ export type SalesScriptStateResponse = {
   requiredPoints: typeof SALES_SCRIPT_COST_POINTS;
   draft: { answers: Record<string, string>; updatedAt: string } | null;
   jobs: SalesScriptJobSummary[];
+  purchase: { id: string; status: SalesScriptPurchaseStatus; jobId?: string } | null;
+  hasPurchasedAccess: boolean;
+  canGenerate: boolean;
 };
 
 export type SalesScriptJobResponse = SalesScriptJobSummary & {
@@ -134,6 +136,8 @@ export type SalesScriptJobResponse = SalesScriptJobSummary & {
 export const salesScriptApiPaths = {
   state: "/api/webinars/:id/sales-script",
   draft: "/api/webinars/:id/sales-script/draft",
+  purchase: "/api/webinars/:id/sales-script/purchase",
+  questionnaire: "/api/webinars/:id/sales-script/questionnaire",
   jobs: "/api/webinars/:id/sales-script/jobs",
   job: "/api/webinars/:id/sales-script/jobs/:jobId",
 } as const;

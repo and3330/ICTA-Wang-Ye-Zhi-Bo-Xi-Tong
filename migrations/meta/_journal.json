@@ -218,6 +218,13 @@
       "when": 1789203000000,
       "tag": "0031_sales_script_queue_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789204000000,
+      "tag": "0032_sales_script_purchase_before_questionnaire",
+      "breakpoints": true
     }
   ]
 }

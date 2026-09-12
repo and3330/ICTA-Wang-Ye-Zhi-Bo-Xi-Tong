@@ -27,7 +27,8 @@ import {
   emailSequences, type InsertEmailSequence, type EmailSequence,
   socialPosts, type InsertSocialPost, type SocialPost,
   aiPointTransactions, aiCreditLots, aiCreditReservations, aiCreditRevocations, aiResponseArtifacts,
-  salesScriptDrafts, salesScriptJobs, salesScriptJobCheckpoints, type SalesScriptJob,
+  salesScriptDrafts, salesScriptJobs, salesScriptJobCheckpoints, salesScriptPurchases,
+  type SalesScriptJob, type SalesScriptPurchase,
   authTokens, supportFeedback, type InsertSupportFeedback, type SupportFeedback,
   webinarFunnelEvents, type InsertWebinarFunnelEvent, type WebinarFunnelEvent,
   webinarOffers, webinarPayments, type WebinarOffer,
@@ -141,6 +142,15 @@ export interface IStorage {
   getSalesScriptDraft(ownerId: string, webinarId: string): Promise<{ answers: Record<string, string>; updatedAt: Date } | null>;
   getSalesScriptJobs(ownerId: string, webinarId: string): Promise<SalesScriptJob[]>;
   getSalesScriptJob(ownerId: string, webinarId: string, jobId: string): Promise<SalesScriptJob | null>;
+  getSalesScriptPurchaseState(ownerId: string, webinarId: string): Promise<{
+    purchase: SalesScriptPurchase | null; jobId: string | null; hasPurchasedAccess: boolean; canGenerate: boolean;
+  }>;
+  purchaseSalesScript(data: {
+    ownerId: string; webinarId: string; idempotencyKey: string; basicAnswers: Record<string, string>; points: number;
+  }): Promise<{ purchase: SalesScriptPurchase; jobId: string | null; created: boolean } | null>;
+  attachSalesScriptPurchaseToJob(data: {
+    ownerId: string; webinarId: string; purchaseId: string; idempotencyKey: string; answers: Record<string, string>;
+  }): Promise<{ job: SalesScriptJob; created: boolean } | null>;
   admitSalesScriptJob(data: { ownerId: string; webinarId: string; idempotencyKey: string; answers: Record<string, string>; points: number }): Promise<{ job: SalesScriptJob; created: boolean } | null>;
   claimNextSalesScriptJob(leaseToken: string, leaseExpiresAt: Date): Promise<SalesScriptJob | null>;
   renewSalesScriptJobLease(data: { jobId: string; leaseToken: string; leaseExpiresAt: Date }): Promise<boolean>;
@@ -556,6 +566,172 @@ export class DatabaseStorage implements IStorage {
     return job || null;
   }
 
+  async getSalesScriptPurchaseState(ownerId: string, webinarId: string) {
+    const purchases = await db.select().from(salesScriptPurchases).where(and(
+      eq(salesScriptPurchases.ownerId, ownerId),
+      eq(salesScriptPurchases.webinarId, webinarId),
+    )).orderBy(desc(salesScriptPurchases.createdAt));
+    const purchase = purchases.find((item) => item.status === "ready" || item.status === "generating") || purchases[0] || null;
+    const jobs = await this.getSalesScriptJobs(ownerId, webinarId);
+    const jobReservations = jobs.length
+      ? await db.select({ id: aiCreditReservations.id, status: aiCreditReservations.status })
+        .from(aiCreditReservations).where(inArray(aiCreditReservations.id, jobs.map((job) => job.reservationId)))
+      : [];
+    const reservationStatuses = new Map(jobReservations.map((item) => [item.id, item.status]));
+    const jobForPurchase = purchase
+      ? jobs.find((job) => job.purchaseId === purchase.id) || null
+      : null;
+    const reservation = purchase
+      ? (await db.select({ status: aiCreditReservations.status }).from(aiCreditReservations)
+        .where(eq(aiCreditReservations.id, purchase.reservationId)).limit(1))[0]
+      : null;
+    const activePurchaseAccess = Boolean(
+      purchase
+      && (purchase.status === "ready" || purchase.status === "generating")
+      && reservation?.status === "reserved",
+    );
+    // Jobs created before purchases were already charged at admission. They
+    // retain access while in progress and forever after successful completion.
+    const historicalAccess = jobs.some((job) => (
+      (job.status === "completed" && reservationStatuses.get(job.reservationId) === "consumed")
+      || ((job.status === "queued" || job.status === "running") && reservationStatuses.get(job.reservationId) === "reserved")
+    ));
+    return {
+      purchase,
+      jobId: jobForPurchase?.id || null,
+      hasPurchasedAccess: activePurchaseAccess || historicalAccess,
+      canGenerate: Boolean(purchase && purchase.status === "ready" && reservation?.status === "reserved" && !jobForPurchase),
+    };
+  }
+
+  async purchaseSalesScript(data: {
+    ownerId: string; webinarId: string; idempotencyKey: string; basicAnswers: Record<string, string>; points: number;
+  }): Promise<{ purchase: SalesScriptPurchase; jobId: string | null; created: boolean } | null> {
+    if (!Number.isInteger(data.points) || data.points <= 0) throw new Error("Invalid credit reservation");
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.ownerId}`}))`);
+      const [sameKey] = await tx.select().from(salesScriptPurchases).where(and(
+        eq(salesScriptPurchases.ownerId, data.ownerId),
+        eq(salesScriptPurchases.idempotencyKey, data.idempotencyKey),
+      )).for("update");
+      if (sameKey) {
+        if (sameKey.webinarId !== data.webinarId
+          || sameKey.costPoints !== data.points
+          || canonicalSalesScriptAnswers(sameKey.basicAnswers) !== canonicalSalesScriptAnswers(data.basicAnswers)) {
+          throw new SalesScriptIdempotencyConflictError();
+        }
+        const [job] = await tx.select({ id: salesScriptJobs.id }).from(salesScriptJobs)
+          .where(eq(salesScriptJobs.purchaseId, sameKey.id)).limit(1);
+        return { purchase: sameKey, jobId: job?.id || null, created: false };
+      }
+      const [active] = await tx.select().from(salesScriptPurchases).where(and(
+        eq(salesScriptPurchases.ownerId, data.ownerId),
+        eq(salesScriptPurchases.webinarId, data.webinarId),
+        or(eq(salesScriptPurchases.status, "ready"), eq(salesScriptPurchases.status, "generating")),
+      )).for("update");
+      if (active) {
+        const [reservation] = await tx.select({ status: aiCreditReservations.status }).from(aiCreditReservations)
+          .where(eq(aiCreditReservations.id, active.reservationId)).for("update");
+        if (reservation?.status === "reserved") {
+          const [job] = await tx.select({ id: salesScriptJobs.id }).from(salesScriptJobs)
+            .where(eq(salesScriptJobs.purchaseId, active.id)).limit(1);
+          return { purchase: active, jobId: job?.id || null, created: false };
+        }
+        await tx.update(salesScriptPurchases).set({ status: "refunded", updatedAt: new Date(), completedAt: new Date() })
+          .where(eq(salesScriptPurchases.id, active.id));
+      }
+      const now = new Date();
+      const stale = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.userId, data.ownerId),
+        eq(aiCreditReservations.status, "reserved"),
+        lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
+      )).for("update");
+      for (const reservation of stale) {
+        const [protectedPurchase] = await tx.select({ id: salesScriptPurchases.id }).from(salesScriptPurchases).where(and(
+          eq(salesScriptPurchases.reservationId, reservation.id),
+          or(eq(salesScriptPurchases.status, "ready"), eq(salesScriptPurchases.status, "generating")),
+        )).limit(1);
+        if (protectedPurchase) continue;
+        const [salesJob] = await tx.select({ status: salesScriptJobs.status }).from(salesScriptJobs)
+          .where(eq(salesScriptJobs.reservationId, reservation.id)).limit(1);
+        if (salesJob && (salesJob.status === "queued" || salesJob.status === "running")) continue;
+        const [artifact] = await tx.select({ id: aiResponseArtifacts.id }).from(aiResponseArtifacts)
+          .where(eq(aiResponseArtifacts.reservationId, reservation.id)).limit(1);
+        if (artifact) {
+          await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: now })
+            .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+          continue;
+        }
+        for (const allocation of reservation.allocations as Array<{ lotId: string; points: number }>) {
+          await tx.update(aiCreditLots).set({
+            remainingPoints: sql`LEAST(${aiCreditLots.originalPoints}, ${aiCreditLots.remainingPoints} + ${allocation.points})`,
+          }).where(and(eq(aiCreditLots.id, allocation.lotId), sql`NOT EXISTS (
+            SELECT 1 FROM ${aiCreditRevocations} WHERE ${aiCreditRevocations.idempotencyKey} = ${aiCreditLots.idempotencyKey}
+          )`));
+        }
+        await tx.update(aiCreditReservations).set({ status: "refunded", completedAt: now })
+          .where(and(eq(aiCreditReservations.id, reservation.id), eq(aiCreditReservations.status, "reserved")));
+      }
+      const lots = await tx.select().from(aiCreditLots).where(and(
+        eq(aiCreditLots.userId, data.ownerId), gt(aiCreditLots.remainingPoints, 0),
+        or(isNull(aiCreditLots.expiresAt), gt(aiCreditLots.expiresAt, now)),
+      )).orderBy(sql`${aiCreditLots.expiresAt} ASC NULLS LAST`, asc(aiCreditLots.grantedAt)).for("update");
+      const allocations = allocateAiCreditLots(lots, data.points);
+      if (!allocations) return null;
+      const available = lots.reduce((sum, lot) => sum + lot.remainingPoints, 0);
+      for (const allocation of allocations) {
+        const lot = lots.find((candidate) => candidate.id === allocation.lotId)!;
+        await tx.update(aiCreditLots).set({ remainingPoints: lot.remainingPoints - allocation.points })
+          .where(eq(aiCreditLots.id, lot.id));
+      }
+      const reservationId = crypto.randomUUID();
+      await tx.insert(aiCreditReservations).values({ id: reservationId, userId: data.ownerId, points: data.points, allocations, status: "reserved" });
+      const [purchase] = await tx.insert(salesScriptPurchases).values({
+        webinarId: data.webinarId, ownerId: data.ownerId, reservationId, idempotencyKey: data.idempotencyKey,
+        basicAnswers: data.basicAnswers, costPoints: data.points,
+      }).returning();
+      await tx.update(users).set({ aiPoints: available - data.points }).where(eq(users.id, data.ownerId));
+      return { purchase, jobId: null, created: true };
+    });
+  }
+
+  async attachSalesScriptPurchaseToJob(data: {
+    ownerId: string; webinarId: string; purchaseId: string; idempotencyKey: string; answers: Record<string, string>;
+  }): Promise<{ job: SalesScriptJob; created: boolean } | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-credits:${data.ownerId}`}))`);
+      const [purchase] = await tx.select().from(salesScriptPurchases).where(and(
+        eq(salesScriptPurchases.id, data.purchaseId), eq(salesScriptPurchases.ownerId, data.ownerId),
+        eq(salesScriptPurchases.webinarId, data.webinarId),
+      )).for("update");
+      if (!purchase) return null;
+      const [sameKey] = await tx.select().from(salesScriptJobs).where(and(
+        eq(salesScriptJobs.ownerId, data.ownerId), eq(salesScriptJobs.idempotencyKey, data.idempotencyKey),
+      )).for("update");
+      if (sameKey) {
+        if (sameKey.webinarId !== data.webinarId || sameKey.purchaseId !== purchase.id
+          || canonicalSalesScriptAnswers(sameKey.answers) !== canonicalSalesScriptAnswers(data.answers)) {
+          throw new SalesScriptIdempotencyConflictError();
+        }
+        return { job: sameKey, created: false };
+      }
+      const [attached] = await tx.select().from(salesScriptJobs)
+        .where(eq(salesScriptJobs.purchaseId, purchase.id)).for("update");
+      if (attached) return { job: attached, created: false };
+      const [reservation] = await tx.select().from(aiCreditReservations).where(and(
+        eq(aiCreditReservations.id, purchase.reservationId), eq(aiCreditReservations.userId, data.ownerId),
+      )).for("update");
+      if (purchase.status !== "ready" || reservation?.status !== "reserved") return null;
+      const [job] = await tx.insert(salesScriptJobs).values({
+        webinarId: data.webinarId, ownerId: data.ownerId, reservationId: purchase.reservationId, purchaseId: purchase.id,
+        idempotencyKey: data.idempotencyKey, answers: data.answers, costPoints: purchase.costPoints, queueScope: salesScriptQueueScope,
+      }).returning();
+      await tx.update(salesScriptPurchases).set({ status: "generating", updatedAt: new Date() })
+        .where(eq(salesScriptPurchases.id, purchase.id));
+      return { job, created: true };
+    });
+  }
+
   async admitSalesScriptJob(data: {
     ownerId: string; webinarId: string; idempotencyKey: string; answers: Record<string, string>; points: number;
   }): Promise<{ job: SalesScriptJob; created: boolean } | null> {
@@ -585,6 +761,13 @@ export class DatabaseStorage implements IStorage {
         lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
       )).for("update");
       for (const reservation of stale) {
+        const [protectedPurchase] = await tx.select({ id: salesScriptPurchases.id }).from(salesScriptPurchases).where(and(
+          eq(salesScriptPurchases.reservationId, reservation.id),
+          or(eq(salesScriptPurchases.status, "ready"), eq(salesScriptPurchases.status, "generating")),
+        )).limit(1);
+        // A paid questionnaire may wait indefinitely before a job is started.
+        // It must never be reclaimed by the legacy 15-minute reservation sweep.
+        if (protectedPurchase) continue;
         const [salesJob] = await tx.select({ status: salesScriptJobs.status }).from(salesScriptJobs)
           .where(eq(salesScriptJobs.reservationId, reservation.id)).limit(1);
         if (salesJob && (salesJob.status === "queued" || salesJob.status === "running")) continue;
@@ -730,6 +913,10 @@ export class DatabaseStorage implements IStorage {
       }).where(eq(salesScriptJobs.id, data.jobId));
       await tx.update(aiCreditReservations).set({ status: "consumed", completedAt: new Date() })
         .where(and(eq(aiCreditReservations.id, data.reservationId), eq(aiCreditReservations.status, "reserved")));
+      if (job.purchaseId) {
+        await tx.update(salesScriptPurchases).set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(salesScriptPurchases.id, job.purchaseId), eq(salesScriptPurchases.status, "generating")));
+      }
       return true;
     });
   }
@@ -773,6 +960,10 @@ export class DatabaseStorage implements IStorage {
         status: "failed", leaseToken: null, leaseExpiresAt: null,
         errorMessage: data.message.slice(0, 1000), updatedAt: new Date(),
       }).where(eq(salesScriptJobs.id, data.jobId));
+      if (job.purchaseId) {
+        await tx.update(salesScriptPurchases).set({ status: "refunded", completedAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(salesScriptPurchases.id, job.purchaseId), eq(salesScriptPurchases.status, "generating")));
+      }
       return true;
     });
   }
@@ -788,6 +979,11 @@ export class DatabaseStorage implements IStorage {
         lt(aiCreditReservations.createdAt, new Date(now.getTime() - 15 * 60_000)),
       )).for("update");
       for (const reservation of stale) {
+        const [protectedPurchase] = await tx.select({ id: salesScriptPurchases.id }).from(salesScriptPurchases).where(and(
+          eq(salesScriptPurchases.reservationId, reservation.id),
+          or(eq(salesScriptPurchases.status, "ready"), eq(salesScriptPurchases.status, "generating")),
+        )).limit(1);
+        if (protectedPurchase) continue;
         // A sales-script job can legitimately run longer than the legacy
         // 15-minute reply reservation window. Its worker lease is recovered
         // after restart; never refund it while it can still produce output.

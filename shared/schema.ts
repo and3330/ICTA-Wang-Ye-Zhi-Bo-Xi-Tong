@@ -4,7 +4,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
 import type { ExternalJourneySettingsInput } from "./externalJourneys";
-import type { SalesScriptOutput, SalesScriptJobState } from "./salesScript";
+import type { SalesScriptOutput, SalesScriptJobState, SalesScriptPurchaseStatus } from "./salesScript";
 export {
   canonicalLandingVideoSchema,
   canonicalizeLandingVideoUrl,
@@ -999,6 +999,9 @@ export const salesScriptJobs = pgTable("sales_script_jobs", {
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
   ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   reservationId: varchar("reservation_id").notNull().references(() => aiCreditReservations.id, { onDelete: "restrict" }).unique(),
+  // Null only for jobs created before the purchase-first flow was introduced.
+  // New jobs always point to the immutable purchase that funded them.
+  purchaseId: varchar("purchase_id"),
   idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
   answers: jsonb("answers").$type<Record<string, string>>().notNull(),
   costPoints: integer("cost_points").notNull().default(3600),
@@ -1020,6 +1023,30 @@ export const salesScriptJobs = pgTable("sales_script_jobs", {
   claimIndex: index("sales_script_jobs_claim_idx").on(table.queueScope, table.status, table.leaseExpiresAt),
 }));
 export type SalesScriptJob = typeof salesScriptJobs.$inferSelect;
+
+// A purchase is deliberately separate from a job: completing the five public
+// fields reserves the cost and unlocks the confidential questionnaire, while a
+// later job consumes exactly that same reservation.
+export const salesScriptPurchases = pgTable("sales_script_purchases", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  reservationId: varchar("reservation_id").notNull().references(() => aiCreditReservations.id, { onDelete: "restrict" }).unique(),
+  idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+  basicAnswers: jsonb("basic_answers").$type<Record<string, string>>().notNull(),
+  costPoints: integer("cost_points").notNull().default(3600),
+  status: text("status").$type<SalesScriptPurchaseStatus>().notNull().default("ready"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (table) => ({
+  ownerIdempotencyUnique: uniqueIndex("sales_script_purchases_owner_idempotency_uniq").on(table.ownerId, table.idempotencyKey),
+  ownerWebinarActiveUnique: uniqueIndex("sales_script_purchases_one_active_uniq")
+    .on(table.ownerId, table.webinarId).where(sql`${table.status} IN ('ready', 'generating')`),
+  ownerWebinarCreatedIndex: index("sales_script_purchases_owner_webinar_created_idx")
+    .on(table.ownerId, table.webinarId, table.createdAt),
+}));
+export type SalesScriptPurchase = typeof salesScriptPurchases.$inferSelect;
 
 export const salesScriptJobCheckpoints = pgTable("sales_script_job_checkpoints", {
   jobId: varchar("job_id").notNull().references(() => salesScriptJobs.id, { onDelete: "cascade" }),
