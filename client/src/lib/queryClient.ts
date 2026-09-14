@@ -59,3 +59,19 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+/**
+ * API queries can contain the previous signed-in member's private state.
+ * React Query intentionally uses an infinite stale time for this app, so an
+ * auth boundary must cancel and remove those entries before another account
+ * mounts. Public non-API data (for example the pricing-region lookup) can
+ * remain cached.
+ */
+export async function clearAuthScopedQueryCache() {
+  const isAuthScoped = (query: { queryKey: readonly unknown[] }) => {
+    const root = query.queryKey[0];
+    return typeof root === "string" && root.startsWith("/api/");
+  };
+  await queryClient.cancelQueries({ predicate: isAuthScoped });
+  queryClient.removeQueries({ predicate: isAuthScoped });
+}

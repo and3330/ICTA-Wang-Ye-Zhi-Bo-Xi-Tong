@@ -8,12 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, clearAuthScopedQueryCache } from "@/lib/queryClient";
 import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardTrial";
+import { useMarketingConsent } from "@/components/marketing-consent";
+import { flushPlatformConversions, trackPlatformConversion, type PlatformConversion } from "@/lib/platform-conversions";
 
 const langLabels: Record<LangFull, string> = {
   "zh-TW": "繁體中文",
@@ -157,8 +159,14 @@ export default function AdminLogin() {
   const [isVerifying, setIsVerifying] = useState(false);
   const { lang, setLang } = useLang();
   const [langOpen, setLangOpen] = useState(false);
+  const [signupConversion, setSignupConversion] = useState<PlatformConversion | null>(null);
+  const marketingConsent = useMarketingConsent();
 
   const s = t[lang];
+
+  useEffect(() => {
+    if (signupConversion) flushPlatformConversions(signupConversion.accountMarker, marketingConsent);
+  }, [signupConversion, marketingConsent]);
 
   const loginSchema = useMemo(() => z.object({
     username: z.string().min(1, s.usernameReq),
@@ -193,6 +201,9 @@ export default function AdminLogin() {
     setIsLoading(true);
     try {
       await apiRequest("POST", "/api/admin/login", data);
+      // Login can happen in the same SPA tab after another account logged out.
+      // Remove all API query data before the dashboard's auth/me query mounts.
+      await clearAuthScopedQueryCache();
       toast({ title: s.welcomeBack });
       setLocation("/admin/dashboard");
     } catch (error: any) {
@@ -214,12 +225,18 @@ export default function AdminLogin() {
   const onRegister = async (data: RegisterForm) => {
     setIsLoading(true);
     try {
-      await apiRequest("POST", "/api/admin/register", {
+      const response = await apiRequest("POST", "/api/admin/register", {
         username: data.username,
         email: data.email,
         password: data.password,
         companyName: data.companyName || "",
       });
+      const result = await response.json() as { conversion?: PlatformConversion };
+      await clearAuthScopedQueryCache();
+      if (result.conversion?.eventName === "CompleteRegistration") {
+        setSignupConversion(result.conversion);
+        trackPlatformConversion(result.conversion, marketingConsent);
+      }
       setVerificationRequired(true);
       setVerificationUsername(data.username);
       setVerificationEmail(data.email);

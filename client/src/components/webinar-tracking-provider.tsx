@@ -13,6 +13,10 @@ export type TrackingWebinar = {
 
 export const isValidMetaPixelId = (value: string): boolean => /^\d+$/.test(value);
 export const isValidGtmContainerId = (value: string): boolean => /^GTM-[A-Z0-9]+$/.test(value);
+// The platform pixel is reserved for explicitly authorized platform
+// conversions. A member webinar must never route its funnel events to it,
+// even if an old webinar record contains the same numeric ID.
+const RESERVED_PLATFORM_PIXEL_ID = "1096741902746313";
 
 type Fbq = ((...args: unknown[]) => void) & {
   callMethod?: (...args: unknown[]) => void;
@@ -95,16 +99,17 @@ export function WebinarTrackingProvider({
   const safePixelId = metaPixelId?.trim() || "";
   const safeGtmId = gtmContainerId?.trim().toUpperCase() || "";
   const marketingConsent = useMarketingConsent();
+  const webinarPixelAllowed = isValidMetaPixelId(safePixelId) && safePixelId !== RESERVED_PLATFORM_PIXEL_ID;
 
   useEffect(() => {
     if (marketingConsent !== "granted") {
       revokeMarketingTracking();
       return;
     }
-    if (isValidMetaPixelId(safePixelId)) loadMetaPixel(safePixelId);
+    if (webinarPixelAllowed) loadMetaPixel(safePixelId);
     if (isValidGtmContainerId(safeGtmId)) loadGtm(safeGtmId);
     window.fbq?.("consent", "grant");
-  }, [safePixelId, safeGtmId, marketingConsent]);
+  }, [safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent]);
 
   useEffect(() => {
     const forward = (event: Event) => {
@@ -121,7 +126,7 @@ export function WebinarTrackingProvider({
         ...(detail.data.positionSeconds === undefined ? {} : { position_seconds: detail.data.positionSeconds }),
         ...detail.data.metadata,
       };
-      if (marketingConsent === "granted" && isValidMetaPixelId(safePixelId)) {
+      if (marketingConsent === "granted" && webinarPixelAllowed) {
         window.fbq?.("trackSingle", safePixelId, metaEventMap[detail.eventType], payload);
       }
       if (marketingConsent === "granted" && isValidGtmContainerId(safeGtmId)) {

@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, clearAuthScopedQueryCache, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
@@ -34,6 +34,9 @@ import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS, NO_CARD_TRIAL_MILESTON
 import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
 import { PricingAmount, RegionalPricingNote } from "@/components/regional-pricing";
 import { DEFAULT_PRICING_REGION, usePricingRegion } from "@/hooks/use-pricing-region";
+import { useMarketingConsent } from "@/components/marketing-consent";
+import { flushPlatformConversions, trackPlatformConversion, type PlatformConversion } from "@/lib/platform-conversions";
+import { readMarketingConsent } from "@/lib/marketing-consent";
 
 type WebinarStats = Record<string, {
   registered: number;
@@ -428,6 +431,7 @@ export default function AdminDashboard() {
   const [ecpayForm, setEcpayForm] = useState({ merchantId: "", hashKey: "", hashIv: "", environment: "stage" as "stage" | "production", enabled: false });
   const { lang, setLang } = useAdminLang();
   const s = t[lang];
+  const marketingConsent = useMarketingConsent();
   const { data: pricingRegion } = usePricingRegion();
   const regionalPricing = pricingRegion ?? DEFAULT_PRICING_REGION;
 
@@ -436,6 +440,18 @@ export default function AdminDashboard() {
   const { data: webinars, isLoading } = useQuery<Webinar[]>({
     queryKey: ["/api/webinars"],
   });
+  const {
+    data: adminMe,
+    isFetchedAfterMount: adminMeFetchedAfterMount,
+  } = useQuery<{ id: string }>({
+    queryKey: ["/api/admin/me"],
+  });
+
+  useEffect(() => {
+    if (adminMeFetchedAfterMount && adminMe?.id) {
+      flushPlatformConversions(adminMe.id, marketingConsent);
+    }
+  }, [adminMe?.id, adminMeFetchedAfterMount, marketingConsent]);
 
   const { data: stats } = useQuery<WebinarStats>({
     queryKey: ["/api/webinars", "stats", "summary"],
@@ -858,11 +874,50 @@ export default function AdminDashboard() {
   });
 
   useEffect(() => {
+    let active = true;
+    const pendingTimers = new Set<number>();
+    const schedulePendingConfirmation = (callback: () => void) => {
+      const timer = window.setTimeout(() => {
+        pendingTimers.delete(timer);
+        if (active) callback();
+      }, 2500);
+      pendingTimers.add(timer);
+    };
     const params = new URLSearchParams(window.location.search);
     if (params.get("checkout") === "success") {
+      const sessionId = params.get("session_id");
       window.history.replaceState({}, "", "/admin/dashboard");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
       toast({ title: s.toastCreateSuccess, description: "付款已完成，訂閱狀態正在同步" });
+      if (sessionId) {
+        let attempts = 0;
+        const confirmSubscription = async (): Promise<void> => {
+          const response = await apiRequest("POST", "/api/stripe/confirm-platform-checkout", { sessionId });
+          const result = await response.json() as {
+            status?: "paid" | "pending" | "failed";
+            conversion?: PlatformConversion;
+          };
+          if (!active) return;
+          if (result.status === "paid" && result.conversion?.eventName === "Purchase") {
+            trackPlatformConversion(result.conversion, readMarketingConsent());
+            await queryClient.invalidateQueries({ queryKey: ["/api/admin/subscription"] });
+            return;
+          }
+          if (result.status === "pending" && attempts < 8) {
+            attempts += 1;
+            schedulePendingConfirmation(() => { void confirmSubscription(); });
+            return;
+          }
+          if (result.status === "pending") {
+            toast({ title: "付款處理中", description: "Stripe 尚未回報付款成功；確認後才會計入轉換。" });
+          }
+        };
+        void confirmSubscription().catch((error: any) => {
+          // A failed/foreign session is never a conversion. Keep the existing
+          // billing UI flow and avoid manufacturing a client-side success.
+          console.warn("Unable to confirm platform subscription conversion:", error?.message || error);
+        });
+      }
     }
     if (params.get("buy-points") === "1") {
       window.history.replaceState({}, "", "/admin/dashboard");
@@ -874,24 +929,43 @@ export default function AdminDashboard() {
       if (sessionId) {
         apiRequest("POST", "/api/stripe/confirm-recharge", { sessionId })
           .then(async (res) => {
-            const data = await res.json();
+            if (!active) return;
+            const data = await res.json() as {
+              success?: boolean;
+              status?: "pending" | "paid" | "failed";
+              points?: number;
+              conversion?: PlatformConversion;
+            };
+            if (!active) return;
             queryClient.invalidateQueries({ queryKey: ["/api/ai-points"] });
-            toast({ title: s.rechargeSuccess, description: s.rechargeSuccessDesc?.replace("{points}", String(data.points ?? "")) });
+            if (data.success && data.conversion?.eventName === "Purchase") {
+              trackPlatformConversion(data.conversion, readMarketingConsent());
+              toast({ title: s.rechargeSuccess, description: s.rechargeSuccessDesc?.replace("{points}", String(data.points ?? "")) });
+            } else if (data.status === "pending") {
+              toast({ title: "付款處理中", description: "Stripe 尚未回報付款成功；點數與轉換都會在確認後處理。" });
+            }
           })
           .catch((err: any) => {
-            toast({ title: s.rechargeFail, description: err.message, variant: "destructive" });
+            if (active) toast({ title: s.rechargeFail, description: err.message, variant: "destructive" });
           });
       }
     } else if (params.get("recharge") === "cancel") {
       window.history.replaceState({}, "", "/admin/dashboard");
     }
+    return () => {
+      active = false;
+      pendingTimers.forEach(timer => window.clearTimeout(timer));
+      pendingTimers.clear();
+    };
   }, []);
 
   const handleLogout = async () => {
     try {
       await apiRequest("POST", "/api/admin/logout", {});
-      setLocation("/admin");
-    } catch (error) {
+    } catch {
+      // Clear the local boundary even when the network logout fails.
+    } finally {
+      await clearAuthScopedQueryCache();
       setLocation("/admin");
     }
   };

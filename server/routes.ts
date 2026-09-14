@@ -121,6 +121,11 @@ import { processVerifiedEcpayPayment } from "./offerPayments";
 import { productSalesPageTargetUrl, registerProductCommerceRoutes } from "./productCommerce";
 import { registerAiSalesPageRoutes } from "./aiSalesPage";
 import { registerSalesScriptRoutes } from "./salesScriptRoutes";
+import {
+  signupConversion,
+  validatePlatformAiPointsCheckout,
+  validatePlatformSubscriptionCheckout,
+} from "./platformConversions";
 import { appendMemberOrderEvent, registerMemberOrderRoutes } from "./memberOrders";
 import {
   createSalesPageSchema,
@@ -455,10 +460,14 @@ export async function registerRoutes(
   dependencies: {
     refreshEntitlement?: typeof refreshSubscriptionEntitlement;
     startScheduler?: () => void | { stop: () => Promise<void> };
+    getStripe?: typeof getUncachableStripeClient;
+    getApprovedPriceIds?: typeof getApprovedPriceIds;
   } = {},
 ): Promise<Server> {
   const refreshEntitlement = dependencies.refreshEntitlement ?? refreshSubscriptionEntitlement;
   const startScheduler = dependencies.startScheduler ?? startEmailScheduler;
+  const getStripe = dependencies.getStripe ?? getUncachableStripeClient;
+  const getApprovedPrices = dependencies.getApprovedPriceIds ?? getApprovedPriceIds;
   const revokeUserSessions = async (userId: string) => {
     // connect-pg-simple stores the signed-session payload in this table. Delete
     // every matching record so subsequent HTTP requests cannot reuse a cookie.
@@ -1510,7 +1519,15 @@ export async function registerRoutes(
         to: user.email,
         ...emailVerificationMail(verificationCode),
       });
-      res.status(201).json({ success: true, verificationRequired: true });
+      res.status(201).json({
+        success: true,
+        verificationRequired: true,
+        // This opaque marker is emitted only for a newly persisted platform
+        // account. It contains no contact data and lets the browser dedupe the
+        // conversion without treating login or duplicate-email responses as
+        // new registrations.
+        conversion: signupConversion(`platform_signup:${crypto.randomUUID()}`, user.id),
+      });
     } catch (error: any) {
       reportUnexpectedAuthDeliveryFailure(error, req);
       res.status(500).json({ message: "註冊失敗" });
@@ -2355,7 +2372,7 @@ export async function registerRoutes(
             billingInterval,
             addonWebinars,
           }),
-          success_url: `${baseUrl}/admin/dashboard?checkout=success`,
+          success_url: `${baseUrl}/admin/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${baseUrl}/admin/dashboard?checkout=cancel`,
         });
         await tx.update(users).set({
@@ -2370,6 +2387,68 @@ export async function registerRoutes(
         return res.status(409).json({ message: "ACTIVE_SUBSCRIPTION_EXISTS", code: "ACTIVE_SUBSCRIPTION_EXISTS" });
       }
       res.status(500).json({ message: error.message });
+    }
+  });
+
+  /**
+   * Return an authoritative browser conversion only after the app Stripe
+   * client has verified ownership, payment status, and the approved catalog.
+   * This endpoint never fulfills a subscription; the existing webhook and
+   * entitlement reconciliation remain responsible for billing state.
+   */
+  app.post("/api/stripe/confirm-platform-checkout", requireAdmin, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.session.userId!);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+      if (!sessionId || sessionId.length > 255) {
+        return res.status(400).json({ message: "缺少 sessionId" });
+      }
+
+      const stripe = await getStripe();
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      const metadata = session.metadata || {};
+      const planKey = metadata.planKey as SubscriptionPlanKey;
+      const billingInterval = metadata.billingInterval === "year" ? "year" : metadata.billingInterval === "month" ? "month" : "";
+      const addonWebinars = Number(metadata.addonWebinars);
+      if (!(planKey in SUBSCRIPTION_PLANS) || !billingInterval || !Number.isInteger(addonWebinars)) {
+        return res.status(403).json({ message: "無效的付款資訊" });
+      }
+
+      const { byLookupKey } = await getApprovedPrices();
+      const basePriceId = byLookupKey.get(planLookupKey(planKey, billingInterval));
+      const addonPriceId = byLookupKey.get(
+        billingInterval === "year" ? ANNUAL_ADDON_LOOKUP_KEY : ADDON_LOOKUP_KEY,
+      );
+      if (!basePriceId || (addonWebinars > 0 && !addonPriceId)) {
+        return res.status(503).json({ message: "Subscription catalog is not ready" });
+      }
+
+      const listedItems = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 });
+      const validation = validatePlatformSubscriptionCheckout({
+        session,
+        lineItems: listedItems.data,
+        userId: user.id,
+        stripeCustomerId: user.stripeCustomerId,
+        planKey,
+        billingInterval,
+        addonWebinars,
+        basePriceId,
+        addonPriceId,
+      });
+      if (validation.status !== "paid" || !validation.conversion) {
+        return res.json({ status: validation.status });
+      }
+      return res.json({
+        status: "paid",
+        conversion: validation.conversion,
+      });
+    } catch (error: any) {
+      if (error?.message === "INVALID_PLATFORM_CHECKOUT") {
+        return res.status(403).json({ message: "無效的付款資訊" });
+      }
+      console.error("Platform checkout confirmation failed:", error?.message || error);
+      return res.status(502).json({ message: "付款狀態暫時無法確認" });
     }
   });
 
@@ -2564,28 +2643,53 @@ export async function registerRoutes(
       const existingOwner = await storage.getPointTransactionOwner(sessionId);
       if (existingOwner) {
         if (existingOwner !== user.id) return res.status(403).json({ message: "無效的付款資訊" });
-        const summary = await storage.getAiCreditSummary(user.id);
-        return res.json({ success: true, alreadyProcessed: true, points: summary.points });
       }
 
-      const stripe = await getUncachableStripeClient();
+      const stripe = await getStripe();
       const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-      if (session.payment_status !== "paid") {
-        return res.status(400).json({ message: "尚未完成付款" });
+      const points = parseInt(session.metadata?.points || "0", 10);
+      const amountTwd = parseInt(session.metadata?.amountTwd || "0", 10);
+      let validation;
+      try {
+        validation = validatePlatformAiPointsCheckout({
+          session,
+          userId: user.id,
+          stripeCustomerId: user.stripeCustomerId,
+          points,
+          amountTwd,
+        });
+      } catch (error: any) {
+        if (error?.message === "INVALID_PLATFORM_CHECKOUT") {
+          return res.status(403).json({ message: "無效的付款資訊" });
+        }
+        throw error;
       }
-      // 必須是本人的、且是點數充值的 session
-      if (session.metadata?.userId !== user.id || session.metadata?.kind !== "ai_points") {
-        return res.status(403).json({ message: "無效的付款資訊" });
+      if (validation.status === "pending") {
+        return res.json({ success: false, status: "pending" });
+      }
+      if (validation.status !== "paid" || !validation.conversion) {
+        return res.json({ success: false, status: validation.status });
       }
 
-      const points = parseInt(session.metadata.points || "0", 10);
-      const amountTwd = parseInt(session.metadata.amountTwd || "0", 10);
-      if (points <= 0) return res.status(400).json({ message: "無效的點數" });
-
+      if (existingOwner) {
+        const summary = await storage.getAiCreditSummary(user.id);
+        return res.json({
+          success: true,
+          alreadyProcessed: true,
+          points: summary.points,
+          conversion: validation.conversion,
+        });
+      }
       // 交易記錄 + 加點同一個 DB transaction（冪等 + 一致性，可安全重試）
       const result = await storage.creditPointPurchase({ userId: user.id, points, amountTwd, stripeSessionId: sessionId });
-      res.json({ success: true, added: result.alreadyProcessed ? 0 : points, points: result.points, alreadyProcessed: result.alreadyProcessed });
+      res.json({
+        success: true,
+        added: result.alreadyProcessed ? 0 : points,
+        points: result.points,
+        alreadyProcessed: result.alreadyProcessed,
+        conversion: validation.conversion,
+      });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }

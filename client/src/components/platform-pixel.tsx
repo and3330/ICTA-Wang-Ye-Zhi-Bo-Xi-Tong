@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useMarketingConsent } from "@/components/marketing-consent";
 import { loadMetaPixel, revokeMarketingTracking } from "@/components/webinar-tracking-provider";
+import { clearPlatformConversionsPending } from "@/lib/platform-conversions";
 
 const PLATFORM_PIXEL_ID = "1096741902746313";
 
@@ -17,6 +18,7 @@ export function PlatformPixel() {
   useEffect(() => {
     if (consent !== "granted") {
       lastPage.current = null;
+      if (consent === "denied") clearPlatformConversionsPending();
       revokeMarketingTracking();
       return;
     }
