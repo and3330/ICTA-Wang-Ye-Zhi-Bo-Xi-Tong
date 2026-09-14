@@ -91,23 +91,25 @@ async function mockAdmin(page: Page, detailFailureOnce = false) {
   };
 }
 
-test("dashboard keeps the per-session summary compact and exposes the complete history", async ({ page }) => {
+test("dashboard hides session counts and edit management exposes them in the first statistics tab", async ({ page }) => {
   const fixture = await mockAdmin(page);
   await page.goto("/admin/dashboard");
 
   const card = page.getByTestId("card-webinar-session-counts-webinar");
   await expect(card).toBeVisible();
-  const countsPanel = card.getByTestId("session-registration-counts");
-  await expect(countsPanel).toContainText("總報名數");
-  await expect(countsPanel.getByTestId("session-registration-row-0")).toHaveCount(1);
-  await expect(countsPanel.getByTestId("session-registration-row-3")).toHaveCount(0);
-  await countsPanel.getByTestId("button-show-more-session-registration-counts").click();
+  await expect(page.getByTestId("session-registration-counts")).toHaveCount(0);
+  expect(fixture.getCountEndpointCalls()).toBe(0);
+  await card.getByTestId(`button-edit-${webinarId}`).click();
+  await expect(page.getByRole("tab").first()).toHaveAttribute("data-testid", "tab-analytics");
+  await expect(page.getByTestId("tab-analytics")).toHaveAttribute("data-state", "active");
+  const countsPanel = page.getByRole("tabpanel").getByTestId("session-registration-counts");
+  await expect(countsPanel.getByTestId("session-registration-total")).toHaveText("42");
   await countsPanel.screenshot({ path: "/tmp/session-registration-counts-desktop.png" });
   await expect(countsPanel.getByTestId("session-registration-row-25")).toHaveCount(1);
   await expect(countsPanel).toContainText("已取消");
   await expect(countsPanel).toContainText("隨選觀看");
   await expect(countsPanel).toContainText("未選場次");
-  expect(fixture.getCountEndpointCalls()).toBe(0);
+  expect(fixture.getCountEndpointCalls()).toBeGreaterThan(0);
 });
 
 test("detail overview polls owner-scoped counts, retries failures, and sorts Taiwan time on mobile", async ({ page }) => {

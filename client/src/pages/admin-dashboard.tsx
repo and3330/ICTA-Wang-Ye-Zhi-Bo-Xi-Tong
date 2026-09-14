@@ -32,7 +32,6 @@ import type { Webinar } from "@shared/schema";
 import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCounts";
 import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS, NO_CARD_TRIAL_MILESTONES, type NoCardTrialState } from "@shared/noCardTrial";
 import { MediaPicker, VideoSourcePicker } from "@/components/media-picker";
-import { SessionRegistrationCounts } from "@/components/session-registration-counts";
 import { PricingAmount, RegionalPricingNote } from "@/components/regional-pricing";
 import { DEFAULT_PRICING_REGION, usePricingRegion } from "@/hooks/use-pricing-region";
 
@@ -1963,14 +1962,6 @@ export default function AdminDashboard() {
                             <div className="text-xs text-muted-foreground">{s.statEngagement}</div>
                           </div>
                         </div>
-                         {webinarStats?.sessionRegistrationCounts && (
-                           <SessionRegistrationCounts
-                             summary={webinarStats.sessionRegistrationCounts}
-                             lang={lang}
-                             compact
-                             className="mt-4"
-                           />
-                         )}
                       </div>
 
                        <div className="admin-webinar-actions flex md:flex-col items-center md:items-stretch gap-1 p-3 md:border-l border-t md:border-t-0 flex-wrap justify-center md:w-36 shrink-0">
