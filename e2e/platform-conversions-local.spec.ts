@@ -26,9 +26,18 @@ async function setupMetaMock(page: Page, consent?: "granted" | "denied") {
   await page.route("https://www.facebook.com/**", route => route.abort());
 }
 
-const pixelCalls = (page: Page): Promise<PixelCall[]> =>
-  page.evaluate(() => (window as any).__pixelCalls
-    || JSON.parse(localStorage.getItem("__platform_e2e_pixel_calls") || "[]"));
+const pixelCalls = async (page: Page): Promise<PixelCall[]> => {
+  try {
+    return await page.evaluate(() => (window as any).__pixelCalls
+      || JSON.parse(localStorage.getItem("__platform_e2e_pixel_calls") || "[]"));
+  } catch (error) {
+    // A full-page navigation (e.g. the post-login redirect) can destroy the
+    // context mid-poll; the calls are persisted, so retry after it settles.
+    if (!String(error).includes("Execution context was destroyed")) throw error;
+    await page.waitForLoadState("domcontentloaded");
+    return page.evaluate(() => JSON.parse(localStorage.getItem("__platform_e2e_pixel_calls") || "[]"));
+  }
+};
 
 async function mockDashboard(page: Page, getAccountId: string | (() => string) = accountMarker) {
   const accountId = () => typeof getAccountId === "function" ? getAccountId() : getAccountId;
@@ -345,6 +354,8 @@ test("member webinar activity cannot use the reserved platform pixel", async ({ 
     detail: { webinarId: "member-isolation", eventType: "cta_click", data: {} },
   })));
   await page.waitForTimeout(250);
+  // The platform pixel may count the SPA page view, but never a member funnel event.
   expect((await pixelCalls(page)).filter(call =>
-    call[0] === "trackSingle" && call[1] === platformPixel)).toHaveLength(0);
+    call[0] === "trackSingle" && call[1] === platformPixel && call[2] !== "PageView")).toHaveLength(0);
+  expect((await pixelCalls(page)).filter(call => call[0] === "init")).toEqual([["init", platformPixel]]);
 });

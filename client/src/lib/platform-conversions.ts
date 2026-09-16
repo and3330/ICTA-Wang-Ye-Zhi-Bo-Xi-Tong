@@ -110,7 +110,6 @@ function dispatch(conversion: PlatformConversion, consent: MarketingConsent): bo
   // routes, so load the platform pixel here rather than relying on a prior
   // homepage visit. `false` permanently disables automatic events.
   loadMetaPixel(PLATFORM_PIXEL_ID, false);
-  window.fbq?.("consent", "grant");
   const payload = conversion.eventName === "Purchase"
     ? { value: conversion.value, currency: conversion.currency }
     : {};

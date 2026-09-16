@@ -21,49 +21,45 @@ const navigate = (page: Page, path: string) => page.evaluate(path => {
   history.pushState(null, "", path);
 }, path);
 
-test("pixel waits for consent, sends scoped PageView and stops after withdrawal", async ({ page }) => {
+test("platform pixel base code loads in head on every page and counts SPA route changes", async ({ page }) => {
   const requests = await setup(page);
   await page.goto("/");
+  // The base code runs before any consent choice.
   await expect(page.getByRole("button", { name: "同意行銷追蹤" })).toBeVisible();
-  expect(requests).toHaveLength(0);
-  await page.getByRole("button", { name: "同意行銷追蹤" }).click();
-  await expect.poll(() => calls(page)).toContainEqual(["trackSingle", pixel, "PageView"]);
+  await expect.poll(() => calls(page)).toContainEqual(["track", "PageView"]);
   expect(requests).toHaveLength(1);
   expect(await calls(page)).toContainEqual(["set", "autoConfig", false, pixel]);
+  expect((await calls(page)).filter((c: string[]) => c[0] === "init" && c[1] === pixel)).toHaveLength(1);
+  const pageViews = async () => (await calls(page)).filter((c: string[]) => c[0] === "track" || (c[0] === "trackSingle" && c[2] === "PageView")).length;
+  expect(await pageViews()).toBe(1);
   await navigate(page, "/features");
-  await expect.poll(async () => (await calls(page)).filter((c: string[]) => c[0] === "trackSingle").length).toBe(2);
+  await expect.poll(pageViews).toBe(2);
   await navigate(page, "/admin");
   await expect(page).toHaveURL(/\/admin$/);
-  await page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
+  await expect.poll(pageViews).toBe(3);
   await page.getByRole("button", { name: "僅使用必要功能" }).click();
-  await expect.poll(() => calls(page)).toContainEqual(["consent", "revoke"]);
   await navigate(page, "/solutions");
-  await expect(page).toHaveURL(/\/solutions$/);
-  expect((await calls(page)).filter((c: string[]) => c[0] === "trackSingle")).toHaveLength(2);
-  await page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
-  await page.getByRole("button", { name: "同意行銷追蹤" }).click();
-  await expect.poll(async () => (await calls(page)).filter((c: string[]) => c[0] === "trackSingle").length).toBe(3);
+  await expect.poll(pageViews).toBe(4);
+  expect((await calls(page)).some((c: string[]) => c[0] === "consent")).toBe(false);
   expect((await calls(page)).filter((c: string[]) => c[0] === "init" && c[1] === pixel)).toHaveLength(1);
+  expect(requests).toHaveLength(1);
 });
 
-for (const path of ["/admin", "/sales/missing", "/register/missing", "/form/missing", "/webinar/missing", "/purchase-result", "/legal/privacy"]) {
-  test(`platform pixel is excluded on ${path}`, async ({ page }) => {
-    const requests = await setup(page, "granted");
-    const response = await page.goto(path);
-    if (path === "/register/missing") {
-      expect(response?.status()).toBe(404);
-    } else {
-      await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toBeVisible();
-    }
-    expect(requests).toHaveLength(0);
-    expect(await calls(page)).toEqual([]);
+for (const path of ["/admin", "/sales/missing", "/form/missing", "/webinar/missing", "/purchase-result", "/legal/privacy"]) {
+  test(`platform pixel base code is present on ${path}`, async ({ page }) => {
+    const requests = await setup(page, "denied");
+    await page.goto(path);
+    await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toBeVisible();
+    await expect.poll(() => calls(page)).toContainEqual(["track", "PageView"]);
+    expect(requests).toHaveLength(1);
+    expect((await calls(page)).filter((c: string[]) => c[0] === "init")).toEqual([["init", pixel]]);
   });
 }
 
 test("webinar events target only that member's pixel after marketing navigation", async ({ page }) => {
   await setup(page, "granted");
   await page.goto("/");
-  await expect.poll(() => calls(page)).toContainEqual(["trackSingle", pixel, "PageView"]);
+  await expect.poll(() => calls(page)).toContainEqual(["track", "PageView"]);
   await page.route("**/api/webinars/demo", route => route.fulfill({ json: {
     id: "demo", title: "Demo", publishStatus: "published", metaPixelId: "123456789",
   } }));
@@ -73,12 +69,44 @@ test("webinar events target only that member's pixel after marketing navigation"
   } }));
   await navigate(page, "/register/demo");
   await expect.poll(() => calls(page)).toContainEqual(["init", "123456789"]);
+  // Member pixels run without automatic events as well.
+  expect(await calls(page)).toContainEqual(["set", "autoConfig", false, "123456789"]);
   await expect(page.locator("#registration-form")).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("livecast:webinar-event", {
     detail: { webinarId: "demo", eventType: "cta_click", data: {} },
   })));
   await expect.poll(() => calls(page)).toContainEqual(["trackSingle", "123456789", "Contact", { webinar_id: "demo" }]);
-  // Inspect all emitted marketing calls; none may use the broadcast command.
-  expect((await calls(page)).some((c: string[]) => c[0] === "track")).toBe(false);
-  expect((await calls(page)).filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel)).toHaveLength(1);
+  // Only the head base code may broadcast, and only before any member pixel exists.
+  const all = await calls(page);
+  const memberInit = all.findIndex((c: string[]) => c[0] === "init" && c[1] === "123456789");
+  expect(all.slice(memberInit).some((c: string[]) => c[0] === "track")).toBe(false);
+  // Head PageView + one SPA route change to the member page.
+  expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel)).toEqual([["trackSingle", pixel, "PageView"]]);
+  expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === "123456789" && c[2] === "PageView")).toHaveLength(0);
+});
+test("withdrawing consent after leaving a member page stops member events but keeps platform page views", async ({ page }) => {
+  await setup(page, "granted");
+  await page.route("**/api/webinars/demo", route => route.fulfill({ json: {
+    id: "demo", title: "Demo", publishStatus: "published", metaPixelId: "123456789",
+  } }));
+  await page.route("**/api/webinars/demo/**", route => route.fulfill({ json: {} }));
+  await page.route("**/api/webinars/demo/available-sessions", route => route.fulfill({ json: {
+    mode: "fixed", sessions: [], hasSessions: false, registrationOpen: true,
+  } }));
+  await page.goto("/admin");
+  await navigate(page, "/register/demo");
+  await expect.poll(() => calls(page)).toContainEqual(["init", "123456789"]);
+  await navigate(page, "/");
+  await expect.poll(async () => (await calls(page)).filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel).length).toBe(2);
+  await page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
+  await page.getByRole("button", { name: "僅使用必要功能" }).click();
+  await navigate(page, "/register/demo");
+  await expect(page.locator("#registration-form")).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("livecast:webinar-event", {
+    detail: { webinarId: "demo", eventType: "cta_click", data: {} },
+  })));
+  await page.waitForTimeout(250);
+  const all = await calls(page);
+  expect(all.filter((c: string[]) => c[1] === "123456789" && c[0] === "trackSingle")).toHaveLength(0);
+  expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel)).toHaveLength(3);
 });

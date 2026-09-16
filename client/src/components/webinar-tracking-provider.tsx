@@ -30,10 +30,17 @@ declare global {
     fbq?: Fbq;
     _fbq?: Fbq;
     dataLayer?: Array<Record<string, unknown>>;
+    __SELLCASE_PLATFORM_PIXEL_ID__?: string;
   }
 }
 
-const loadedPixels = new Set<string>();
+// The platform pixel is initialized by the base code in index.html on every
+// page; seed it here so it is never initialized twice.
+const loadedPixels = new Set<string>(
+  typeof window !== "undefined" && window.__SELLCASE_PLATFORM_PIXEL_ID__
+    ? [window.__SELLCASE_PLATFORM_PIXEL_ID__]
+    : [],
+);
 const loadedGtmContainers = new Set<string>();
 const metaEventMap: Record<WebinarEventType, string> = {
   landing_view: "ViewContent",
@@ -45,7 +52,10 @@ const metaEventMap: Record<WebinarEventType, string> = {
   checkout_start: "InitiateCheckout",
 };
 
-export function loadMetaPixel(id: string, automaticEvents = true) {
+// Automatic events are always off: every pixel (platform or member) must
+// receive only explicitly scoped trackSingle events, so pixels that stay
+// initialized across SPA navigation never pick up another tenant's clicks.
+export function loadMetaPixel(id: string, automaticEvents = false) {
   if (!window.fbq) {
     const fbq: Fbq = function (...args: unknown[]) {
       if (fbq.callMethod) fbq.callMethod(...args);
@@ -55,7 +65,7 @@ export function loadMetaPixel(id: string, automaticEvents = true) {
     fbq.version = "2.0";
     window.fbq = window._fbq = fbq;
   }
-  if (!window.fbq.callMethod && !document.querySelector('script[data-livecast-tracking="meta"]')) {
+  if (!window.fbq.callMethod && !document.querySelector('script[src*="connect.facebook.net"]')) {
     const script = document.createElement("script");
     script.async = true;
     script.src = "https://connect.facebook.net/en_US/fbevents.js";
@@ -80,14 +90,17 @@ function loadGtm(id: string) {
   document.head.appendChild(script);
 }
 
+// Withdrawing consent stops member GTM containers and all member pixel
+// events. The Meta SDK itself stays loaded because the platform pixel in
+// index.html runs on every page regardless of consent, so the global
+// fbq("consent", "revoke") switch cannot be used here.
 export function revokeMarketingTracking() {
-  window.fbq?.("consent", "revoke");
   window.dataLayer?.push({
     event: "sellcase_consent_update",
     ad_storage: "denied",
     analytics_storage: "denied",
   });
-  document.querySelectorAll<HTMLScriptElement>("script[data-livecast-tracking]").forEach((script) => script.remove());
+  document.querySelectorAll<HTMLScriptElement>('script[data-livecast-tracking="gtm"]').forEach((script) => script.remove());
   loadedGtmContainers.clear();
 }
 
@@ -108,7 +121,6 @@ export function WebinarTrackingProvider({
     }
     if (webinarPixelAllowed) loadMetaPixel(safePixelId);
     if (isValidGtmContainerId(safeGtmId)) loadGtm(safeGtmId);
-    window.fbq?.("consent", "grant");
   }, [safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent]);
 
   useEffect(() => {
