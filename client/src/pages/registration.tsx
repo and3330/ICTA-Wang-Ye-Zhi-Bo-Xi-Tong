@@ -14,45 +14,17 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, Users } from "lucide-react";
+import { Calendar, CheckCircle, Loader2, Play, Zap, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
-import { SafeRichText } from "@/components/safe-rich-text";
-import { landingVideoEmbedUrl } from "@shared/landingVideo";
-import { ProviderPlayer } from "@/components/provider-player";
+import { LandingCountdown as Countdown, WebinarLanding } from "@/components/webinar-landing";
 import type { PlaybackSource } from "@/lib/media";
 
 type CustomField = { id: string; label: string; type: "text" | "textarea" | "select" | "checkbox"; required: boolean; options?: string[] };
 type LandingBlock = { id?: string; type: string; enabled?: boolean; [key: string]: any };
 
-const isSafeLandingImage = (value?: string) => Boolean(value && (value.startsWith("https://") || value.startsWith("/uploads/")));
-function WebinarLanding({ blocks, brand, title, description, onRegister, countdownTarget, mediaPlayback = {}, webinarId }: { blocks: LandingBlock[]; brand: any; title: string; description?: string; onRegister: () => void; countdownTarget?: number; mediaPlayback?: Record<string, PlaybackSource>; webinarId: string }) {
-  const list = blocks.filter((b) => b.enabled !== false);
-  const sticky = list.find((b) => b.type === "stickyCta");
-  const scroll = () => {
-    onRegister();
-    const nameField = document.getElementById("input-name") || document.querySelector<HTMLInputElement>('input[data-testid="input-name"]');
-    nameField?.focus({ preventScroll: true });
-  };
-  const stickyTarget = sticky?.countdownMode === "fixed" && sticky.targetAt ? new Date(sticky.targetAt).getTime() : countdownTarget;
-  return <div className={`webinar-landing ${sticky ? "has-sticky-cta" : ""}`} style={{ "--landing-primary": brand?.primaryColor || "#123d5a", "--landing-secondary": brand?.secondaryColor || "#0b8b86" } as React.CSSProperties}>
-    {list.filter((block) => block.type !== "stickyCta").map((block, index) => {
-      const key = block.id || `${block.type}-${index}`;
-      if (block.type === "hero") return <section className="webinar-landing-hero" key={key}><div><span className="webinar-kicker">ONLINE WEBINAR</span><h1>{block.headline || title}</h1><p>{block.subheadline || description}</p><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></div>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={title} />}</section>;
-      if (block.type === "intro") return <section className="webinar-landing-section" key={key}><span className="webinar-kicker">ABOUT THIS EVENT</span><h2>{block.headline || "關於這場說明會"}</h2><p>{block.content || description}</p></section>;
-      if (block.type === "richText") return <section className="webinar-landing-section rich-text-preview" key={key}><SafeRichText value={block.body} /></section>;
-       if (block.type === "video" && block.videoId) { const bunny = block.provider === "bunny" ? mediaPlayback[block.videoId] : undefined; return <section className="webinar-landing-section webinar-landing-video" key={key}>{block.headline && <h2>{block.headline}</h2>}<div className="video-frame">{bunny ? <ProviderPlayer source={{ ...bunny, assetId: block.videoId }} renewSource={async () => { const response = await apiRequest("GET", `/api/webinars/${webinarId}/landing-media/${block.videoId}/playback`); return { ...(await response.json()), assetId: block.videoId }; }} /> : block.provider === "bunny" ? <div className="video-frame-empty">影片目前無法播放</div> : <iframe src={landingVideoEmbedUrl(block.provider === "vimeo" ? "vimeo" : "youtube", block.videoId)} title={block.headline || `${title} 活動介紹影片`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />}</div></section>; }
-      if (block.type === "audience" || block.type === "agenda") return <section className="webinar-landing-section" key={key}><h2>{block.headline}</h2><div className="webinar-landing-list">{(block.items || []).map((item: string) => <div key={item}>{item}</div>)}</div></section>;
-      if (block.type === "instructor") return <section className="webinar-landing-section webinar-instructor" key={key}>{isSafeLandingImage(block.imageUrl) && <img src={block.imageUrl} alt={block.name || "講師"} />}<div><h2>{block.headline || "關於講師"}</h2><h3>{block.name}</h3><p>{block.bio}</p></div></section>;
-      if (block.type === "faq") return <section className="webinar-landing-section webinar-faq" key={key}><h2>{block.headline || "常見問題"}</h2>{(block.items || []).map((item: any) => <details key={item.question}><summary>{item.question}</summary><p>{item.answer}</p></details>)}</section>;
-      if (block.type === "countdown") return <section className="webinar-landing-cta" key={key}><h2>{block.headline || "席位有限，現在就預約"}</h2>{countdownTarget ? <Countdown target={countdownTarget} /> : null}<button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></section>;
-      if (block.type === "cta") return <section className="webinar-landing-cta" key={key}><h2>{block.headline || "準備好開始了嗎？"}</h2><button onClick={scroll}>{block.ctaLabel || "立即報名"}</button></section>;
-      return null;
-    })}{sticky && <aside className="webinar-sticky-cta" aria-label="立即報名"><div><b>{sticky.headline || "直播即將開始"}</b>{stickyTarget && stickyTarget > Date.now() ? <Countdown target={stickyTarget} compact /> : null}</div><button onClick={scroll}>{sticky.ctaLabel || "立即報名"}</button></aside>}
-  </div>;
-}
 
 interface AvailableSessionsResponse {
   mode: "fixed" | "recurring" | "onDemand" | "justInTime";
@@ -75,43 +47,6 @@ const registrationSchema = z.object({
 
 type RegistrationForm = z.infer<typeof registrationSchema>;
 
-function Countdown({ target, compact = false }: { target: number; compact?: boolean }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const ms = target - now;
-  if (ms <= 0) return null;
-  const days = Math.floor(ms / 86400000);
-  const hours = Math.floor((ms % 86400000) / 3600000);
-  const mins = Math.floor((ms % 3600000) / 60000);
-  const secs = Math.floor((ms % 60000) / 1000);
-  if (compact) return <span className="sticky-countdown" aria-label={`距離開始還有 ${days} 天 ${hours} 時 ${mins} 分 ${secs} 秒`}><span>距離開始</span><strong>{days > 0 ? `${days}天 ` : ""}{String(hours).padStart(2, "0")}:{String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}</strong></span>;
-  return (
-    <div className="mb-6 p-4 bg-primary/5 border border-primary/20 rounded-md" data-testid="card-countdown">
-      <div className="flex items-center justify-center gap-2 text-sm font-medium text-primary mb-3">
-        <Clock className="h-4 w-4" />
-        <span>距離開始還有</span>
-      </div>
-      <div className="flex items-center justify-center gap-3 text-center">
-        {[
-          { v: days, l: "天" },
-          { v: hours, l: "時" },
-          { v: mins, l: "分" },
-          { v: secs, l: "秒" },
-        ].map((u, i) => (
-          <div key={i} className="flex flex-col items-center">
-            <span className="text-2xl font-bold tabular-nums" data-testid={`text-countdown-${u.l}`}>
-              {String(u.v).padStart(2, "0")}
-            </span>
-            <span className="text-xs text-muted-foreground">{u.l}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function Registration() {
   const { id } = useParams<{ id: string }>();
@@ -414,7 +349,7 @@ export default function Registration() {
         metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
         gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
       />
-      {landingPage?.blocks?.length ? <WebinarLanding webinarId={id!} blocks={landingPage.blocks} brand={brandSettings} title={webinar.title} description={webinar.description || undefined} countdownTarget={countdownTarget} mediaPlayback={landingResponse?.mediaPlayback} onRegister={() => { document.getElementById("registration-form")?.scrollIntoView({ behavior: "smooth", block: "start" }); window.setTimeout(() => document.getElementById("input-name")?.focus(), 450); }} /> : <div className="mx-auto max-w-lg p-5 text-center text-sm text-muted-foreground">落地頁內容暫時無法載入，以下仍可完成報名。</div>}
+      {landingPage?.blocks?.length ? <WebinarLanding webinarId={id!} blocks={landingPage.blocks} brand={brandSettings} title={webinar.title} description={webinar.description || undefined} startTime={mode === "fixed" ? webinar.startTime : undefined} timezone={webinarTimezone} countdownTarget={countdownTarget} mediaPlayback={landingResponse?.mediaPlayback} onRegister={() => { document.getElementById("registration-form")?.scrollIntoView({ behavior: "smooth", block: "start" }); window.setTimeout(() => document.getElementById("input-name")?.focus(), 450); }} /> : <div className="mx-auto max-w-lg p-5 text-center text-sm text-muted-foreground">落地頁內容暫時無法載入，以下仍可完成報名。</div>}
       <Card id="registration-form" className="max-w-lg w-full mx-auto my-8">
         <CardHeader className="text-center">
           {brandSettings?.logo && (

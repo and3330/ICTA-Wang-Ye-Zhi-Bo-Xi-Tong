@@ -94,7 +94,7 @@ test.describe("Landing Studio local mocked behavior", () => {
       status: 404,
       json: { message: "說明會落地頁尚未發布" },
     }));
-    await page.goto("/register/landing-local");
+    await page.goto("/form/landing-local");
     const consent = page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" });
     if (await consent.isVisible()) await consent.getByRole("button", { name: "僅使用必要功能" }).click();
     await expect(page.getByText("以下仍可完成報名")).toBeVisible();
@@ -105,7 +105,7 @@ test.describe("Landing Studio local mocked behavior", () => {
     test(`renders privacy video and usable sticky CTA at ${viewport.width}px`, async ({ page }) => {
       await page.setViewportSize(viewport);
       await mockLanding(page);
-      await page.goto("/register/landing-local");
+      await page.goto("/form/landing-local");
       const consent = page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" });
       if (await consent.isVisible()) await consent.getByRole("button", { name: "僅使用必要功能" }).click();
       await expect(page.locator('iframe[src*="youtube-nocookie.com/embed/dQw4w9WgXcQ"]')).toBeVisible();
