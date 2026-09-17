@@ -36,7 +36,7 @@ test.describe("local mocked viewer safety flows", () => {
     await expect(page.getByRole("button", { name: "同意行銷追蹤" })).toBeVisible();
     await page.getByRole("button", { name: "僅使用必要功能" }).click();
     await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toHaveCount(0);
   });
 
   test("renders revoked state and never creates a stale Vimeo iframe", async ({ page }) => {

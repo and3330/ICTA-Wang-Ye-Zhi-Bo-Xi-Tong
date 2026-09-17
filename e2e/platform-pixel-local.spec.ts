@@ -49,7 +49,9 @@ for (const path of ["/admin", "/sales/missing", "/form/missing", "/webinar/missi
   test(`platform pixel base code is present on ${path}`, async ({ page }) => {
     const requests = await setup(page, "denied");
     await page.goto(path);
-    await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toBeVisible();
+    await expect(page.locator("#root")).not.toBeEmpty();
+    // After a choice the consent UI is gone entirely (no floating button).
+    await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
     await expect.poll(() => calls(page)).toContainEqual(["track", "PageView"]);
     expect(requests).toHaveLength(1);
     expect((await calls(page)).filter((c: string[]) => c[0] === "init")).toEqual([["init", pixel]]);
@@ -98,7 +100,8 @@ test("withdrawing consent after leaving a member page stops member events but ke
   await expect.poll(() => calls(page)).toContainEqual(["init", "123456789"]);
   await navigate(page, "/");
   await expect.poll(async () => (await calls(page)).filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel).length).toBe(2);
-  await page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
+  // The footer link re-opens the dialog.
+  await page.getByRole("link", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
   await page.getByRole("button", { name: "僅使用必要功能" }).click();
   await navigate(page, "/register/demo");
   await expect(page.locator("#registration-form")).toBeVisible();
