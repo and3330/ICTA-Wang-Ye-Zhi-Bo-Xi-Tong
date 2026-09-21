@@ -140,6 +140,31 @@ export const webinars = pgTable("webinars", {
   deletedAt: timestamp("deleted_at"),
 });
 
+/** Moderated, owner-opted-in public course directory entry. Publication of a
+ * webinar and approval in the directory are deliberately independent. */
+export const courseMarketplaceListings = pgTable("course_marketplace_listings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }).unique(),
+  ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  optedIn: boolean("opted_in").notNull().default(false),
+  status: text("status").$type<"pending" | "approved" | "rejected" | "withdrawn">().notNull().default("pending"),
+  rejectionReason: text("rejection_reason"),
+  approvedTitle: text("approved_title"),
+  approvedSummary: text("approved_summary"),
+  approvedCover: text("approved_cover"),
+  requestedAt: timestamp("requested_at"),
+  approvedAt: timestamp("approved_at"),
+  reviewedAt: timestamp("reviewed_at"),
+  reviewedBy: varchar("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  queueIndex: index("course_marketplace_listings_queue_idx").on(table.status, table.optedIn),
+  ownerIndex: index("course_marketplace_listings_owner_idx").on(table.ownerId),
+}));
+export type CourseMarketplaceListing = typeof courseMarketplaceListings.$inferSelect;
+
 const emptyTrackingIdToNull = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? null : typeof value === "string" ? value.trim() : value;
 

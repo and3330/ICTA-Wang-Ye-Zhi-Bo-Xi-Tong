@@ -138,6 +138,7 @@ import {
 } from "./salesPages";
 import { buildLeadInsights, scoreLeadInsight } from "./leadInsights";
 import { getBatchSessionRegistrationCounts, getSessionRegistrationCounts } from "./sessionRegistrationCounts";
+import { registerCourseMarketplaceRoutes } from "./courseMarketplaceRoutes";
 import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCounts";
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
 import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
@@ -4755,6 +4756,7 @@ export async function registerRoutes(
   registerAiManagementRoutes(app, requireWebinarOwner);
   registerSalesScriptRoutes(app, requireWebinarOwner);
   registerAdminManagementRoutes(app, revokeUserSessions);
+  registerCourseMarketplaceRoutes(app);
 
   // ============ AI 一鍵生成（互動 / 電子報 / 貼文）============
   // 共用：預扣點數（reserve）。回 { ok, remaining } 或 { ok:false, reason }

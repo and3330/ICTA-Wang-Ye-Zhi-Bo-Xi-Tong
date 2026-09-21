@@ -15,6 +15,7 @@ export const managementPermissions = [
   "subscriptions.read", "subscriptions.write", "billing.read", "billing.refund",
   "credits.read", "credits.grant", "support.read", "support.write",
   "audit.read", "audit.export",
+  "course_marketplace.read", "course_marketplace.review",
 ] as const;
 export type ManagementPermission = typeof managementPermissions[number];
 

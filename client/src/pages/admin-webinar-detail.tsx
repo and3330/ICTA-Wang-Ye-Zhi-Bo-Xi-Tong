@@ -35,6 +35,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, LineChart, Line } from "recharts";
 import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost, ChatMessage } from "@shared/schema";
 import type { FeedbackResponse } from "@shared/schema";
+import type { CourseMarketplaceOwnerDto } from "@shared/courseMarketplace";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import {
@@ -1255,6 +1256,19 @@ export default function AdminWebinarDetail() {
   const { data: webinar, isLoading: webinarLoading } = useQuery<Webinar & TrackingWebinar>({
     queryKey: ["/api/webinars", id],
     enabled: !!id,
+  });
+  const courseMarketplace = useQuery<CourseMarketplaceOwnerDto | null>({
+    queryKey: ["/api/webinars", id, "course-marketplace"],
+    enabled: !!id,
+  });
+  const courseMarketplaceMutation = useMutation({
+    mutationFn: (optedIn: boolean) =>
+      apiRequest("PUT", `/api/webinars/${id}/course-marketplace`, { optedIn }).then((response) => response.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "course-marketplace"] });
+      toast({ title: "課程廣場申請已更新" });
+    },
+    onError: (error: Error) => toast({ title: "課程廣場申請失敗", description: error.message, variant: "destructive" }),
   });
 
   const { data: fakeUsers } = useQuery<FakeUser[]>({
@@ -5235,6 +5249,7 @@ export default function AdminWebinarDetail() {
                 { id: "brand", label: "品牌設定", icon: Palette },
                 { id: "embed", label: "嵌入與分享", icon: Code },
                 { id: "external-journey", label: "外部旅程與歸因", icon: Link2 },
+                { id: "course-marketplace", label: "課程廣場", icon: ShoppingBag },
               ], settingsSection, setSettingsSection)}
               <div className="space-y-6">
               {settingsSection === "tracking" && (
@@ -5909,6 +5924,64 @@ export default function AdminWebinarDetail() {
                {settingsSection === "external-journey" && (
                  <ExternalJourneyPanel webinarId={id!} webinarPublished={webinar.publishStatus === "published"} />
                )}
+              {settingsSection === "course-marketplace" && (
+                <Card data-testid="card-course-marketplace">
+                  <CardHeader>
+                    <CardTitle className="text-base">課程廣場</CardTitle>
+                    <CardDescription>
+                      使用付費方案的會員，可將已發布的說明會提交至課程廣場。申請須經管理員審核，無法由課程擁有者自行核准。
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {courseMarketplace.isLoading ? (
+                      <p className="text-sm text-muted-foreground">載入申請狀態中…</p>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-muted-foreground">目前狀態</span>
+                          <Badge variant="outline" data-testid="badge-course-marketplace-status">
+                            {( { pending: "審核中", approved: "已核准", rejected: "已拒絕", withdrawn: "已撤回" } as Record<string, string>)[courseMarketplace.data?.status || ""] || "尚未申請"}
+                          </Badge>
+                        </div>
+                        {courseMarketplace.data?.status === "rejected" && courseMarketplace.data.rejectionReason && (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert" data-testid="text-course-marketplace-rejection">
+                            <p className="font-medium">拒絕原因</p>
+                            <p className="mt-1">{courseMarketplace.data.rejectionReason}</p>
+                          </div>
+                        )}
+                        <p className="text-sm text-muted-foreground">
+                          只有已發布且具備付費方案的直播間才能申請；送出後會由管理員以目前課程內容進行審核。
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {(!courseMarketplace.data || ["rejected", "withdrawn"].includes(courseMarketplace.data.status)) && (
+                            <Button
+                              type="button"
+                              data-testid="button-course-marketplace-submit"
+                              disabled={courseMarketplaceMutation.isPending || webinar.publishStatus !== "published"}
+                              onClick={() => courseMarketplaceMutation.mutate(true)}
+                            >
+                              {courseMarketplace.data?.status === "rejected" ? "重新提交申請" : "提交申請"}
+                            </Button>
+                          )}
+                          {courseMarketplace.data && ["pending", "approved"].includes(courseMarketplace.data.status) && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              data-testid="button-course-marketplace-withdraw"
+                              disabled={courseMarketplaceMutation.isPending}
+                              onClick={() => courseMarketplaceMutation.mutate(false)}
+                            >
+                              撤回申請
+                            </Button>
+                          )}
+                        </div>
+                        {webinar.publishStatus !== "published" && <p className="text-xs text-muted-foreground">請先發布直播間後再申請。</p>}
+                        {webinar.publishStatus === "published" && !offers?.some((offer) => offer.active !== false) && <p className="text-xs text-muted-foreground">請先建立至少一個付費方案。</p>}
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
             </div>
               </div>
           </TabsContent>

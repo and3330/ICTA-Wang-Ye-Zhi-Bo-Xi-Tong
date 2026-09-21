@@ -57,7 +57,19 @@ test("concurrent publishing never exceeds the subscription quota and retains con
       user_id varchar,
       publish_status text NOT NULL DEFAULT 'draft',
       description text
-    )
+    );
+    CREATE TABLE course_marketplace_listings (
+      id varchar PRIMARY KEY,
+      webinar_id varchar NOT NULL UNIQUE REFERENCES webinars(id),
+      opted_in boolean NOT NULL DEFAULT false,
+      status text NOT NULL DEFAULT 'pending',
+      rejection_reason text,
+      approved_at timestamp,
+      reviewed_at timestamp,
+      reviewed_by varchar,
+      version integer NOT NULL DEFAULT 1,
+      updated_at timestamp NOT NULL DEFAULT now()
+    );
   `);
   const userId = "isolated-owner";
   await testPool.query(
@@ -90,6 +102,19 @@ test("concurrent publishing never exceeds the subscription quota and retains con
   );
   assert.equal(retained.rows.length, 4);
   assert.ok(retained.rows.every((row) => row.description === "must be retained"));
+
+  const approvedWebinarId = String(results.find((result) => result.webinarId)?.webinarId);
+  await testPool.query(
+    `INSERT INTO course_marketplace_listings
+      (id, webinar_id, opted_in, status, approved_at)
+     VALUES ('approved-listing', $1, true, 'approved', now())`,
+    [approvedWebinarId],
+  );
+  await claimWebinarPublicationWithinLimit(testDb, userId, approvedWebinarId);
+  const invalidated = await testPool.query(
+    "SELECT status, approved_at, version FROM course_marketplace_listings WHERE id = 'approved-listing'",
+  );
+  assert.deepEqual(invalidated.rows[0], { status: "pending", approved_at: null, version: 2 });
 
   await testPool.query("UPDATE users SET subscription_status = 'inactive', max_webinars = 0 WHERE id = $1", [userId]);
   const expiredClaim = await claimWebinarPublicationWithinLimit(testDb, userId, "expired-draft");

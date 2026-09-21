@@ -130,9 +130,17 @@ test("commerce, orders, and media share the same header and current-page navigat
     await page.goto(path);
     await expect(page.locator(".admin-shell > header").first()).toBeVisible();
     await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "工作台主要功能" }).getByRole("button", { name: current, exact: true })).toHaveAttribute("aria-current", "page");
+    const activeNavigation = page.getByRole("navigation", { name: "工作台主要功能" }).getByRole("button", { name: current, exact: true });
+    await expect(activeNavigation).toHaveAttribute("aria-current", "page");
+    await expect(activeNavigation).toHaveClass(/admin-nav-active/);
+    await expect(page.getByTestId("button-admin-settings")).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+
+  await page.getByTestId("button-admin-settings").click();
+  await expect(page.getByRole("menuitem", { name: "回到工作台" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "收款設定 · 綠界" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "客服支援" })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/products");

@@ -18,6 +18,7 @@ import {
   useManagementCatalog,
   useManagementMe,
   useManagementOverview,
+  useCourseMarketplaceQueue,
   useMember,
   useMembers,
   useOrders,
@@ -32,6 +33,8 @@ import type {
   OrderDto,
   SupportCaseDto,
 } from "@shared/adminManagement";
+import type { CourseMarketplaceManagementItemDto } from "@shared/courseMarketplace";
+import { useToast } from "@/hooks/use-toast";
 import {
   Sheet,
   SheetContent,
@@ -48,7 +51,8 @@ type Section =
   | "catalog"
   | "support"
   | "roles"
-  | "audit";
+  | "audit"
+  | "course-marketplace";
 
 const sections: Section[] = [
   "overview",
@@ -59,6 +63,7 @@ const sections: Section[] = [
   "support",
   "roles",
   "audit",
+  "course-marketplace",
 ];
 
 const nav: Array<{
@@ -114,6 +119,12 @@ const nav: Array<{
     label: "操作稽核",
     icon: FileSearch,
     permission: "audit.read",
+  },
+  {
+    id: "course-marketplace",
+    label: "課程廣場審核",
+    icon: PackageCheck,
+    permission: "course_marketplace.read",
   },
 ];
 
@@ -1654,6 +1665,89 @@ function Overview({ data, select }: { data: any; select: (section: Section) => v
   );
 }
 
+function CourseMarketplaceReview({
+  data,
+  canReview,
+  action,
+}: {
+  data: any;
+  canReview: boolean;
+  action: any;
+}) {
+  const { toast } = useToast();
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const items = (data.data?.items || []) as CourseMarketplaceManagementItemDto[];
+  const review = (item: CourseMarketplaceManagementItemDto, reviewAction: "approve" | "reject") => {
+    const trimmed = reason.trim();
+    if (reviewAction === "reject" && !trimmed) return;
+    action.mutate(
+      {
+        method: "POST",
+        url: `course-marketplace/${item.id}/review`,
+        data: { action: reviewAction, ...(trimmed ? { reason: trimmed } : {}), version: item.version },
+      },
+      {
+        onSuccess: () => {
+          setRejecting(null);
+          setReason("");
+          toast({ title: reviewAction === "approve" ? "課程已核准" : "課程已拒絕" });
+        },
+        onError: (error: Error) => toast({ title: "審核失敗", description: error.message, variant: "destructive" }),
+      },
+    );
+  };
+  return (
+    <section>
+      <div className="mc-section-head">
+        <div>
+          <h2>課程廣場審核</h2>
+          <p>檢視並處理課程廣場申請，核准時會擷取目前已發布的課程內容。</p>
+        </div>
+      </div>
+      <div className="mc-card">
+        <DataState loading={data.isLoading} error={data.error} empty={!items.length}>
+          <div className="mc-table-wrap">
+            <table className="mc-table">
+              <thead><tr><th>課程</th><th>擁有者 / 公司</th><th>申請日期</th><th>操作</th></tr></thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.id} data-testid={`course-marketplace-row-${item.id}`}>
+                    <td>{item.webinarTitle}<div className="mc-id">{item.webinarId}</div></td>
+                    <td>{item.ownerName}<div className="mc-id">{item.ownerCompany || "—"}</div></td>
+                    <td>{date(item.requestedAt)}</td>
+                    <td>
+                      {rejecting === item.id ? (
+                        <div className="mc-actions">
+                          <input
+                            className="mc-input"
+                            aria-label={`拒絕 ${item.webinarTitle} 的原因`}
+                            data-testid={`course-marketplace-reject-reason-${item.id}`}
+                            value={reason}
+                            onChange={(event) => setReason(event.target.value)}
+                            placeholder="請填寫拒絕原因"
+                          />
+                          <button type="button" className="mc-action" disabled={!reason.trim() || action.isPending} onClick={() => review(item, "reject")} data-testid={`course-marketplace-reject-confirm-${item.id}`}>確認拒絕</button>
+                          <button type="button" className="mc-action" onClick={() => { setRejecting(null); setReason(""); }}>取消</button>
+                        </div>
+                      ) : (
+                        <div className="mc-actions">
+                          <button type="button" className="mc-action primary" disabled={!canReview || action.isPending} onClick={() => review(item, "approve")} data-testid={`course-marketplace-approve-${item.id}`}>核准</button>
+                          <button type="button" className="mc-action" disabled={!canReview || action.isPending} onClick={() => { setRejecting(item.id); setReason(""); }} data-testid={`course-marketplace-reject-${item.id}`}>拒絕</button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </DataState>
+      </div>
+    </section>
+  );
+}
+
 export default function SuperAdmin() {
   const [location, setLocation] = useLocation();
   const search = useSearch();
@@ -1765,6 +1859,9 @@ export default function SuperAdmin() {
   const audit = useAudit(
     auditQuery,
     !!me?.canManage && section === "audit" && allowed("audit.read"),
+  );
+  const courseMarketplace = useCourseMarketplaceQueue(
+    !!me?.canManage && section === "course-marketplace" && allowed("course_marketplace.read"),
   );
   const catalog = useManagementCatalog(
     !!me?.canManage && (section === "catalog" || section === "roles"),
@@ -1950,6 +2047,13 @@ export default function SuperAdmin() {
               filters={filters.audit}
               update={(field, value) => update("audit", field, value)}
               exportable={allowed("audit.export")}
+            />
+          )}
+          {section === "course-marketplace" && (
+            <CourseMarketplaceReview
+              data={courseMarketplace}
+              canReview={allowed("course_marketplace.review")}
+              action={action}
             />
           )}
         </main>

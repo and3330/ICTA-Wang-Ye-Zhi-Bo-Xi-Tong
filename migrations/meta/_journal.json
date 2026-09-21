@@ -225,6 +225,13 @@
       "when": 1789204000000,
       "tag": "0032_sales_script_purchase_before_questionnaire",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789982400000,
+      "tag": "0033_course_marketplace_listings",
+      "breakpoints": true
     }
   ]
 }

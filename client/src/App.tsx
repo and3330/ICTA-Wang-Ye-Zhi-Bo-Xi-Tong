@@ -30,6 +30,8 @@ import AdminMedia from "@/pages/admin-media";
 import PricingPage from "@/pages/pricing";
 import { MarketingConsentBanner } from "@/components/marketing-consent";
 import { PlatformPixel } from "@/components/platform-pixel";
+import { SupportContactBubble } from "@/components/support-contact-bubble";
+import CourseMarketplace from "@/pages/course-marketplace";
 
 function Router() {
   return (
@@ -46,6 +48,7 @@ function Router() {
       <Route path="/webinar/:id" component={WebinarRoom} />
       <Route path="/legal/:kind" component={Legal} />
        <Route path="/pricing" component={PricingPage} />
+        <Route path="/courses" component={CourseMarketplace} />
        <Route path="/features" component={FeaturesPage} />
        <Route path="/features/:slug" component={FeatureDetail} />
        <Route path="/solutions" component={SolutionsPage} />
@@ -85,6 +88,7 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        <SupportContactBubble />
         <PlatformPixel />
         <MarketingConsentBanner />
       </TooltipProvider>

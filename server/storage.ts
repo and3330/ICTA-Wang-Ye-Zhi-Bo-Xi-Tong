@@ -35,6 +35,7 @@ import {
   webinarOffers, webinarPayments, type WebinarOffer,
   offerSalesPages, type OfferSalesPage, type InsertOfferSalesPage,
   webinarLandingPages, type WebinarLandingPage, type InsertWebinarLandingPage,
+  courseMarketplaceListings,
 } from "@shared/schema";
 import type { SalesScriptOutput } from "@shared/salesScript";
 
@@ -42,6 +43,17 @@ export class SalesScriptIdempotencyConflictError extends Error {
   constructor() {
     super("Idempotency key body does not match its original request");
   }
+}
+
+export async function lockCourseMarketplace(tx: any, webinarId: string) {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"course-marketplace:" + webinarId}))`);
+}
+
+export async function invalidateCourseMarketplaceListing(tx: any, webinarId: string) {
+  await tx.update(courseMarketplaceListings).set({
+    status: "pending", reviewedAt: null, reviewedBy: null, approvedAt: null,
+    rejectionReason: null, version: sql`${courseMarketplaceListings.version} + 1`, updatedAt: new Date(),
+  }).where(and(eq(courseMarketplaceListings.webinarId, webinarId), eq(courseMarketplaceListings.status, "approved"), eq(courseMarketplaceListings.optedIn, true)));
 }
 
 // A shared development database must never allow test workers to claim normal
@@ -346,6 +358,10 @@ export async function claimWebinarPublicationWithinLimit(
 ): Promise<{ webinarId?: string; limitExceeded: boolean; entitlementExpired?: boolean; maxPublished?: number }> {
   return database.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+    // Publication and moderation share this lock. Even an idempotent
+    // "publish" request is treated as a fresh public release and must be
+    // reviewed again before it can return to the course marketplace.
+    await lockCourseMarketplace(tx, webinarId);
     // Lock every row that can reduce publication capacity. Concurrent expiry,
     // revocation, suspension, or deletion then has a clear order relative to
     // this publication instead of allowing a stale preflight decision.
@@ -403,6 +419,7 @@ export async function claimWebinarPublicationWithinLimit(
       .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)));
     if (!existing[0]) return { webinarId: undefined, limitExceeded: false };
     if (existing[0].publishStatus === "published") {
+      await invalidateCourseMarketplaceListing(tx, webinarId);
       return { webinarId: existing[0].id, limitExceeded: false, maxPublished };
     }
 
@@ -419,6 +436,7 @@ export async function claimWebinarPublicationWithinLimit(
       .set({ publishStatus: "published" })
       .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)))
       .returning({ id: webinars.id });
+    if (updated[0]) await invalidateCourseMarketplaceListing(tx, webinarId);
     return { webinarId: updated[0]?.id, limitExceeded: false, maxPublished };
   });
 }
@@ -1638,8 +1656,22 @@ export class DatabaseStorage implements IStorage {
     if (data.aiSettings !== undefined) {
       update.aiSettings = sql`COALESCE(${webinars.aiSettings}, '{}'::jsonb) || ${JSON.stringify(data.aiSettings)}::jsonb`;
     }
-    const result = await db.update(webinars).set(update as any).where(eq(webinars.id, id)).returning();
-    return result[0];
+    return db.transaction(async (tx) => {
+      await lockCourseMarketplace(tx, id);
+      const [before] = await tx.select().from(webinars).where(eq(webinars.id, id)).limit(1);
+      const result = await tx.update(webinars).set(update as any).where(eq(webinars.id, id)).returning();
+      const publicFields = [
+        "title", "description", "coverImage", "startTime", "timezone",
+        "scheduleMode", "recurringSchedule", "brandSettings",
+        "videoProvider", "videoAssetId", "vimeoUrl", "videoDuration", "publishStatus",
+        "customFields", "scarcitySettings", "thankYouSettings",
+        "replaySettings", "replayEnabled", "replayAvailableHours", "aiSettings",
+      ];
+      if (before && result[0] && publicFields.some(field => Object.prototype.hasOwnProperty.call(data, field))) {
+        await invalidateCourseMarketplaceListing(tx, id);
+      }
+      return result[0];
+    });
   }
 
   async deleteWebinar(id: string): Promise<void> {
@@ -1647,12 +1679,14 @@ export class DatabaseStorage implements IStorage {
     // therefore retired atomically rather than cascading or manually deleting
     // its graph.
     await db.transaction(async (tx) => {
+      await lockCourseMarketplace(tx, id);
       await tx.update(webinars).set({
         deletedAt: new Date(),
         publishStatus: "draft",
         status: "ended",
       }).where(and(eq(webinars.id, id), isNull(webinars.deletedAt)));
       await tx.update(webinarLandingPages).set({ status: "draft", updatedAt: new Date() }).where(eq(webinarLandingPages.webinarId, id));
+      await invalidateCourseMarketplaceListing(tx, id);
     });
   }
 
@@ -1980,16 +2014,20 @@ export class DatabaseStorage implements IStorage {
     const publicationGuard = status === "published"
       ? sql`EXISTS (SELECT 1 FROM ${webinars} WHERE ${webinars.id} = ${webinarLandingPages.webinarId} AND ${webinars.publishStatus} = 'published')`
       : sql`true`;
-    const result = await db.update(webinarLandingPages).set({
-      status, publishedAt: status === "published" ? new Date() : null,
-      ...(status === "published" ? {
-        publishedTitle: webinarLandingPages.title,
-        publishedBlocks: webinarLandingPages.blocks,
-        publishedBrandSettings: webinarLandingPages.brandSettings,
-      } : {}),
-      version: sql`${webinarLandingPages.version} + 1`, updatedAt: new Date(),
-    }).where(and(eq(webinarLandingPages.webinarId, webinarId), eq(webinarLandingPages.version, version), publicationGuard)).returning();
-    return result[0];
+    return db.transaction(async (tx) => {
+      await lockCourseMarketplace(tx, webinarId);
+      const result = await tx.update(webinarLandingPages).set({
+        status, publishedAt: status === "published" ? new Date() : null,
+        ...(status === "published" ? {
+          publishedTitle: webinarLandingPages.title,
+          publishedBlocks: webinarLandingPages.blocks,
+          publishedBrandSettings: webinarLandingPages.brandSettings,
+        } : {}),
+        version: sql`${webinarLandingPages.version} + 1`, updatedAt: new Date(),
+      }).where(and(eq(webinarLandingPages.webinarId, webinarId), eq(webinarLandingPages.version, version), publicationGuard)).returning();
+      if (status === "published" && result[0]) await invalidateCourseMarketplaceListing(tx, webinarId);
+      return result[0];
+    });
   }
 
   async getPublicWebinarLandingPage(webinarId: string): Promise<WebinarLandingPage | undefined> {

@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AuditEventDto, ManagementCatalogDto, ManagementMeDto, ManagementOverviewDto, MemberDetailDto, MemberListItemDto, OrderDto, PaginatedDto, SubscriptionDto, SupportCaseDto } from "@shared/adminManagement";
+import type { CourseMarketplaceManagementItemDto } from "@shared/courseMarketplace";
 
 const base = "/api/management";
 const json = <T,>(url: string) => fetch(url, { credentials: "include" }).then(async r => {
@@ -43,6 +44,14 @@ export function useSubscriptions(filters: ListFilters, enabled: boolean) { const
 export function useOrders(filters: ListFilters, enabled: boolean) { const url = path("orders", filters); return useQuery({ queryKey: [base,url], queryFn: () => json<PaginatedDto<OrderDto>>(url), enabled }); }
 export function useSupport(filters: ListFilters, enabled: boolean) { const url = path("support", filters); return useQuery({ queryKey: [base,url], queryFn: () => json<PaginatedDto<SupportCaseDto>>(url), enabled }); }
 export function useAudit(filters: ListFilters, enabled: boolean) { const url = path("audit", filters); return useQuery({ queryKey: [base,url], queryFn: () => json<PaginatedDto<AuditEventDto>>(url), enabled }); }
+export function useCourseMarketplaceQueue(enabled: boolean) {
+  const url = `${base}/course-marketplace`;
+  return useQuery<{ items: CourseMarketplaceManagementItemDto[] }>({
+    queryKey: [base, url],
+    queryFn: () => json<{ items: CourseMarketplaceManagementItemDto[] }>(url),
+    enabled,
+  });
+}
 export function useManagementAction() {
   return useMutation({ mutationFn: ({ method = "PATCH", url, data }: { method?: string; url: string; data?: unknown }) => mutation(method, url.startsWith("/") ? url : `${base}/${url}`, data), onSuccess: () => queryClient.invalidateQueries({ queryKey: [base] }) });
 }

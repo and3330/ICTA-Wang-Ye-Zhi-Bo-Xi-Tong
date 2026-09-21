@@ -59,7 +59,7 @@ export function AdminDashboardNavigation(props: Props) {
     <>
       <nav aria-label={simplified ? "后台主选单" : "後台主選單"} className="hidden items-center gap-1 lg:flex" data-testid="admin-desktop-navigation">
         {primaryActions.map(action => (
-          <Button key={action.id} variant={action.active ? "secondary" : "ghost"} size="sm" aria-current={action.active ? "page" : undefined} onClick={action.run} data-testid={action.id}>
+          <Button key={action.id} variant="ghost" size="sm" className={action.active ? "admin-nav-active" : ""} aria-current={action.active ? "page" : undefined} onClick={action.run} data-testid={action.id}>
             <action.icon className="h-4 w-4" />
             {action.label}
           </Button>

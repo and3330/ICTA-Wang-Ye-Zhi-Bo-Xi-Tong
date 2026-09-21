@@ -28,3 +28,4 @@
 - [Pixel tenant isolation](pixel-tenant-isolation.md) — SPA navigation retains initialized pixels; route all events to specific pixels and disable platform automatic events.
 - [Taiwan reference pricing](taiwan-reference-pricing.md) — Taiwan IPs see owner-selected TWD reference prices; subscriptions still charge USD, not a live FX conversion.
 - [DB worker test isolation](db-worker-test-isolation.md) — test-process provider stubs do not protect shared DB jobs from the running app's real background worker.
+- [Course marketplace moderation](course-marketplace-moderation.md) — marketplace approval is bound to reviewed public content; all public mutations and republish paths must invalidate it under one shared lock.
