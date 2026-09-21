@@ -1,8 +1,9 @@
 import { ChevronDown, CreditCard, FolderOpen, LayoutDashboard, LogOut, Menu, MessageCircle, ReceiptText, ShoppingBag, Video } from "lucide-react";
 import { useLocation } from "wouter";
-import { queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useAdminLogout } from "@/hooks/use-admin-logout";
+import { useToast } from "@/hooks/use-toast";
 
 type Props = {
   navigate: (path: string) => void;
@@ -10,6 +11,8 @@ type Props = {
 
 export function AdminPrimaryNavigation({ navigate }: Props) {
   const [location] = useLocation();
+  const logoutAdmin = useAdminLogout();
+  const { toast } = useToast();
   const actions = [
     { id: "button-webinars", label: "說明會管理", icon: Video, path: "/admin/dashboard", active: location === "/admin/dashboard" },
     { id: "button-products", label: "電商賣場管理", icon: ShoppingBag, path: "/admin/products", active: location.startsWith("/admin/products") },
@@ -18,9 +21,16 @@ export function AdminPrimaryNavigation({ navigate }: Props) {
   ];
   const openSupport = () => window.dispatchEvent(new Event("sellcase:open-support-contact"));
   const logout = async () => {
-    await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" });
-    queryClient.clear();
-    navigate("/admin");
+    try {
+      await logoutAdmin();
+      navigate("/admin");
+    } catch (error: any) {
+      toast({
+        title: "無法完整登出",
+        description: error?.message || "請再試一次。",
+        variant: "destructive",
+      });
+    }
   };
   const workspaceActions = [
     { label: "回到工作台", icon: LayoutDashboard, run: () => navigate("/admin/dashboard") },

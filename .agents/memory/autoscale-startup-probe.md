@@ -7,4 +7,4 @@ Bind the public HTTP port before running development migrations, Stripe backfill
 
 **Why:** Replit publishing can fail with “required port was never opened” even when the build succeeds, because provider setup may consume the entire startup window before the server begins listening.
 
-**How to apply:** Preserve the user's current deployment target and production run command; consult live deployment metadata rather than assuming Autoscale. Any new blocking startup work belongs behind the startup traffic gate, after the listener is active; fatal initialization errors must still terminate the process.
+**How to apply:** Preserve the user's current deployment target and production run command; consult live deployment metadata rather than assuming Autoscale. Any new blocking startup work belongs behind the startup traffic gate, after the listener is active; fatal initialization errors must still terminate the process. In development, Vite middleware is attached only after initialization; guard it from handling responses whose headers were already sent by an early probe or Clerk handshake.

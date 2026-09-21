@@ -793,10 +793,11 @@ export const users = pgTable("users", {
   addonWebinars: integer("addon_webinars").notNull().default(0),
   emailVerificationRequired: boolean("email_verification_required").notNull().default(false),
   emailVerifiedAt: timestamp("email_verified_at"),
+  clerkUserId: text("clerk_user_id").unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, stripeSubscriptionCheckoutSessionId: true, stripeTrialClaimedAt: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, clerkUserId: true, subscriptionPlan: true, planExpiresAt: true, maxWebinars: true, isActive: true, isSuperAdmin: true, aiPoints: true, stripeCustomerId: true, stripeSubscriptionId: true, stripeSubscriptionCheckoutSessionId: true, stripeTrialClaimedAt: true, subscriptionStatus: true, subscriptionStartedAt: true, cancelAtPeriodEnd: true, addonWebinars: true });
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 

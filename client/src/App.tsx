@@ -1,4 +1,7 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
+import { ClerkProvider, AuthenticateWithRedirectCallback, useAuth } from "@clerk/react";
+import { publishableKeyFromHost } from "@clerk/react/internal";
+import { useEffect, useRef, useState } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -32,11 +35,82 @@ import { MarketingConsentBanner } from "@/components/marketing-consent";
 import { PlatformPixel } from "@/components/platform-pixel";
 import { SupportContactBubble } from "@/components/support-contact-bubble";
 import CourseMarketplace from "@/pages/course-marketplace";
+import { apiRequest, clearAuthScopedQueryCache } from "./lib/queryClient";
+import { trackPlatformConversion, type PlatformConversion } from "./lib/platform-conversions";
+import { readMarketingConsent } from "./lib/marketing-consent";
+import { Button } from "@/components/ui/button";
+import { useLang } from "@/hooks/use-lang";
+
+const clerkPubKey = publishableKeyFromHost(
+  window.location.hostname,
+  import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
+);
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+
+function ClerkCallback() {
+  return <AuthenticateWithRedirectCallback />;
+}
+
+function ClerkComplete() {
+  const { isLoaded, isSignedIn } = useAuth();
+  const { lang } = useLang();
+  const [, setLocation] = useLocation();
+  const [error, setError] = useState<string | null>(null);
+  const posted = useRef(false);
+  const text = lang === "en"
+    ? { waiting: "Completing Google sign-in…", failed: "Unable to complete sign-in", retry: "Return to sign in" }
+    : lang === "zh-CN"
+      ? { waiting: "正在完成 Google 登录…", failed: "无法完成登录", retry: "返回登录" }
+      : { waiting: "正在完成 Google 登入…", failed: "無法完成登入", retry: "返回登入" };
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || posted.current) return;
+    posted.current = true;
+    void (async () => {
+      try {
+        const response = await apiRequest("POST", "/api/admin/clerk-bridge");
+        const result = await response.json() as { conversion?: PlatformConversion };
+        await clearAuthScopedQueryCache();
+        if (result.conversion) trackPlatformConversion(result.conversion, readMarketingConsent());
+        setLocation("/admin/dashboard");
+      } catch (cause: any) {
+        posted.current = false;
+        setError(cause?.message || text.failed);
+      }
+    })();
+  }, [isLoaded, isSignedIn, setLocation, text.failed]);
+
+  if (!isLoaded) {
+    return <div className="min-h-[100dvh] grid place-items-center p-6 text-center">{text.waiting}</div>;
+  }
+  if (!isSignedIn && !error) {
+    return (
+      <div className="min-h-[100dvh] grid place-items-center p-6 text-center">
+        <div className="space-y-4">
+          <p className="text-destructive">{text.failed}</p>
+          <Button variant="outline" onClick={() => setLocation("/admin")}>{text.retry}</Button>
+        </div>
+      </div>
+    );
+  }
+  if (!error) {
+    return <div className="min-h-[100dvh] grid place-items-center p-6 text-center">{text.waiting}</div>;
+  }
+  return (
+    <div className="min-h-[100dvh] grid place-items-center p-6 text-center">
+      <div className="space-y-4">
+        <p className="text-destructive">{error}</p>
+        <Button variant="outline" onClick={() => setLocation("/admin")}>{text.retry}</Button>
+      </div>
+    </div>
+  );
+}
 
 function Router() {
   return (
     <Switch>
       {/* Embed Routes (minimal UI for iframe) */}
+      <Route path="/sign-in/*?" component={ClerkCallback} />
       <Route path="/embed/register/:id" component={EmbedRegister} />
       <Route path="/embed/webinar/:id" component={EmbedWebinar} />
       
@@ -61,6 +135,7 @@ function Router() {
       
       {/* Admin Routes */}
       <Route path="/admin" component={AdminLogin} />
+      <Route path="/admin/clerk-complete" component={ClerkComplete} />
       <Route path="/admin/dashboard" component={AdminDashboard} />
        <Route path="/admin/webinar/:id/ai" component={AdminAiAssistant} />
        <Route path="/admin/webinar/:id" component={AdminWebinarDetail} />
@@ -84,15 +159,22 @@ function Router() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-        <SupportContactBubble />
-        <PlatformPixel />
-        <MarketingConsentBanner />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ClerkProvider
+      publishableKey={clerkPubKey}
+      proxyUrl={clerkProxyUrl}
+      signInUrl="/admin"
+      signUpUrl="/admin"
+    >
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+          <SupportContactBubble />
+          <PlatformPixel />
+          <MarketingConsentBanner />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ClerkProvider>
   );
 }
 

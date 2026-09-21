@@ -29,7 +29,15 @@ export async function setupVite(server: Server, app: Express) {
     appType: "custom",
   });
 
-  app.use(vite.middlewares);
+  app.use((req, res, next) => {
+    // Clerk's development handshake and the early startup probe may complete a
+    // request before Vite is attached to the dynamically-built middleware
+    // stack. Do not let Vite mutate an already-sent response.
+    if (res.headersSent) {
+      return res.end();
+    }
+    return vite.middlewares(req, res, next);
+  });
 
   app.use("/{*path}", async (req, res, next) => {
     const url = req.originalUrl;

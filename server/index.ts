@@ -1,4 +1,12 @@
 import express, { type Request, Response, NextFunction } from "express";
+import cors from "cors";
+import { clerkMiddleware } from "@clerk/express";
+import { publishableKeyFromHost } from "@clerk/shared/keys";
+import {
+  CLERK_PROXY_PATH,
+  clerkProxyMiddleware,
+  getClerkProxyHost,
+} from "./middlewares/clerkProxyMiddleware";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { registerRoutes } from "./routes";
@@ -72,6 +80,10 @@ app.use((req, res, next) => {
   return res.status(503).setHeader("Retry-After", "5").json({ message: "Service is starting" });
 });
 
+// Clerk's proxy streams raw bytes and must precede every body parser.
+app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
+app.use(cors({ credentials: true, origin: true }));
+
 app.use((req, res, next) => {
   if (!isAcceptingWork()) {
     res.setHeader("Connection", "close");
@@ -114,6 +126,14 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+app.use(
+  clerkMiddleware((req) => ({
+    publishableKey: publishableKeyFromHost(
+      getClerkProxyHost(req) ?? "",
+      process.env.CLERK_PUBLISHABLE_KEY,
+    ),
+  })),
+);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

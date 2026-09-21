@@ -29,3 +29,4 @@
 - [Taiwan reference pricing](taiwan-reference-pricing.md) — Taiwan IPs see owner-selected TWD reference prices; subscriptions still charge USD, not a live FX conversion.
 - [DB worker test isolation](db-worker-test-isolation.md) — test-process provider stubs do not protect shared DB jobs from the running app's real background worker.
 - [Course marketplace moderation](course-marketplace-moderation.md) — marketplace approval is bound to reviewed public content; all public mutations and republish paths must invalidate it under one shared lock.
+- [Clerk legacy-session bridge](clerk-legacy-session-bridge.md) — Clerk identities link once to local members; Google logout must terminate both Clerk and legacy sessions.

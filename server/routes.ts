@@ -67,6 +67,7 @@ import { and, eq, inArray, isNull, sql, lte, or } from "drizzle-orm";
 import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
+import { clerkClient, getAuth } from "@clerk/express";
 import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClient";
 import { looksLikeQuestion } from "./aiAssistant";
 import { runAiReply } from "./aiReplyService";
@@ -1476,6 +1477,110 @@ export async function registerRoutes(
   }
 
   // ============ Auth Routes ============
+  app.post("/api/admin/clerk-bridge", async (req, res) => {
+    const auth = getAuth(req);
+    const clerkUserId = auth?.userId;
+    if (!clerkUserId) {
+      return res.status(401).json({ message: "Clerk authentication required" });
+    }
+    try {
+      // Identity is sourced exclusively from Clerk's server API. Never accept
+      // an email or user id from the browser.
+      const clerkUser = await clerkClient.users.getUser(clerkUserId);
+      const primaryEmail = clerkUser.emailAddresses.find(
+        (entry) => entry.id === clerkUser.primaryEmailAddressId,
+      );
+      if (!primaryEmail || primaryEmail.verification?.status !== "verified") {
+        return res.status(403).json({ message: "A verified primary email is required" });
+      }
+      const email = primaryEmail.emailAddress.trim().toLowerCase();
+      const bridged = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`clerk-email:${email}`}))`);
+        const [byClerk] = await tx.select().from(users).where(eq(users.clerkUserId, clerkUserId)).limit(1);
+        if (byClerk) {
+          if (!byClerk.isActive) {
+            throw Object.assign(new Error("Account is suspended or unavailable"), { code: "SUSPENDED" });
+          }
+          return { user: byClerk, created: false };
+        }
+        const matches = await tx.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(2);
+        if (matches.length > 1) {
+          throw Object.assign(new Error("Multiple local accounts use this email"), { code: "AMBIGUOUS_EMAIL" });
+        }
+        if (matches[0]) {
+          if (!matches[0].isActive) {
+            throw Object.assign(new Error("Account is suspended or unavailable"), { code: "SUSPENDED" });
+          }
+          // A local account can be linked to Clerk only once. A verified email
+          // match must never be allowed to replace another Clerk identity.
+          if (matches[0].clerkUserId && matches[0].clerkUserId !== clerkUserId) {
+            throw Object.assign(new Error("Account is already linked to another identity"), { code: "CLERK_LINK_CONFLICT" });
+          }
+          const [user] = await tx.update(users).set({ clerkUserId }).where(and(
+            eq(users.id, matches[0].id),
+            isNull(users.clerkUserId),
+          )).returning();
+          if (!user) {
+            throw Object.assign(new Error("Account identity link changed concurrently"), { code: "CLERK_LINK_CONFLICT" });
+          }
+          return { user, created: false };
+        }
+        const rawBase = (email.split("@")[0] || "member").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "member";
+        // Different email addresses can normalize to the same username base.
+        // Serialize allocation for that base so the unique username check and
+        // insert cannot race.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`clerk-username:${rawBase}`}))`);
+        let username = rawBase;
+        for (let suffix = 2; ; suffix += 1) {
+          const [taken] = await tx.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
+          if (!taken) break;
+          username = `${rawBase.slice(0, 95 - String(suffix).length)}_${suffix}`;
+        }
+        const [user] = await tx.insert(users).values({
+          username,
+          email,
+          clerkUserId,
+          password: await bcrypt.hash(crypto.randomBytes(32).toString("base64url"), 12),
+          emailVerificationRequired: false,
+          emailVerifiedAt: new Date(),
+        }).returning();
+        return { user, created: true };
+      });
+      // Idempotent and eligibility-aware. Running this on every successful
+      // bridge makes a transient failure retry-safe without granting a second
+      // trial to paid, manually entitled, or previously trialed accounts.
+      await ensureNoCardTrial(bridged.user.id);
+      const managementRole = await publicManagementRole(bridged.user);
+      req.session.regenerate((error) => {
+        if (error) return res.status(500).json({ message: "登入失敗" });
+        req.session.userId = bridged.user.id;
+        req.session.save((saveError) => {
+          if (saveError) return res.status(500).json({ message: "登入失敗" });
+          res.json({
+            success: true,
+            created: bridged.created,
+            user: {
+              id: bridged.user.id,
+              username: bridged.user.username,
+              email: bridged.user.email,
+              companyName: bridged.user.companyName,
+              isSuperAdmin: bridged.user.isSuperAdmin,
+              managementRole,
+              canManage: managementRole !== "member",
+            },
+            ...(bridged.created ? { conversion: signupConversion(`platform_signup:${crypto.randomUUID()}`, bridged.user.id) } : {}),
+          });
+        });
+      });
+    } catch (error: any) {
+      if (error?.code === "AMBIGUOUS_EMAIL") return res.status(409).json({ message: "Multiple local accounts use this email" });
+      if (error?.code === "CLERK_LINK_CONFLICT") return res.status(409).json({ message: "Account is already linked to another identity" });
+      if (error?.code === "SUSPENDED") return res.status(403).json({ message: "Account is suspended or unavailable" });
+      reportUnexpectedAuthDeliveryFailure(error, req);
+      return res.status(500).json({ message: "Unable to complete sign-in" });
+    }
+  });
+
   app.post("/api/admin/register", async (req, res) => {
     try {
       const { username, password, email, companyName } = req.body;

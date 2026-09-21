@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, clearAuthScopedQueryCache, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
@@ -37,6 +37,7 @@ import { DEFAULT_PRICING_REGION, usePricingRegion } from "@/hooks/use-pricing-re
 import { useMarketingConsent } from "@/components/marketing-consent";
 import { flushPlatformConversions, trackPlatformConversion, type PlatformConversion } from "@/lib/platform-conversions";
 import { readMarketingConsent } from "@/lib/marketing-consent";
+import { useAdminLogout } from "@/hooks/use-admin-logout";
 
 type WebinarStats = Record<string, {
   registered: number;
@@ -386,6 +387,7 @@ function TrialCountdown({ expiresAt }: { expiresAt: string | null }) {
 }
 
 export default function AdminDashboard() {
+  const logoutAdmin = useAdminLogout();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -981,12 +983,14 @@ export default function AdminDashboard() {
 
   const handleLogout = async () => {
     try {
-      await apiRequest("POST", "/api/admin/logout", {});
-    } catch {
-      // Clear the local boundary even when the network logout fails.
-    } finally {
-      await clearAuthScopedQueryCache();
+      await logoutAdmin();
       setLocation("/admin");
+    } catch (error: any) {
+      toast({
+        title: "無法完整登出",
+        description: error?.message || "請再試一次。",
+        variant: "destructive",
+      });
     }
   };
 

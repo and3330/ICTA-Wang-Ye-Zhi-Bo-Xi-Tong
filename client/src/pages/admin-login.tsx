@@ -16,6 +16,7 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardTrial";
 import { useMarketingConsent } from "@/components/marketing-consent";
 import { flushPlatformConversions, trackPlatformConversion, type PlatformConversion } from "@/lib/platform-conversions";
+import { useSignIn, useSignUp } from "@clerk/react/legacy";
 
 const langLabels: Record<LangFull, string> = {
   "zh-TW": "繁體中文",
@@ -67,6 +68,9 @@ const t: Record<LangFull, Record<string, string>> = {
     confirmReq: "請確認密碼",
     passwordMismatch: "密碼不一致",
     chooseUsername: "選擇使用者名稱",
+    googleLogin: "透過 Google 帳號登入",
+    googleSignup: "透過 Google 帳號註冊",
+    googleFailed: "Google 登入失敗，請稍後再試",
   },
   "zh-CN": {
     subtitle: "自动化研讨会平台",
@@ -105,6 +109,9 @@ const t: Record<LangFull, Record<string, string>> = {
     confirmReq: "请确认密码",
     passwordMismatch: "密码不一致",
     chooseUsername: "选择用户名",
+    googleLogin: "通过 Google 帐号登录",
+    googleSignup: "通过 Google 帐号注册",
+    googleFailed: "Google 登录失败，请稍后再试",
   },
   "en": {
     subtitle: "Automated Webinar Platform",
@@ -143,8 +150,63 @@ const t: Record<LangFull, Record<string, string>> = {
     confirmReq: "Please confirm your password",
     passwordMismatch: "Passwords do not match",
     chooseUsername: "Choose a username",
+    googleLogin: "Continue with Google",
+    googleSignup: "Sign up with Google",
+    googleFailed: "Google sign-in failed. Please try again.",
   },
 };
+
+function GoogleMark() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4">
+      <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-1.99 3.02v2.51h3.22c1.89-1.74 2.99-4.3 2.99-7.36Z" />
+      <path fill="#34A853" d="M12 22c2.7 0 4.97-.89 6.62-2.41l-3.22-2.51c-.89.6-2.02.96-3.4.96-2.61 0-4.83-1.76-5.62-4.13H3.05v2.59A10 10 0 0 0 12 22Z" />
+      <path fill="#FBBC05" d="M6.38 13.91A6 6 0 0 1 6.06 12c0-.66.11-1.31.32-1.91V7.5H3.05A10 10 0 0 0 2 12c0 1.61.38 3.13 1.05 4.5l3.33-2.59Z" />
+      <path fill="#EA4335" d="M12 5.96c1.47 0 2.79.5 3.83 1.49l2.87-2.87C16.97 2.9 14.7 2 12 2a10 10 0 0 0-8.95 5.5l3.33 2.59C7.17 7.72 9.39 5.96 12 5.96Z" />
+    </svg>
+  );
+}
+
+function GoogleAuthButton({ mode, label, failed, onError }: {
+  mode: "login" | "register";
+  label: string;
+  failed: string;
+  onError: (message: string) => void;
+}) {
+  const { isLoaded: signInLoaded, signIn } = useSignIn();
+  const { isLoaded: signUpLoaded, signUp } = useSignUp();
+  const [loading, setLoading] = useState(false);
+  const authenticate = async () => {
+    setLoading(true);
+    try {
+      if (mode === "login") {
+        if (!signInLoaded || !signIn) throw new Error(failed);
+        await signIn.authenticateWithRedirect({
+          strategy: "oauth_google",
+          redirectUrl: "/sign-in/sso-callback",
+          redirectUrlComplete: "/admin/clerk-complete",
+        });
+      } else {
+        if (!signUpLoaded || !signUp) throw new Error(failed);
+        await signUp.authenticateWithRedirect({
+          strategy: "oauth_google",
+          redirectUrl: "/sign-in/sso-callback",
+          redirectUrlComplete: "/admin/clerk-complete",
+        });
+      }
+    } catch {
+      setLoading(false);
+      onError(failed);
+    }
+  };
+  return (
+    <Button type="button" variant="outline" className="w-full" disabled={loading} onClick={authenticate}
+      data-testid={`button-google-${mode}`} aria-busy={loading}>
+      {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GoogleMark />}
+      <span className="ml-2">{label}</span>
+    </Button>
+  );
+}
 
 export default function AdminLogin() {
   const [, setLocation] = useLocation();
@@ -163,6 +225,9 @@ export default function AdminLogin() {
   const marketingConsent = useMarketingConsent();
 
   const s = t[lang];
+  const googleError = useCallback((message: string) => {
+    toast({ title: s.loginFailed, description: message, variant: "destructive" });
+  }, [s.loginFailed, toast]);
 
   useEffect(() => {
     if (signupConversion) flushPlatformConversions(signupConversion.accountMarker, marketingConsent);
@@ -400,6 +465,7 @@ export default function AdminLogin() {
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {s.signInBtn}
               </Button>
+              <GoogleAuthButton mode="login" label={s.googleLogin} failed={s.googleFailed} onError={googleError} />
             </form>
           ) : (
             <form onSubmit={registerForm.handleSubmit(onRegister)} className="space-y-4">
@@ -446,6 +512,7 @@ export default function AdminLogin() {
                     ? `免信用卡：新账号自动开始 ${NO_CARD_TRIAL_DAYS} 天试用，含 1 个已发布商品页与 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次 AI；到期不扣款。`
                     : `免信用卡：新帳號自動開始 ${NO_CARD_TRIAL_DAYS} 天試用，含 1 個已發布商品頁與 ${NO_CARD_TRIAL_AI_CALL_LIMIT} 次 AI；到期不扣款。`}
               </p>
+              <GoogleAuthButton mode="register" label={s.googleSignup} failed={s.googleFailed} onError={googleError} />
             </form>
           )}
 
