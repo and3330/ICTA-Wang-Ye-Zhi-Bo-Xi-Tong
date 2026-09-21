@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText, Video, Settings, ChevronDown } from "lucide-react";
+import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText, Video, ChevronDown } from "lucide-react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -35,8 +35,8 @@ export function AdminDashboardNavigation(props: Props) {
 
   const primaryActions = [
     { id: "button-webinars", label: simplified ? "说明会管理" : "說明會管理", icon: Video, run: () => props.navigate("/admin/dashboard"), active: location === "/admin/dashboard" },
-    { id: "button-products", label: "商品管理", icon: ShoppingBag, run: () => props.navigate("/admin/products") },
-    { id: "button-orders", label: simplified ? "订单管理" : "訂單管理", icon: ReceiptText, run: () => props.navigate("/admin/orders") },
+    { id: "button-products", label: simplified ? "电商卖场管理" : "電商賣場管理", icon: ShoppingBag, run: () => props.navigate("/admin/products"), active: location.startsWith("/admin/products") },
+    { id: "button-orders", label: simplified ? "订单管理系统" : "訂單管理系統", icon: ReceiptText, run: () => props.navigate("/admin/orders"), active: location.startsWith("/admin/orders") },
     { id: "button-media-library", label: simplified ? "素材库" : "素材庫", icon: FolderOpen, run: () => props.navigate("/admin/media") },
   ];
   const settingsActions = [
@@ -64,14 +64,14 @@ export function AdminDashboardNavigation(props: Props) {
             {action.label}
           </Button>
         ))}
-        <div className="mx-2 h-5 border-l" aria-hidden="true" />
+        <div className="mx-2 h-5 border-l border-white/20" aria-hidden="true" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" data-testid="button-admin-settings">
-              <Settings className="h-4 w-4" />{simplified ? "设置与账号" : "設定與帳號"}<ChevronDown className="h-3 w-3" />
+            <Button variant="ghost" size="sm" className="admin-compact-menu" data-testid="button-admin-settings">
+              <Menu className="h-4 w-4" />{simplified ? "工作台选单" : "工作台選單"}<ChevronDown className="h-3 w-3" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60" onCloseAutoFocus={event => {
+          <DropdownMenuContent align="end" className="w-64" onCloseAutoFocus={event => {
             const run = pendingDropdownDialog.current;
             if (run) {
               event.preventDefault();

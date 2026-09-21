@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Copy, ExternalLink, FilePlus2, Loader2, Package, Pencil, Plus, ReceiptText, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, FilePlus2, Loader2, Package, Pencil, Plus, ReceiptText, RotateCcw, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { SellCaseLogo } from "@/components/sellcase-logo";
+import { AdminPrimaryNavigation } from "@/components/admin-primary-navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -93,12 +94,11 @@ export default function AdminProducts() {
   };
   const products = productsQuery.data || [];
   return <div className="admin-shell min-h-screen bg-muted/30">
-    <header className="sticky top-0 z-20 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4">
-      <Button variant="ghost" size="icon" onClick={() => navigate("/admin/dashboard")} aria-label="返回控制台"><ArrowLeft /></Button>
-      <SellCaseLogo className="h-auto w-[145px]" /><div className="ml-auto"><Button onClick={() => openEdit()}><Plus className="mr-2 h-4 w-4" />建立商品</Button></div>
+    <header className="admin-topbar sticky top-0 z-40 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4">
+      <SellCaseLogo className="h-auto w-[145px]" /><div className="ml-auto flex items-center gap-2"><AdminPrimaryNavigation navigate={navigate} /><Button onClick={() => openEdit()}><Plus className="mr-2 h-4 w-4" />建立商品</Button></div>
     </div></header>
     <main className="container mx-auto space-y-6 px-4 py-8">
-      <div><h1 className="text-2xl font-bold">商品與獨立銷售頁</h1><p className="mt-1 text-sm text-muted-foreground">不需要建立直播，也能販售商品、建立公開銷售頁並查看訂單。</p></div>
+      <div><p className="dashboard-kicker">COMMERCE</p><h1 className="mt-2 text-2xl font-bold">電商賣場管理</h1><p className="mt-1 text-sm text-muted-foreground">管理商品、獨立銷售頁與販售狀態，不需要建立直播也能開始銷售。</p></div>
       <Card><CardContent className="p-4 text-sm text-muted-foreground"><b className="text-foreground">數位商品直接付款</b>：SellCase 不提供購物車、庫存或物流配送。付款會導向你設定的綠界 ECPay 商店；請先到 <button className="font-semibold text-teal-700 underline" onClick={() => navigate("/admin/dashboard?ecpay=1")}>控制台設定會員綠界金流</button>。</CardContent></Card>
       {trialActiveOrRetained && <Card data-testid="card-trial-commerce-stats"><CardHeader><h2 className="font-semibold">試用商品頁：基本數據與名單</h2><p className="text-sm text-muted-foreground">只顯示實際瀏覽、已同意聯絡的名單與轉換率。進階分析目前未包含在試用中。</p></CardHeader><CardContent className="space-y-5">
         <div className="grid grid-cols-3 gap-3">

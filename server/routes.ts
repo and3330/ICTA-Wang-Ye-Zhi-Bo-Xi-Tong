@@ -388,6 +388,7 @@ async function hasStoredPublicEntitlement(user: Awaited<ReturnType<typeof storag
   if (user.isSuperAdmin || user.subscriptionPlan === "enterprise") return true;
   if (["active", "trialing"].includes(user.subscriptionStatus)
     && (!user.planExpiresAt || new Date(user.planExpiresAt).getTime() > Date.now())) return true;
+  if (await getActiveNoCardTrial(user.id)) return true;
   // Read live temporary-entitlement state for every public admission;
   // expiration/revocation never relies on cached user fields or alters Stripe.
   try {
@@ -1653,6 +1654,9 @@ export async function registerRoutes(
       const manual = await memberManualPlan(user.id);
       const override = await activePublishingOverride(user.id);
       const effective = composePublishingOverride(effectiveMemberPlan(entitlement, manual), override);
+      const noCardTrial = await getActiveNoCardTrial(user.id);
+      const accessActive = effective.active || Boolean(noCardTrial);
+      const maxWebinars = Math.max(effective.maxWebinars, noCardTrial ? 1 : 0);
       const webinarCount = await storage.getWebinarCountByUser(user.id);
       const publishedCount = await storage.getPublishedWebinarCountByUser(user.id);
        res.json({
@@ -1661,12 +1665,13 @@ export async function registerRoutes(
         plan: effective.plan,
         amountUsd: entitlement.amountUsd,
         status: entitlement.status,
-        active: effective.active,
+        active: accessActive,
         planStartedAt: effective.source === "manual" ? manual?.startsAt || null : entitlement.startedAt,
         planExpiresAt: effective.source === "manual" ? manual?.expiresAt || null : entitlement.currentPeriodEnd,
         cancelAtPeriodEnd: entitlement.cancelAtPeriodEnd,
         addonWebinars: entitlement.addonWebinars,
-        maxWebinars: effective.maxWebinars,
+        maxWebinars,
+        noCardTrialActive: Boolean(noCardTrial),
         effectivePlan: effective,
         manualPlan: manual ? manualPlanDto(manual) : null,
         publishingOverride: override ? {
@@ -1682,7 +1687,7 @@ export async function registerRoutes(
         webinarCount,
         publishedCount,
         isActive: user.isActive,
-        isExpired: !effective.active && entitlement.plan !== "enterprise",
+        isExpired: !accessActive && entitlement.plan !== "enterprise",
         isSuperAdmin: user.isSuperAdmin,
         managementRole: await publicManagementRole(user),
         canManage: (await publicManagementRole(user)) !== "member",
@@ -1752,9 +1757,13 @@ export async function registerRoutes(
       return res.json(webinars);
     }
     const webinars = await storage.getAllWebinars();
-    res.json(webinars
+    const visible = await Promise.all(webinars
       .filter((webinar) => webinar.publishStatus === "published")
-      .map(publicWebinar));
+      .map(async (webinar) => {
+        const owner = webinar.userId ? await storage.getUser(webinar.userId) : undefined;
+        return await hasStoredPublicEntitlement(owner) ? publicWebinar(webinar) : null;
+      }));
+    res.json(visible.filter((webinar): webinar is NonNullable<typeof webinar> => webinar !== null));
   });
 
   app.get("/api/webinars/stats/summary", requireAdmin, async (req, res) => {
@@ -2045,17 +2054,23 @@ export async function registerRoutes(
       // is already active; the strongest active capacity always wins.
       const override = await activePublishingOverride(owner.id);
       const effective = composePublishingOverride(effectiveMemberPlan(entitlement, manual), override);
-      if (!effective.active && !override) {
+      const noCardTrial = await getActiveNoCardTrial(owner.id);
+      if (!effective.active && !override && !noCardTrial) {
         return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
       }
       await verifyReferencedMediaUrls(targetWebinar);
       await verifiedWebinarVideo(targetWebinar.userId, targetWebinar, true);
       // `publishingSlots` is an absolute temporary capacity, never a
       // replacement for an already-paid/grandfathered higher capacity.
-      const maxPublished = Math.max(effective.maxWebinars, override?.publishingSlots || 0);
-      const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string, maxPublished);
+      // An active no-card trial can publish exactly one webinar. The existing
+      // atomic quota claim prevents concurrent requests from exceeding it.
+      const maxPublished = Math.max(effective.maxWebinars, override?.publishingSlots || 0, noCardTrial ? 1 : 0);
+      const publishResult = await storage.publishWebinarWithinLimit(owner.id, req.params.id as string);
+      if (publishResult.entitlementExpired) {
+        return res.status(403).json({ message: "SUBSCRIPTION_REQUIRED", code: "SUBSCRIPTION_REQUIRED" });
+      }
       if (publishResult.limitExceeded) {
-        return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished });
+        return res.status(403).json({ message: "PUBLISH_LIMIT", code: "PUBLISH_LIMIT", maxPublished: publishResult.maxPublished ?? maxPublished });
       }
       const webinar = publishResult.webinar;
       if (!webinar) {

@@ -29,6 +29,8 @@ async function mockDashboard(
       "/api/product-sales-pages": [],
       "/api/media": { assets: [], usage: { videoBytes: 0, maxVideoBytes: 0 } },
       "/api/media/config": { videoEnabled: false, imageEnabled: false },
+      "/api/member/external-orders": { items: [], total: 0, page: 1, pageSize: 25 },
+      "/api/member/external-orders/summary": { currencies: [] },
     };
     await route.fulfill({ json: responses[path] ?? {} });
   });
@@ -69,7 +71,7 @@ test("mobile menu preserves actions, language and dialog focus", async ({ page }
   await expect(page).toHaveURL(/\/admin\/products$/);
 });
 
-test("regular members do not see super-admin action; desktop stays inline", async ({ page }) => {
+test("regular members do not see super-admin action; desktop shows the four primary areas", async ({ page }) => {
   await mockDashboard(page, false);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/dashboard");
@@ -78,21 +80,23 @@ test("regular members do not see super-admin action; desktop stays inline", asyn
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(page.getByRole("dialog", { name: "後台選單", exact: true })).not.toBeVisible();
   await expect(page.getByTestId("button-admin-mobile-menu")).toBeHidden();
-  await expect(page.getByTestId("button-products")).toBeVisible();
-  await expect(page.getByTestId("button-media-library")).toBeVisible();
+  await expect(page.getByTestId("button-products")).toHaveText("電商賣場管理");
+  await expect(page.getByTestId("button-orders")).toHaveText("訂單管理系統");
+  await expect(page.getByTestId("button-media-library")).toHaveText("素材庫");
   await expect(page.getByTestId("button-logout")).not.toBeVisible();
   await page.getByTestId("button-admin-settings").click();
   await expect(page.getByTestId("button-super-admin")).toHaveCount(0);
   await expect(page.getByTestId("button-logout")).toBeVisible();
 });
 
-test("desktop navigation prioritizes operations and preserves settings dialog focus", async ({ page }) => {
+test("desktop primary navigation and settings preserve operations and dialog focus", async ({ page }) => {
   await mockDashboard(page);
   await page.setViewportSize({ width: 1024, height: 850 });
   await page.goto("/admin/dashboard");
   const nav = page.getByTestId("admin-desktop-navigation");
-  await expect(nav.locator(":scope > button")).toHaveText(["說明會管理", "商品管理", "訂單管理", "素材庫", "設定與帳號"]);
+  await expect(nav.locator(":scope > button")).toHaveText(["說明會管理", "電商賣場管理", "訂單管理系統", "素材庫", "工作台選單"]);
   await expect(page.getByTestId("button-webinars")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("button-admin-settings")).toContainText("工作台選單");
   await expect(page.getByTestId("button-open-ecpay")).not.toBeVisible();
   const settings = page.getByTestId("button-admin-settings");
   await settings.click();
@@ -112,6 +116,28 @@ test("desktop navigation prioritizes operations and preserves settings dialog fo
   await page.locator(".admin-dashboard > header").screenshot({ path: "/tmp/admin-nav-desktop.png" });
   await settings.click();
   await page.getByRole("menu").screenshot({ path: "/tmp/admin-nav-settings.png" });
+});
+
+test("commerce, orders, and media share the same header and current-page navigation", async ({ page }) => {
+  await mockDashboard(page, false);
+  await page.route("**/api/member/orders**", route => route.fulfill({ json: { items: [], total: 0, currencies: [] } }));
+  for (const [path, title, current] of [
+    ["/admin/products", "電商賣場管理", "電商賣場管理"],
+    ["/admin/orders", "訂單管理系統", "訂單管理系統"],
+    ["/admin/orders?tab=external", "訂單管理系統", "訂單管理系統"],
+    ["/admin/media", "素材庫", "素材庫"],
+  ]) {
+    await page.goto(path);
+    await expect(page.locator(".admin-shell > header").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "工作台主要功能" }).getByRole("button", { name: current, exact: true })).toHaveAttribute("aria-current", "page");
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/admin/products");
+  await page.getByRole("button", { name: "開啟工作台選單" }).click();
+  await expect(page.getByRole("menuitem", { name: "電商賣場管理" })).toHaveAttribute("aria-current", "page");
 });
 
 test("mobile media, super-admin and logout actions keep original behavior", async ({ page }) => {
@@ -157,11 +183,12 @@ for (const hasStripeCustomer of [false, true]) {
       },
     });
     await page.goto("/admin/dashboard");
-    await expect(page.getByTestId("badge-current-plan")).toHaveText(/Growth（人工授權）/);
-    await expect(page.getByText("人工授權到期日")).toBeVisible();
-    await expect(page.getByText("下次續訂日")).toHaveCount(0);
+    await expect(page.getByText("Growth", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("badge-current-plan")).toHaveText("Growth");
+    await expect(page.getByText("人工授權到期日")).toHaveCount(0);
     await expect(page.getByTestId("button-end-trial")).toHaveCount(0);
     await expect(page.getByTestId("button-manage-subscription")).toHaveCount(0);
+    await page.getByTestId("button-account-actions").click();
     await page.getByTestId("button-upgrade").click();
     await expect(page.getByRole("dialog", { name: "選擇發布方案" })).toBeVisible();
     expect(portalRequests).toBe(0);
@@ -171,6 +198,9 @@ for (const hasStripeCustomer of [false, true]) {
 test("legacy dashboard subscription fixture remains usable without paid object", async ({ page }) => {
   await mockDashboard(page, false);
   await page.goto("/admin/dashboard");
-  await expect(page.getByText("Stripe 下次續訂日")).toBeVisible();
+  await expect(page.getByText("Stripe 下次續訂日")).toHaveCount(0);
+  await page.getByTestId("button-account-actions").click();
   await expect(page.getByTestId("button-upgrade")).toHaveText("變更方案／增加額度");
+  await expect(page.getByTestId("text-ai-points")).toHaveCount(1);
+  await expect(page.getByTestId("text-published-count")).toHaveCount(1);
 });

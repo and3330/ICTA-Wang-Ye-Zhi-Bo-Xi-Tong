@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Download, Loader2, ReceiptText, RefreshCw, Search } from "lucide-react";
+import { Download, Loader2, ReceiptText, RefreshCw, Search } from "lucide-react";
 import type { MemberOrderDetail, MemberOrderFilters, MemberOrderListResponse, MemberOrderPaymentStatus, MemberOrderProductFilterOption, MemberOrderSummaryResponse, MemberOrderFulfillmentStatus, UpdateMemberOrderRequest } from "@shared/memberOrders";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import { MemberOrderDetailDialog, formatDate, formatMoney, snapshotLabel } from "@/components/member-order-detail";
@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ExternalOrders } from "@/components/external-orders";
+import { AdminPrimaryNavigation } from "@/components/admin-primary-navigation";
 
 type ProductFiltersResponse = { items: MemberOrderProductFilterOption[]; truncated?: boolean; hasMore?: boolean };
 const paymentLabels: Record<MemberOrderPaymentStatus, string> = { pending: "待付款確認", paid: "已付款", failed: "付款失敗", partially_refunded: "部分退款", refunded: "已退款" };
@@ -132,9 +133,13 @@ function InternalOrders() {
   const items = listQuery.data?.items || [];
   const totalPages = Math.max(1, Math.ceil((listQuery.data?.total || 0) / pageSize));
   return <div className="admin-shell min-h-screen bg-muted/30">
-    <header className="sticky top-0 z-20 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4"><Button variant="ghost" size="icon" onClick={() => navigate("/admin/dashboard")} aria-label="返回控制台"><ArrowLeft /></Button><SellCaseLogo className="h-auto w-[145px]" /><div className="ml-auto"><Button variant="outline" onClick={exportCsv} disabled={exporting} data-testid="member-orders-export">{exporting ? <Loader2 className="animate-spin" /> : <Download />}匯出 CSV</Button></div></div></header>
+    <header className="admin-topbar sticky top-0 z-40 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4"><SellCaseLogo className="h-auto w-[145px]" /><div className="ml-auto flex items-center gap-2"><AdminPrimaryNavigation navigate={navigate} /><Button variant="outline" onClick={exportCsv} disabled={exporting} data-testid="member-orders-export">{exporting ? <Loader2 className="animate-spin" /> : <Download />}匯出 CSV</Button></div></div></header>
     <main className="container mx-auto space-y-6 px-4 py-6 sm:py-8" data-testid="member-orders-page">
-      <div><h1 className="text-2xl font-bold">訂單管理</h1><p className="mt-1 text-sm text-muted-foreground">僅顯示你的商品與說明會成交訂單；付款與履約狀態分開管理。</p></div>
+      <div><p className="dashboard-kicker">ORDER OPERATIONS</p><h1 className="mt-2 text-2xl font-bold">訂單管理系統</h1><p className="mt-1 text-sm text-muted-foreground">集中處理商品與說明會訂單，付款狀態與履約進度分開管理。</p></div>
+      <div className="inline-flex rounded-md border bg-card p-1" role="tablist" aria-label="訂單來源">
+        <Button size="sm" variant="secondary" role="tab" aria-selected="true" onClick={() => navigate("/admin/orders")} data-testid="member-orders-tab-internal">內部訂單</Button>
+        <Button size="sm" variant="ghost" role="tab" aria-selected="false" onClick={() => navigate("/admin/orders?tab=external")} data-testid="member-orders-tab-external">外部歸因</Button>
+      </div>
       <section aria-label="訂單篩選條件" className="rounded-lg border bg-card p-4"><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
         <div className="lg:col-span-2"><Label htmlFor="member-orders-search">搜尋</Label><div className="relative mt-2"><Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input id="member-orders-search" data-testid="member-orders-search" className="pl-9" value={searchText} onChange={event => setSearchText(event.target.value)} placeholder="訂單、付款參考、顧客或商品" /></div></div>
         <div><Label>商品</Label><Select value={filter.productId || "all"} onValueChange={value => setParams({ productId: value === "all" ? null : value, page: null })}><SelectTrigger className="mt-2" data-testid="member-orders-product"><SelectValue placeholder="全部商品" /></SelectTrigger><SelectContent><SelectItem value="all">全部商品</SelectItem>{productsQuery.data?.items.map(product => <SelectItem key={product.id} value={product.id}>{product.name || "未保存"}{product.nameSource !== "recorded" ? "（舊資料）" : ""}</SelectItem>)}</SelectContent></Select></div>
@@ -160,13 +165,16 @@ export default function AdminOrders() {
   const [, navigate] = useLocation();
   const search = useSearch();
   const external = new URLSearchParams(search).get("tab") === "external";
-  return <div className="min-h-screen bg-muted/30">
-    <div className="container mx-auto px-4 pt-4 sm:pt-6">
+  if (!external) return <InternalOrders />;
+  return <div className="admin-shell min-h-screen bg-muted/30">
+    <header className="admin-topbar sticky top-0 z-40 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4"><SellCaseLogo className="h-auto w-[145px]" /><div className="ml-auto"><AdminPrimaryNavigation navigate={navigate} /></div></div></header>
+    <main className="container mx-auto space-y-6 px-4 py-6 sm:py-8">
+      <div><p className="dashboard-kicker">ORDER OPERATIONS</p><h1 className="mt-2 text-2xl font-bold">訂單管理系統</h1><p className="mt-1 text-sm text-muted-foreground">集中處理商品與說明會訂單，付款狀態與履約進度分開管理。</p></div>
       <div className="inline-flex rounded-md border bg-card p-1" role="tablist" aria-label="訂單來源">
-        <Button size="sm" variant={external ? "ghost" : "secondary"} role="tab" aria-selected={!external} onClick={() => navigate("/admin/orders")} data-testid="member-orders-tab-internal">內部訂單</Button>
-        <Button size="sm" variant={external ? "secondary" : "ghost"} role="tab" aria-selected={external} onClick={() => navigate("/admin/orders?tab=external")} data-testid="member-orders-tab-external">外部歸因</Button>
+        <Button size="sm" variant="ghost" role="tab" aria-selected="false" onClick={() => navigate("/admin/orders")} data-testid="member-orders-tab-internal">內部訂單</Button>
+        <Button size="sm" variant="secondary" role="tab" aria-selected="true" onClick={() => navigate("/admin/orders?tab=external")} data-testid="member-orders-tab-external">外部歸因</Button>
       </div>
-    </div>
-    {external ? <main className="container mx-auto px-4 py-6 sm:py-8"><ExternalOrders /></main> : <InternalOrders />}
+      <ExternalOrders />
+    </main>
   </div>;
 }

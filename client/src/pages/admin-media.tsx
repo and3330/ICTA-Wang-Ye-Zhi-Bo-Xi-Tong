@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import * as tus from "tus-js-client";
-import { ArrowLeft, Copy, Database, Eye, FileImage, Loader2, Pause, Play, RefreshCw, RotateCcw, Trash2, Upload, Video } from "lucide-react";
+import { Copy, Database, Eye, FileImage, Loader2, Pause, Play, RefreshCw, RotateCcw, Trash2, Upload, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatBytes, type MediaAsset, type MediaConfig, type PlaybackSource } from "@/lib/media";
 import { ProviderPlayer } from "@/components/provider-player";
+import { SellCaseLogo } from "@/components/sellcase-logo";
+import { AdminPrimaryNavigation } from "@/components/admin-primary-navigation";
 
 type UploadItem = { assetId: string; file: File; progress: number; state: "uploading" | "paused" | "failed"; error?: string; upload: tus.Upload };
 
@@ -166,13 +168,14 @@ export default function AdminMedia() {
   const usageMax = data?.usage.maxVideoBytes || config?.maxTotalVideoBytes || 0;
 
   return (
-    <div className="min-h-screen bg-muted/20" data-testid="admin-media-page">
-      <header className="sticky top-0 z-40 border-b bg-background"><div className="container mx-auto flex flex-wrap items-center justify-between gap-2 px-4 py-4">
-        <div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={() => setLocation("/admin/dashboard")} aria-label="返回控制台"><ArrowLeft /></Button><div><h1 className="text-xl font-bold">媒體素材庫</h1><p className="text-xs text-muted-foreground">管理 Bunny 影片與圖片</p></div></div>
-        <Button onClick={() => inputRef.current?.click()} disabled={!config?.videoEnabled && !config?.imageEnabled} data-testid="button-media-upload"><Upload className="mr-2 h-4 w-4" />上傳素材</Button>
+    <div className="admin-shell min-h-screen bg-muted/20" data-testid="admin-media-page">
+      <header className="admin-topbar sticky top-0 z-40 border-b bg-card"><div className="container mx-auto flex items-center gap-3 px-4 py-4">
+        <SellCaseLogo className="h-auto w-[145px]" />
+        <div className="ml-auto flex items-center gap-2"><AdminPrimaryNavigation navigate={setLocation} /><Button onClick={() => inputRef.current?.click()} disabled={!config?.videoEnabled && !config?.imageEnabled} data-testid="button-media-upload"><Upload className="mr-2 h-4 w-4" />上傳素材</Button></div>
         <input ref={inputRef} hidden multiple type="file" accept="video/*,image/jpeg,image/png,image/webp,image/avif" onChange={(event) => void chooseFiles(event.target.files)} data-testid="input-media-upload" />
       </div></header>
       <main className="container mx-auto space-y-5 px-4 py-6">
+        <div><p className="dashboard-kicker">ASSET LIBRARY</p><h1 className="mt-2 text-2xl font-bold">素材庫</h1><p className="mt-1 text-sm text-muted-foreground">集中管理直播間與銷售頁使用的影片和圖片。</p></div>
         {config && config.videoEnabled && config.playbackEnabled === false && (
           <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status" data-testid="media-playback-setup-notice">
             影片可上傳，但安全播放尚未設定。管理員需設定獨立的 Bunny Stream 播放 Token Key；系統不會改用未簽章網址。

@@ -5,6 +5,7 @@ import { authoritativeRegistrationFunnelEvent } from "./funnelAnalytics";
 import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like, inArray } from "drizzle-orm";
 import {
   webinars, type InsertWebinar, type Webinar,
+  entitlementOverrides, noCardTrials,
   registrations, registrationIdentityKeys, type InsertRegistration, type Registration,
   fakeUsers, type InsertFakeUser, type FakeUser,
   scheduledMessages, type InsertScheduledMessage, type ScheduledMessage,
@@ -107,7 +108,7 @@ export interface IStorage {
   updateUser(id: string, data: Partial<Omit<User, "id" | "password" | "createdAt">>): Promise<User | undefined>;
   getWebinarCountByUser(userId: string): Promise<number>;
   getPublishedWebinarCountByUser(userId: string): Promise<number>;
-  publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }>;
+  publishWebinarWithinLimit(userId: string, webinarId: string): Promise<{ webinar?: Webinar; limitExceeded: boolean; entitlementExpired?: boolean; maxPublished?: number }>;
   getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createAuthToken(userId: string, purpose: string, tokenHash: string, expiresAt: Date): Promise<void>;
@@ -342,17 +343,67 @@ export async function claimWebinarPublicationWithinLimit(
   database: typeof db,
   userId: string,
   webinarId: string,
-  maxPublished: number,
-): Promise<{ webinarId?: string; limitExceeded: boolean }> {
+): Promise<{ webinarId?: string; limitExceeded: boolean; entitlementExpired?: boolean; maxPublished?: number }> {
   return database.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+    // Lock every row that can reduce publication capacity. Concurrent expiry,
+    // revocation, suspension, or deletion then has a clear order relative to
+    // this publication instead of allowing a stale preflight decision.
+    const [owner] = await tx.select({
+      isActive: users.isActive,
+      isSuperAdmin: users.isSuperAdmin,
+      subscriptionPlan: users.subscriptionPlan,
+      subscriptionStatus: users.subscriptionStatus,
+      planExpiresAt: users.planExpiresAt,
+      maxWebinars: users.maxWebinars,
+    }).from(users).where(eq(users.id, userId)).for("update");
+    const overrides = await tx.select({
+      publishingSlots: entitlementOverrides.publishingSlots,
+      startsAt: entitlementOverrides.startsAt,
+      expiresAt: entitlementOverrides.expiresAt,
+      revokedAt: entitlementOverrides.revokedAt,
+    }).from(entitlementOverrides)
+      .where(eq(entitlementOverrides.userId, userId)).for("update");
+    const [trial] = await tx.select({
+      startsAt: noCardTrials.startsAt,
+      expiresAt: noCardTrials.expiresAt,
+    }).from(noCardTrials)
+      .where(eq(noCardTrials.userId, userId)).for("update");
+    // Unlike now(), clock_timestamp() advances while this transaction waits
+    // for the advisory lock, so a trial that expires during the wait fails.
+    const clock = await tx.execute(sql`select clock_timestamp() as now`);
+    const now = new Date(String(clock.rows[0]?.now));
+    const paidCapacity = owner?.isActive && (
+      owner.isSuperAdmin || owner.subscriptionPlan === "enterprise"
+        ? true
+        : ["active", "trialing"].includes(owner.subscriptionStatus)
+          && (!owner.planExpiresAt || owner.planExpiresAt.getTime() > now.getTime())
+    ) ? (owner.isSuperAdmin || owner.subscriptionPlan === "enterprise" ? 999 : owner.maxWebinars) : 0;
+    const overrideCapacity = owner?.isActive
+      ? overrides.reduce((capacity, override) => (
+          !override.revokedAt
+          && override.startsAt.getTime() <= now.getTime()
+          && override.expiresAt.getTime() > now.getTime()
+            ? Math.max(capacity, override.publishingSlots)
+            : capacity
+        ), 0)
+      : 0;
+    const trialCapacity = owner?.isActive && trial
+      && trial.startsAt.getTime() <= now.getTime()
+      && trial.expiresAt.getTime() > now.getTime()
+      ? 1
+      : 0;
+    const maxPublished = Math.max(paidCapacity, overrideCapacity, trialCapacity);
+    if (maxPublished < 1) {
+      return { webinarId: undefined, limitExceeded: false, entitlementExpired: true, maxPublished: 0 };
+    }
     const existing = await tx
       .select({ id: webinars.id, publishStatus: webinars.publishStatus })
       .from(webinars)
       .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)));
     if (!existing[0]) return { webinarId: undefined, limitExceeded: false };
     if (existing[0].publishStatus === "published") {
-      return { webinarId: existing[0].id, limitExceeded: false };
+      return { webinarId: existing[0].id, limitExceeded: false, maxPublished };
     }
 
     const result = await tx
@@ -360,7 +411,7 @@ export async function claimWebinarPublicationWithinLimit(
       .from(webinars)
       .where(and(eq(webinars.userId, userId), eq(webinars.publishStatus, "published")));
     if ((result[0]?.value || 0) >= maxPublished) {
-      return { webinarId: undefined, limitExceeded: true };
+      return { webinarId: undefined, limitExceeded: true, maxPublished };
     }
 
     const updated = await tx
@@ -368,7 +419,7 @@ export async function claimWebinarPublicationWithinLimit(
       .set({ publishStatus: "published" })
       .where(and(eq(webinars.id, webinarId), eq(webinars.userId, userId)))
       .returning({ id: webinars.id });
-    return { webinarId: updated[0]?.id, limitExceeded: false };
+    return { webinarId: updated[0]?.id, limitExceeded: false, maxPublished };
   });
 }
 
@@ -437,10 +488,10 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.value || 0;
   }
 
-  async publishWebinarWithinLimit(userId: string, webinarId: string, maxPublished: number): Promise<{ webinar?: Webinar; limitExceeded: boolean }> {
-    const result = await claimWebinarPublicationWithinLimit(db, userId, webinarId, maxPublished);
-    if (!result.webinarId) return { webinar: undefined, limitExceeded: result.limitExceeded };
-    return { webinar: await this.getWebinar(result.webinarId), limitExceeded: false };
+  async publishWebinarWithinLimit(userId: string, webinarId: string): Promise<{ webinar?: Webinar; limitExceeded: boolean; entitlementExpired?: boolean; maxPublished?: number }> {
+    const result = await claimWebinarPublicationWithinLimit(db, userId, webinarId);
+    if (!result.webinarId) return { webinar: undefined, limitExceeded: result.limitExceeded, entitlementExpired: result.entitlementExpired, maxPublished: result.maxPublished };
+    return { webinar: await this.getWebinar(result.webinarId), limitExceeded: false, maxPublished: result.maxPublished };
   }
 
   async getUserByStripeCustomerId(stripeCustomerId: string): Promise<User | undefined> {

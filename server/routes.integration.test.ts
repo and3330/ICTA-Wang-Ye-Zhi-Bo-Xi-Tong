@@ -5,6 +5,9 @@ import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { registerRoutes } from "./routes";
 import { storage } from "./storage";
+import { db } from "./db";
+import { noCardTrials, users } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import type { SubscriptionEntitlement } from "./subscriptionEntitlements";
 import type { Registration, User, Webinar, WebinarFunnelEvent } from "@shared/schema";
 
@@ -146,6 +149,108 @@ test("draft access and expired publishing are enforced through real HTTP and Web
   });
   assert.equal(retainedResponse.status, 200);
   assert.equal((await retainedResponse.json() as Webinar).description, draft.description);
+});
+
+test("an active no-card trial can publish one webinar and expose it publicly", async (t) => {
+  const ownerId = `route-trial-owner-${Date.now()}`;
+  const webinarId = `route-trial-webinar-${Date.now()}`;
+  const user = {
+    id: ownerId,
+    username: ownerId,
+    password: "test-only",
+    email: `${ownerId}@example.test`,
+    isActive: true,
+    isSuperAdmin: false,
+    subscriptionPlan: "free",
+    subscriptionStatus: "inactive",
+  } as User;
+  const webinar = {
+    id: webinarId,
+    userId: ownerId,
+    title: "Trial webinar",
+    description: "Trial members can start using one published room",
+    publishStatus: "draft",
+    vimeoUrl: "https://vimeo.com/123456789",
+    videoProvider: "vimeo",
+    videoAssetId: null,
+    videoDuration: 60,
+  } as Webinar;
+  await db.insert(users).values(user as any);
+  const trialStartsAt = new Date(Date.now() - 60_000);
+  const trialExpiresAt = new Date(trialStartsAt.getTime() + 14 * 24 * 60 * 60 * 1000);
+  await db.insert(noCardTrials).values({
+    userId: ownerId,
+    startsAt: trialStartsAt,
+    expiresAt: trialExpiresAt,
+    retentionUntil: new Date(trialExpiresAt.getTime() + 30 * 24 * 60 * 60 * 1000),
+  });
+
+  const originals = {
+    getWebinar: storage.getWebinar,
+    getAllWebinars: storage.getAllWebinars,
+    getUser: storage.getUser,
+    publishWebinarWithinLimit: storage.publishWebinarWithinLimit,
+  };
+  storage.getWebinar = async (id) => id === webinarId ? webinar : undefined;
+  storage.getAllWebinars = async () => [webinar];
+  storage.getUser = async (id) => id === ownerId ? user : undefined;
+  storage.publishWebinarWithinLimit = async () => {
+    webinar.publishStatus = "published";
+    return { webinar, limitExceeded: false, maxPublished: 1 };
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    const userId = req.header("x-test-user-id");
+    (req as any).session = userId ? { userId } : {};
+    next();
+  });
+  const server = createServer(app);
+  await registerRoutes(server, app, undefined, {
+    refreshEntitlement: async () => ({
+      plan: "free", status: "inactive", active: false, amountUsd: null,
+      maxWebinars: 0, addonWebinars: 0, startedAt: null,
+      currentPeriodEnd: null, cancelAtPeriodEnd: false, stripeSubscriptionId: null,
+    }),
+    startScheduler: () => {},
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  t.after(async () => {
+    storage.getWebinar = originals.getWebinar;
+    storage.getAllWebinars = originals.getAllWebinars;
+    storage.getUser = originals.getUser;
+    storage.publishWebinarWithinLimit = originals.publishWebinarWithinLimit;
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await db.delete(noCardTrials).where(eq(noCardTrials.userId, ownerId));
+    await db.delete(users).where(eq(users.id, ownerId));
+  });
+
+  const publish = await fetch(`${baseUrl}/api/webinars/${webinarId}/publish`, {
+    method: "POST",
+    headers: { "x-test-user-id": ownerId },
+  });
+  assert.equal(publish.status, 200);
+
+  const publicView = await fetch(`${baseUrl}/api/webinars/${webinarId}`);
+  assert.equal(publicView.status, 200, "the published room is public while the trial is active");
+
+  const expiredStartsAt = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+  const expiredAt = new Date(expiredStartsAt.getTime() + 14 * 24 * 60 * 60 * 1000);
+  await db.update(noCardTrials).set({
+    startsAt: expiredStartsAt,
+    expiresAt: expiredAt,
+    retentionUntil: new Date(expiredAt.getTime() + 30 * 24 * 60 * 60 * 1000),
+  }).where(eq(noCardTrials.userId, ownerId));
+
+  const expiredPublicView = await fetch(`${baseUrl}/api/webinars/${webinarId}`);
+  assert.equal(expiredPublicView.status, 404, "public access closes as soon as the trial expires");
+  const expiredList = await fetch(`${baseUrl}/api/webinars`);
+  assert.deepEqual(await expiredList.json(), [], "expired trial webinars are not anonymously enumerable");
 });
 
 test("public funnel endpoint rejects forged purchase and refund events", async (t) => {

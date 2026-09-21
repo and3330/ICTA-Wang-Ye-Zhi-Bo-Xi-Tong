@@ -29,6 +29,29 @@ test("concurrent publishing never exceeds the subscription quota and retains con
   });
 
   await testPool.query(`
+    CREATE TABLE users (
+      id varchar PRIMARY KEY,
+      is_active boolean NOT NULL DEFAULT true,
+      is_super_admin boolean NOT NULL DEFAULT false,
+      subscription_plan text NOT NULL DEFAULT 'free',
+      subscription_status text NOT NULL DEFAULT 'inactive',
+      plan_expires_at timestamp,
+      max_webinars integer NOT NULL DEFAULT 0
+    );
+    CREATE TABLE entitlement_overrides (
+      id varchar PRIMARY KEY,
+      user_id varchar NOT NULL REFERENCES users(id),
+      publishing_slots integer NOT NULL,
+      manual_plan text,
+      starts_at timestamp NOT NULL,
+      expires_at timestamp NOT NULL,
+      revoked_at timestamp
+    );
+    CREATE TABLE no_card_trials (
+      user_id varchar PRIMARY KEY REFERENCES users(id),
+      starts_at timestamp NOT NULL,
+      expires_at timestamp NOT NULL
+    );
     CREATE TABLE webinars (
       id varchar PRIMARY KEY,
       user_id varchar,
@@ -37,7 +60,11 @@ test("concurrent publishing never exceeds the subscription quota and retains con
     )
   `);
   const userId = "isolated-owner";
-  const webinarIds = ["draft-1", "draft-2", "draft-3"];
+  await testPool.query(
+    "INSERT INTO users (id, subscription_plan, subscription_status, plan_expires_at, max_webinars) VALUES ($1, 'growth', 'active', now() + interval '1 day', 2)",
+    [userId],
+  );
+  const webinarIds = ["draft-1", "draft-2", "draft-3", "expired-draft"];
   for (const webinarId of webinarIds) {
     await testPool.query(
       "INSERT INTO webinars (id, user_id, publish_status, description) VALUES ($1, $2, 'draft', $3)",
@@ -46,7 +73,7 @@ test("concurrent publishing never exceeds the subscription quota and retains con
   }
 
   const results = await Promise.all(
-    webinarIds.map((id) => claimWebinarPublicationWithinLimit(testDb, userId, id, 2)),
+    webinarIds.slice(0, 3).map((id) => claimWebinarPublicationWithinLimit(testDb, userId, id)),
   );
 
   assert.equal(results.filter((result) => result.webinarId).length, 2);
@@ -61,6 +88,60 @@ test("concurrent publishing never exceeds the subscription quota and retains con
     "SELECT description FROM webinars WHERE user_id = $1 ORDER BY id",
     [userId],
   );
-  assert.equal(retained.rows.length, 3);
+  assert.equal(retained.rows.length, 4);
   assert.ok(retained.rows.every((row) => row.description === "must be retained"));
+
+  await testPool.query("UPDATE users SET subscription_status = 'inactive', max_webinars = 0 WHERE id = $1", [userId]);
+  const expiredClaim = await claimWebinarPublicationWithinLimit(testDb, userId, "expired-draft");
+  assert.equal(expiredClaim.entitlementExpired, true);
+  const expiredDraft = await testPool.query(
+    "SELECT publish_status FROM webinars WHERE id = 'expired-draft'",
+  );
+  assert.equal(expiredDraft.rows[0]?.publish_status, "draft");
+
+  const trialUserId = "isolated-trial-owner";
+  await testPool.query("INSERT INTO users (id) VALUES ($1)", [trialUserId]);
+  await testPool.query(
+    "INSERT INTO no_card_trials (user_id, starts_at, expires_at) VALUES ($1, now() - interval '1 minute', now() + interval '14 days' - interval '1 minute')",
+    [trialUserId],
+  );
+  await testPool.query(
+    "INSERT INTO webinars (id, user_id, publish_status, description) VALUES ('trial-draft-1', $1, 'draft', 'retained'), ('trial-draft-2', $1, 'draft', 'retained')",
+    [trialUserId],
+  );
+  const trialResults = await Promise.all([
+    claimWebinarPublicationWithinLimit(testDb, trialUserId, "trial-draft-1"),
+    claimWebinarPublicationWithinLimit(testDb, trialUserId, "trial-draft-2"),
+  ]);
+  assert.equal(trialResults.filter(result => result.webinarId).length, 1);
+  assert.equal(trialResults.filter(result => result.limitExceeded).length, 1);
+  assert.ok(trialResults.every(result => result.maxPublished === 1));
+
+  const expiringUserId = "expiring-trial-owner";
+  await testPool.query("INSERT INTO users (id) VALUES ($1)", [expiringUserId]);
+  await testPool.query(
+    "INSERT INTO no_card_trials (user_id, starts_at, expires_at) VALUES ($1, clock_timestamp() - interval '1 minute', clock_timestamp() + interval '300 milliseconds')",
+    [expiringUserId],
+  );
+  await testPool.query(
+    "INSERT INTO webinars (id, user_id, publish_status, description) VALUES ('expiring-trial-draft', $1, 'draft', 'retained')",
+    [expiringUserId],
+  );
+  const lockClient = await testPool.connect();
+  try {
+    await lockClient.query("BEGIN");
+    await lockClient.query("SELECT pg_advisory_xact_lock(hashtext($1))", [expiringUserId]);
+    const blockedClaim = claimWebinarPublicationWithinLimit(testDb, expiringUserId, "expiring-trial-draft");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await lockClient.query("COMMIT");
+    const result = await blockedClaim;
+    assert.equal(result.entitlementExpired, true, "expiry is checked after waiting for the publication lock");
+    const retainedExpiredDraft = await testPool.query(
+      "SELECT publish_status FROM webinars WHERE id = 'expiring-trial-draft'",
+    );
+    assert.equal(retainedExpiredDraft.rows[0]?.publish_status, "draft");
+  } finally {
+    await lockClient.query("ROLLBACK").catch(() => undefined);
+    lockClient.release();
+  }
 });
