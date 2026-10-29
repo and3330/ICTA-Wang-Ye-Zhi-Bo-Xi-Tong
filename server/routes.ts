@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
+import { registerMcpRoutes } from "./mcp/routes";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -571,6 +572,7 @@ export async function registerRoutes(
   registerAiSalesPageRoutes(app, requireAdmin);
   registerMemberOrderRoutes(app);
   registerExternalJourneyRoutes(app, hasStoredPublicEntitlement);
+  registerMcpRoutes(app, hasStoredPublicEntitlement);
   // registerBunnyMediaRoutes owns its final handlers. Intercept its DELETE
   // registration so the media lock wraps the returned handler Promise rather
   // than relying on an early app.use response-lifecycle middleware.

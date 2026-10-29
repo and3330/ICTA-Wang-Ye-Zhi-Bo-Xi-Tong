@@ -5,6 +5,62 @@ import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
 import type { ExternalJourneySettingsInput } from "./externalJourneys";
 import type { SalesScriptOutput, SalesScriptJobState, SalesScriptPurchaseStatus } from "./salesScript";
+
+// OAuth grants are deliberately separate from Clerk identities and seller
+// integration secrets. No OAuth bearer/refresh/code is persisted in plaintext.
+export const mcpOAuthClients = pgTable("mcp_oauth_clients", {
+  id: text("id").primaryKey(),
+  metadata: jsonb("metadata").notNull().$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export const mcpOAuthRequests = pgTable("mcp_oauth_requests", {
+  hash: text("hash").primaryKey(),
+  clientId: text("client_id").notNull().references(() => mcpOAuthClients.id),
+  params: jsonb("params").notNull().$type<{
+    redirectUri: string; codeChallenge: string; scopes: string[]; state?: string; resource: string;
+  }>(),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  csrfHash: text("csrf_hash"),
+  consentedAt: timestamp("consented_at"),
+  usedAt: timestamp("used_at"),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+export const mcpOAuthGrants = pgTable("mcp_oauth_grants", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  clientId: text("client_id").notNull().references(() => mcpOAuthClients.id),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  scopes: jsonb("scopes").notNull().$type<string[]>(),
+  resource: text("resource").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+  revokedAt: timestamp("revoked_at"),
+}, table => ({ ownerIndex: index("mcp_oauth_grants_owner_idx").on(table.userId) }));
+export const mcpOAuthCodes = pgTable("mcp_oauth_codes", {
+  hash: text("hash").primaryKey(),
+  grantId: varchar("grant_id").notNull().references(() => mcpOAuthGrants.id, { onDelete: "cascade" }),
+  redirectUri: text("redirect_uri").notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+});
+export const mcpOAuthTokens = pgTable("mcp_oauth_tokens", {
+  hash: text("hash").primaryKey(),
+  grantId: varchar("grant_id").notNull().references(() => mcpOAuthGrants.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().$type<"access" | "refresh">(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+}, table => ({ grantIndex: index("mcp_oauth_tokens_grant_idx").on(table.grantId) }));
+export const mcpOAuthAudit = pgTable("mcp_oauth_audit", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id"),
+  clientId: text("client_id"),
+  grantId: varchar("grant_id"),
+  action: text("action").notNull(),
+  outcome: text("outcome").notNull(),
+  tool: text("tool"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, table => ({ ownerTimeIndex: index("mcp_oauth_audit_owner_time_idx").on(table.userId, table.createdAt) }));
 export {
   canonicalLandingVideoSchema,
   canonicalizeLandingVideoUrl,

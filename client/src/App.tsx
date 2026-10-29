@@ -40,6 +40,9 @@ import { trackPlatformConversion, type PlatformConversion } from "./lib/platform
 import { readMarketingConsent } from "./lib/marketing-consent";
 import { Button } from "@/components/ui/button";
 import { useLang } from "@/hooks/use-lang";
+import OAuthConsent from "@/pages/oauth-consent";
+import AuthorizedApps from "@/pages/authorized-apps";
+import { postLoginDestination } from "@/lib/oauth-return";
 
 const clerkPubKey = publishableKeyFromHost(
   window.location.hostname,
@@ -72,7 +75,7 @@ function ClerkComplete() {
         const result = await response.json() as { conversion?: PlatformConversion };
         await clearAuthScopedQueryCache();
         if (result.conversion) trackPlatformConversion(result.conversion, readMarketingConsent());
-        setLocation("/admin/dashboard");
+        setLocation(postLoginDestination());
       } catch (cause: any) {
         posted.current = false;
         setError(cause?.message || text.failed);
@@ -134,6 +137,8 @@ function Router() {
        <Route path="/purchase-result" component={PurchaseResult} />
       
       {/* Admin Routes */}
+      <Route path="/oauth/consent" component={OAuthConsent} />
+      <Route path="/admin/settings/authorized-apps" component={AuthorizedApps} />
       <Route path="/admin" component={AdminLogin} />
       <Route path="/admin/clerk-complete" component={ClerkComplete} />
       <Route path="/admin/dashboard" component={AdminDashboard} />

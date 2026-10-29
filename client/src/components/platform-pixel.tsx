@@ -23,6 +23,7 @@ export function PlatformPixel() {
   );
 
   useEffect(() => {
+    if (path.startsWith("/oauth/") || path === "/admin/settings/authorized-apps") return;
     if (lastPage.current === path) return;
     loadMetaPixel(PLATFORM_PIXEL_ID, false);
     window.fbq?.("trackSingle", PLATFORM_PIXEL_ID, "PageView");

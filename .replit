@@ -64,6 +64,10 @@ BUNNY_STREAM_PLAYBACK_VERIFIED = "true"
 
 [userenv.production]
 APP_BASE_URL = "https://icta-webinar.com"
+PUBLIC_BASE_URL = "https://icta-webinar.com"
+
+[userenv.development]
+PUBLIC_BASE_URL = "https://9fdababe-8652-4086-97a8-8c9b80d2191b-00-3hr5pm1yfzjni.janeway.replit.dev"
 
 [postMerge]
 path = "scripts/post-merge.sh"

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText, Video, ChevronDown } from "lucide-react";
+import { Crown, FolderOpen, Languages, LogOut, Menu, MessageCircle, ShoppingBag, CreditCard, ReceiptText, Video, ChevronDown, ShieldCheck } from "lucide-react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -41,6 +41,7 @@ export function AdminDashboardNavigation(props: Props) {
   ];
   const settingsActions = [
     { id: "button-open-ecpay", label: simplified ? "收款设置 · 绿界" : "收款設定 · 綠界", icon: CreditCard, run: props.openEcpay, dialog: true },
+    { id: "button-authorized-apps", label: "已授權的應用", icon: ShieldCheck, run: () => props.navigate("/admin/settings/authorized-apps") },
     { id: "button-open-support", label: simplified ? "客服" : "客服支援", icon: MessageCircle, run: props.openSupport, dialog: true },
     { id: "button-admin-lang-toggle", label: simplified ? "切換為繁體中文" : "切换为简体中文", icon: Languages, run: props.toggleLanguage },
   ];

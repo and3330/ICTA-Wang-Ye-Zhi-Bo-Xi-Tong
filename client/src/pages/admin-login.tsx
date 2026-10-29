@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, clearAuthScopedQueryCache } from "@/lib/queryClient";
+import { rememberOAuthRequest, postLoginDestination } from "@/lib/oauth-return";
 import { Loader2, Languages, MailCheck } from "lucide-react";
 import { useLang, type LangFull } from "@/hooks/use-lang";
 import { SellCaseLogo } from "@/components/sellcase-logo";
@@ -209,6 +210,8 @@ function GoogleAuthButton({ mode, label, failed, onError }: {
 }
 
 export default function AdminLogin() {
+  // Retained across Google's full-page redirect in this browser tab only.
+  useEffect(() => { rememberOAuthRequest(); }, []);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -270,7 +273,7 @@ export default function AdminLogin() {
       // Remove all API query data before the dashboard's auth/me query mounts.
       await clearAuthScopedQueryCache();
       toast({ title: s.welcomeBack });
-      setLocation("/admin/dashboard");
+      setLocation(postLoginDestination());
     } catch (error: any) {
       if (error.message?.includes("EMAIL_VERIFICATION_REQUIRED")) {
         setVerificationRequired(true);
