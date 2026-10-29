@@ -12,7 +12,6 @@ import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { apiRequest } from "@/lib/queryClient";
 import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
@@ -156,11 +155,23 @@ export default function EmbedRegister() {
       if (Object.keys(customFieldValues).length > 0) {
         payload.customFieldData = customFieldValues;
       }
-      const response = await apiRequest("POST", "/api/registrations", payload);
+      // Anonymous registration must also work when the parent browser blocks
+      // third-party cookies. Neither send nor accept a login/session cookie.
+      const response = await fetch("/api/registrations", {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error(`${response.status}: ${await response.text() || response.statusText}`);
       return response.json();
     },
     onSuccess: (response: any) => {
-      saveWatchAccess(id!, response);
+      try {
+        saveWatchAccess(id!, response);
+      } catch {
+        // Some iframe privacy modes also deny sessionStorage. A registration
+        // already accepted by the server must still show the success view.
+      }
       setRegistered(true);
       setErrorMessage(null);
       setExternalThankYouUnavailable(response?.externalThankYouUnavailable === true);

@@ -31,3 +31,4 @@
 - [Course marketplace moderation](course-marketplace-moderation.md) — marketplace approval is bound to reviewed public content; all public mutations and republish paths must invalidate it under one shared lock.
 - [Clerk legacy-session bridge](clerk-legacy-session-bridge.md) — Clerk identities link once to local members; Google logout must terminate both Clerk and legacy sessions.
 - [MCP authorization scope](mcp-access-boundary.md) — each grant connects only one owner-selected webinar; keep external AI read access separate from commerce integration secrets.
+- [Embed framing boundary](embed-framing-boundary.md) — external framing is limited to the two embed namespaces; registration must work without third-party cookies.

@@ -2,6 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { registerMcpRoutes } from "./mcp/routes";
+import { embedFramePolicy } from "./embedFramePolicy";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -491,30 +492,8 @@ export async function registerRoutes(
   const questionNotifyThrottle = new Map<string, number>();
   const QUESTION_NOTIFY_COOLDOWN_MS = 60 * 1000;
 
-  // Embeds are same-origin by default. A member must explicitly publish exact
-  // third-party origins before an external page can frame registration; never
-  // restore the historic wildcard frame-ancestors policy.
-  app.use(async (req, res, next) => {
-    if (req.path.startsWith('/embed/') || req.path === '/livecast-widget.js') {
-      res.removeHeader('X-Frame-Options');
-      let ancestors = ["'self'"];
-      const match = req.path.match(/^\/embed\/(?:register|webinar)\/([^/]+)$/);
-      if (match) {
-        try {
-          const [journey] = await db.select({ publishedSettings: externalJourneySettings.publishedSettings })
-            .from(externalJourneySettings).where(eq(externalJourneySettings.webinarId, match[1])).limit(1);
-          const approved = (journey?.publishedSettings as any)?.approvedEmbedOrigins;
-          const webinar = await storage.getWebinar(match[1]);
-          const owner = webinar?.userId ? await storage.getUser(webinar.userId) : undefined;
-          if (webinar?.publishStatus === "published" && await hasStoredPublicEntitlement(owner) && Array.isArray(approved)) {
-            ancestors = [...ancestors, ...approved.filter((value): value is string => typeof value === "string")];
-          }
-        } catch {
-          // Migration/configuration read failures fail closed to same-origin.
-        }
-      }
-      res.setHeader('Content-Security-Policy', `frame-ancestors ${ancestors.join(" ")}`);
-    }
+  app.use(embedFramePolicy);
+  app.use((req, res, next) => {
     const isPublicGetRoute =
       (req.method === 'GET' || req.method === 'OPTIONS') &&
        (req.path.match(/^\/api\/webinars\/[^/]+$/) || /^\/api\/webinars\/[^/]+\/landing-page$/.test(req.path) || /^\/api\/sales-pages\/[^/]+$/.test(req.path) || req.path === '/api/webinars') &&
