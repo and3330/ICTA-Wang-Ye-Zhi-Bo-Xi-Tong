@@ -22,6 +22,7 @@ import { ViewerAccessState } from "@/components/viewer-access-state";
 import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { ProviderPlayer } from "@/components/provider-player";
+import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 
@@ -676,7 +677,7 @@ export default function WebinarRoom() {
         </div>
       )}
       <div className={`flex flex-col lg:flex-row ${brandSettings?.logo ? "h-[calc(100dvh-2.5rem)]" : "h-[100dvh]"}`}>
-        <div className="relative bg-black w-full aspect-video lg:aspect-auto lg:flex-1 lg:h-full lg:min-h-0">
+        <FullscreenVideo className="relative bg-black w-full aspect-video lg:aspect-auto lg:flex-1 lg:h-full lg:min-h-0" enabled={!!playbackSource}>
           <div className="relative w-full h-full">
             {playbackSource && <ProviderPlayer
               source={playbackSource}
@@ -823,7 +824,7 @@ export default function WebinarRoom() {
               );
             })()}
           </div>
-        </div>
+        </FullscreenVideo>
 
         {visibleTip && (
           <div className="lg:hidden px-3 py-2 border-b bg-background animate-in slide-in-from-top duration-300" data-testid="tip-card-mobile">

@@ -15,6 +15,7 @@ import { ViewerAccessState } from "@/components/viewer-access-state";
 import { useAttendanceTracking } from "@/lib/use-attendance-tracking";
 import { openOfferCheckout, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
 import { ProviderPlayer } from "@/components/provider-player";
+import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 
@@ -319,8 +320,8 @@ export default function EmbedWebinar() {
   return (
     <div className="flex min-h-[100dvh] flex-col">
       {trackingProvider}
-      <div className="relative bg-black">
-        <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
+      <FullscreenVideo className="relative bg-black" enabled={canWatch && !!playbackSource}>
+        <div className="relative w-full h-full aspect-video">
           {canWatch && playbackSource ? (
             <ProviderPlayer
               source={playbackSource}
@@ -378,7 +379,7 @@ export default function EmbedWebinar() {
             </Button>
           </div>
         ))}
-      </div>
+      </FullscreenVideo>
 
       <div className="flex-1 flex flex-col min-h-0 border-t">
         <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">

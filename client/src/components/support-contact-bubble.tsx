@@ -60,7 +60,7 @@ export function SupportContactBubble() {
     };
   }, [open]);
 
-  if (location.startsWith("/embed/")) return null;
+  if (location.startsWith("/embed/") || location.startsWith("/webinar/")) return null;
 
   const closeAndRestoreFocus = () => {
     setOpen(false);
