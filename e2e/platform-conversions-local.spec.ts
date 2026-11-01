@@ -169,8 +169,8 @@ test("new account signup emits CompleteRegistration, while failed signup and log
     .toHaveLength(1);
 });
 
-test("late consent releases only the current signup and never sends account PII", async ({ page }) => {
-  await setupMetaMock(page);
+test("legacy denied consent does not defer signup conversion or expose account PII", async ({ page }) => {
+  await setupMetaMock(page, "denied");
   await page.route("**/api/admin/register", route => route.fulfill({ status: 201, json: {
     success: true, verificationRequired: true, conversion: {
       ...paidSignup, accountMarker: "late-consent-account",
@@ -185,13 +185,6 @@ test("late consent releases only the current signup and never sends account PII"
   await form.password.fill("password-123");
   await form.confirm.fill("password-123");
   await page.getByTestId("button-register").click();
-  await expect.poll(async () => (await pixelCalls(page))
-    .filter(call => call[0] === "trackSingle" && call[2] === "CompleteRegistration"))
-    .toHaveLength(0);
-  await page.evaluate(() => {
-    localStorage.setItem("sellcase.marketing-consent.v1", "granted");
-    window.dispatchEvent(new CustomEvent("sellcase:marketing-consent", { detail: "granted" }));
-  });
   await expect.poll(() => pixelCalls(page)).toContainEqual([
     "trackSingle", platformPixel, "CompleteRegistration", {}, { eventID: paidSignup.eventId },
   ]);
@@ -278,7 +271,7 @@ test("conversion event IDs survive reload and dedupe the platform pixel", async 
     .some(key => key.includes("sellcase.meta.platform.sent.v1")))).toBe(true);
 });
 
-test("queued account A stays fenced through SPA logout/login B, then fires once when A returns", async ({ page }) => {
+test("default tracking keeps paid account A conversions fenced and deduped through SPA account switching", async ({ page }) => {
   await setupMetaMock(page);
   let currentAccount = "account-a-e2e";
   await mockDashboard(page, () => currentAccount);
@@ -303,22 +296,21 @@ test("queued account A stays fenced through SPA logout/login B, then fires once 
     response.url().endsWith("/api/admin/me") && response.ok());
   await page.goto("/admin/dashboard?checkout=success&session_id=cs_account_a");
   await firstMe;
-  // A's paid server DTO is queued because consent is still undecided.
+  // With default tracking A's paid DTO is reported immediately, only for A.
   await expect.poll(async () => (await pixelCalls(page))
     .filter(call => call[0] === "trackSingle" && call[2] === "Purchase"))
-    .toHaveLength(0);
+    .toHaveLength(1);
 
   await page.getByTestId("button-admin-settings").click({ force: true });
   await page.getByTestId("button-logout").click({ force: true });
   await expect(page).toHaveURL(/\/admin$/);
-  await page.getByRole("button", { name: "同意行銷追蹤" }).click();
   await page.getByTestId("input-username").fill("account-b");
   await page.getByTestId("input-password").fill("password-123");
   await page.getByTestId("button-login").click();
   await expect(page).toHaveURL(/\/admin\/dashboard$/);
   await page.waitForTimeout(250);
   expect((await pixelCalls(page)).filter(call =>
-    call[0] === "trackSingle" && call[1] === platformPixel && call[2] === "Purchase")).toHaveLength(0);
+    call[0] === "trackSingle" && call[1] === platformPixel && call[2] === "Purchase")).toHaveLength(1);
 
   await page.getByTestId("button-admin-settings").click({ force: true });
   await page.getByTestId("button-logout").click({ force: true });

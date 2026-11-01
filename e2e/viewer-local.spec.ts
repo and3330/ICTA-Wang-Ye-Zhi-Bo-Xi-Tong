@@ -25,16 +25,15 @@ test.describe("local mocked viewer safety flows", () => {
     await page.addInitScript(() => localStorage.clear());
   });
 
-  test("gates marketing tracking behind explicit consent", async ({ page }) => {
+  test("viewer no longer displays a marketing consent dialog", async ({ page }) => {
     await mockWebinar(page, {
       registrationId: "local-registration",
       canWatch: false,
       accessRevoked: true,
     });
     await page.goto("/webinar/local-e2e?watchToken=local-token", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "同意行銷追蹤" })).toBeVisible();
-    await page.getByRole("button", { name: "僅使用必要功能" }).click();
+    await expect(page.getByRole("button", { name: "同意行銷追蹤" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "僅使用必要功能" })).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "開啟 Cookie 與行銷追蹤設定" })).toHaveCount(0);
   });

@@ -31,7 +31,6 @@ import AdminProducts from "@/pages/admin-products";
 import AdminOrders from "@/pages/admin-orders";
 import AdminMedia from "@/pages/admin-media";
 import PricingPage from "@/pages/pricing";
-import { MarketingConsentBanner } from "@/components/marketing-consent";
 import { PlatformPixel } from "@/components/platform-pixel";
 import { SupportContactBubble } from "@/components/support-contact-bubble";
 import CourseMarketplace from "@/pages/course-marketplace";
@@ -176,7 +175,6 @@ function App() {
           <Router />
           <SupportContactBubble />
           <PlatformPixel />
-          <MarketingConsentBanner />
         </TooltipProvider>
       </QueryClientProvider>
     </ClerkProvider>

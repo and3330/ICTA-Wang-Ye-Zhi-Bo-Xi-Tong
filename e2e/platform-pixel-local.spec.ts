@@ -24,8 +24,7 @@ const navigate = (page: Page, path: string) => page.evaluate(path => {
 test("platform pixel base code loads in head on every page and counts SPA route changes", async ({ page }) => {
   const requests = await setup(page);
   await page.goto("/");
-  // The base code runs before any consent choice.
-  await expect(page.getByRole("button", { name: "同意行銷追蹤" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
   await expect.poll(() => calls(page)).toContainEqual(["track", "PageView"]);
   expect(requests).toHaveLength(1);
   expect(await calls(page)).toContainEqual(["set", "autoConfig", false, pixel]);
@@ -37,7 +36,6 @@ test("platform pixel base code loads in head on every page and counts SPA route 
   await navigate(page, "/admin");
   await expect(page).toHaveURL(/\/admin$/);
   await expect.poll(pageViews).toBe(3);
-  await page.getByRole("button", { name: "僅使用必要功能" }).click();
   await navigate(page, "/solutions");
   await expect.poll(pageViews).toBe(4);
   expect((await calls(page)).some((c: string[]) => c[0] === "consent")).toBe(false);
@@ -86,8 +84,8 @@ test("webinar events target only that member's pixel after marketing navigation"
   expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel)).toEqual([["trackSingle", pixel, "PageView"]]);
   expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === "123456789" && c[2] === "PageView")).toHaveLength(0);
 });
-test("withdrawing consent after leaving a member page stops member events but keeps platform page views", async ({ page }) => {
-  await setup(page, "granted");
+test("legacy denied choice does not block member events or reopen a consent dialog", async ({ page }) => {
+  await setup(page, "denied");
   await page.route("**/api/webinars/demo", route => route.fulfill({ json: {
     id: "demo", title: "Demo", publishStatus: "published", metaPixelId: "123456789",
   } }));
@@ -100,9 +98,8 @@ test("withdrawing consent after leaving a member page stops member events but ke
   await expect.poll(() => calls(page)).toContainEqual(["init", "123456789"]);
   await navigate(page, "/");
   await expect.poll(async () => (await calls(page)).filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel).length).toBe(2);
-  // The footer link re-opens the dialog.
-  await page.getByRole("link", { name: "開啟 Cookie 與行銷追蹤設定" }).click();
-  await page.getByRole("button", { name: "僅使用必要功能" }).click();
+  await expect(page.getByRole("link", { name: "隱私設定", exact: true })).toHaveAttribute("href", "/legal/privacy");
+  await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
   await navigate(page, "/register/demo");
   await expect(page.locator("#registration-form")).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("livecast:webinar-event", {
@@ -110,6 +107,6 @@ test("withdrawing consent after leaving a member page stops member events but ke
   })));
   await page.waitForTimeout(250);
   const all = await calls(page);
-  expect(all.filter((c: string[]) => c[1] === "123456789" && c[0] === "trackSingle")).toHaveLength(0);
+  expect(all).toContainEqual(["trackSingle", "123456789", "Contact", { webinar_id: "demo" }]);
   expect(all.filter((c: string[]) => c[0] === "trackSingle" && c[1] === pixel)).toHaveLength(3);
 });

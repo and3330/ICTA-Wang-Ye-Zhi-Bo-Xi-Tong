@@ -1,4 +1,3 @@
-import { openMarketingConsentSettings } from "@/components/marketing-consent";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ArrowRight, BarChart3, Bot, CalendarDays, ChevronDown, ChevronRight, CirclePlay, ClipboardCheck, Globe2, Languages, LayoutTemplate, Menu, MessageCircle, X, Zap } from "lucide-react";
@@ -66,5 +65,5 @@ export function MarketingShell({ children }: { children: React.ReactNode }) {
   </div>;
 }
 function MobileGroup({title,items,base,close}:{title:string;items:({slug:string;title:string;description:string})[];base:string;close:()=>void}) { const [open,setOpen]=useState(false); return <section className="sc-mobile-group"><button onClick={()=>setOpen(!open)} aria-expanded={open}>{title}<ChevronDown size={17}/></button>{open&&<div>{items.map(x=><Link href={`/${base}/${x.slug}`} onClick={close} key={x.slug}><span><b>{x.title}</b><small>{x.description}</small></span><ChevronRight size={15}/></Link>)}</div>}</section>; }
-export function Footer(){const {lang}=useLang();const labels=lang==="en"?["Terms","Privacy","Refunds","Privacy settings"]:lang==="zh-CN"?["服务条款","隐私权","退款政策","隐私设置"]:["服務條款","隱私權","退款政策","隱私設定"];return <footer className="sc-footer"><Brand/><p>© {new Date().getFullYear()} SellCase</p><div><a href="/legal/terms">{labels[0]}</a><a href="/legal/privacy">{labels[1]}</a><a href="/legal/refunds">{labels[2]}</a><a href="#" aria-label="開啟 Cookie 與行銷追蹤設定" onClick={e=>{e.preventDefault();openMarketingConsentSettings();}}>{labels[3]}</a></div></footer>}
+export function Footer(){const {lang}=useLang();const labels=lang==="en"?["Terms","Privacy","Refunds","Privacy settings"]:lang==="zh-CN"?["服务条款","隐私权","退款政策","隐私设置"]:["服務條款","隱私權","退款政策","隱私設定"];return <footer className="sc-footer"><Brand/><p>© {new Date().getFullYear()} SellCase</p><div><a href="/legal/terms">{labels[0]}</a><a href="/legal/privacy">{labels[1]}</a><a href="/legal/refunds">{labels[2]}</a><a href="/legal/privacy">{labels[3]}</a></div></footer>}
 export { features, solutions, getLabel };
