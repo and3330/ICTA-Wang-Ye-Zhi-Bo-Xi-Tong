@@ -9,6 +9,11 @@
 - 核心引擎名稱：開賣機
 - Widget JS 同時支援 `window.ICTA_WEBINAR` 和 `window.LiveCast`（向下相容）
 
+## 對外串接文件
+- 對外技術介面要寫成可供其他網站串接的文件，不只留在對話中；介面變動時同步更新文件與測試。
+- 安全報名交接指南：`docs/registration-handoff-api.md`；外部流程與歸因 API：`docs/external-journeys-api.md`。
+- 文件需如實列出欄位、錯誤、重試限制及 iframe 行為，不能將建議能力寫成已實作；不得放入真實密鑰、觀看憑證或學員個資。
+
 ## 多語系 (i18n)
 - 共用 hook：`client/src/hooks/use-lang.ts`（useLang / useAdminLang）
 - 語言選擇存儲於 localStorage（key: `icta-lang`），預設為繁體中文

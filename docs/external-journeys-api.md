@@ -1,5 +1,9 @@
 # External journeys and external sales attribution API
 
+安全報名交接的完整繁體中文接入文件（成功／失敗 JSON、欄位型別、
+一次性兌換與恢復限制、相對觀看連結、iframe 跳轉及測試清單）：
+[SellCase 安全報名交接串接指南](registration-handoff-api.md)。
+
 All money is an integer **minor unit**. This integration is intentionally
 separate from provider-verified platform orders: browser reports are
 unverified and merchant HMAC reports are `merchant_reported`, not
@@ -54,6 +58,14 @@ snippet. The server exchange must send `X-External-Destination` containing
 its configured HTTPS origin (or a matching browser `Origin`). Names, email
 addresses, and raw watch tokens never appear in an
 external URL.
+
+The handoff expires 600 seconds after creation and is consumed once. The
+standard registration flow stores a **relative** `watchUrl`; resolve it against
+the trusted SellCase service origin, never the partner website's origin.
+The response has no webinar title, timezone, delivery status, or separate mode.
+There is no idempotent retrieval after consumption, including a lost response.
+Embedded registration navigates its own frame and returns before emitting
+`livecast:registered` on the external-redirect branch.
 
 When the published external thank-you URL's exact origin is also listed in
 `approvedOrigins`, registration success automatically appends an opaque
