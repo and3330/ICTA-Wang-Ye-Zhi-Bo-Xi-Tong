@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
-import { Heart, Send, ExternalLink, Loader2 } from "lucide-react";
+import { Heart, Send, ExternalLink, Loader2, Play } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
@@ -40,6 +40,8 @@ export default function EmbedWebinar() {
   const [videoDuration, setVideoDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const playerRef = useRef<any>(null);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [playError, setPlayError] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -332,11 +334,11 @@ export default function EmbedWebinar() {
               } : undefined}
               className="absolute inset-0 w-full h-full"
               testId="embed-video-player"
-              onReady={(player) => { playerRef.current = player; }}
+              onReady={(player) => { playerRef.current = player; setPlayerReady(true); }}
               onTimeUpdate={(seconds, duration) => { setCurrentTime(seconds); if (duration) setVideoDuration(duration); }}
-              onPlay={() => setIsPlaying(true)}
+              onPlay={() => { setIsPlaying(true); setPlayError(""); }}
               onPause={() => setIsPlaying(false)}
-              onEnded={() => trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } })}
+              onEnded={() => { setIsPlaying(false); trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } }); }}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center bg-muted p-4">
@@ -349,6 +351,28 @@ export default function EmbedWebinar() {
                 onRetry={() => void refetchWatchState()}
               />
             </div>
+          )}
+          {canWatch && playbackSource && !isPlaying && (
+            <button
+              type="button"
+              disabled={!playerReady}
+              aria-label={playerReady ? "播放影片" : "播放器載入中"}
+              data-testid="button-embed-play-video"
+              className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/40 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
+              style={{ zIndex: 5 }}
+              onClick={() => {
+                const player = playerRef.current;
+                if (!player) return;
+                setPlayError("");
+                void player.play().then(() => {
+                  void player.setMuted(false).catch(() => {});
+                  void player.setVolume(1).catch(() => {});
+                }).catch(() => setPlayError("影片無法播放，請再次點擊；若仍失敗，請確認影片嵌入權限。"));
+              }}
+            >
+              {playerReady ? <Play className="h-16 w-16" /> : <Loader2 className="h-10 w-10 animate-spin" />}
+              {playError && <span role="alert" className="max-w-sm px-4 text-sm">{playError}</span>}
+            </button>
           )}
         </div>
         {[...visibleCtas, ...liveCtas].map(cta => (

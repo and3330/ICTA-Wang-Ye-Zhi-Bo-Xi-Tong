@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
+import { WebSocket } from "ws";
 import { expect, test } from "@playwright/test";
 import { eq } from "drizzle-orm";
 import { db, pool } from "../server/db";
@@ -41,11 +42,60 @@ test.afterAll(async () => {
     await db.delete(schema.webinarFunnelEvents).where(eq(schema.webinarFunnelEvents.webinarId, webinarId));
     await db.delete(schema.registrationIdentityKeys).where(eq(schema.registrationIdentityKeys.webinarId, webinarId));
     await db.delete(schema.registrations).where(eq(schema.registrations.webinarId, webinarId));
+    await db.delete(schema.chatMessages).where(eq(schema.chatMessages.webinarId, webinarId));
     await db.delete(schema.webinarSessions).where(eq(schema.webinarSessions.webinarId, webinarId));
     await db.delete(schema.webinarLandingPages).where(eq(schema.webinarLandingPages.webinarId, webinarId));
     await db.delete(schema.webinars).where(eq(schema.webinars.id, webinarId));
     await db.delete(schema.users).where(eq(schema.users.id, ownerId));
   } finally { await pool.end(); }
+});
+
+test("verified viewers cannot reuse another person's chat identity or inherit historical host broadcasts", async ({ request }) => {
+  const tokens: string[] = [];
+  for (let i = 0; i < 2; i++) {
+    const response = await request.post("/api/registrations", { data: {
+      webinarId, name: "Chat isolation test", phone: "0912345678", email: `${randomUUID()}@example.test`,
+    } });
+    expect(response.status()).toBe(200);
+    tokens.push((await response.json()).watchToken);
+  }
+  const sockets: WebSocket[] = [];
+  const join = (token: string, claimedSession: string) => new Promise<{ sessionId: string; messages: any[] }>((resolve, reject) => {
+    const ws = new WebSocket("ws://127.0.0.1:5000/ws");
+    sockets.push(ws);
+    let history: any[] = [];
+    const timer = setTimeout(() => reject(new Error("Chat join timed out")), 10000);
+    ws.on("error", reject);
+    ws.on("open", () => ws.send(JSON.stringify({ type: "join", data: {
+      webinarId, sessionId: claimedSession, nickname: "Chat test", watchToken: token,
+    } })));
+    ws.on("message", raw => {
+      const message = JSON.parse(raw.toString());
+      if (message.type === "history") history = message.data.messages;
+      if (message.type === "sessionConfirmed") {
+        clearTimeout(timer);
+        resolve({ sessionId: message.data.sessionId, messages: history });
+      }
+      if (message.type === "error") { clearTimeout(timer); reject(new Error(message.data.message)); }
+    });
+  });
+  try {
+    const a = await join(tokens[0], "same-browser-session");
+    const b = await join(tokens[1], "same-browser-session");
+    expect(a.sessionId).not.toBe(b.sessionId);
+    await db.insert(schema.chatMessages).values([
+      { webinarId, sessionId: a.sessionId, senderName: "A", senderType: "viewer", message: "private-a", isPrivate: true },
+      { webinarId, sessionId: b.sessionId, senderName: "B", senderType: "viewer", message: "private-b", isPrivate: true },
+      { webinarId, sessionId: null, senderName: "Host", senderType: "host", message: "old-broadcast", isPrivate: false },
+    ]);
+    const attacker = await join(tokens[1], a.sessionId);
+    expect(attacker.sessionId).toBe(b.sessionId);
+    expect(attacker.messages.map(m => m.message)).toEqual(["private-b"]);
+    const returningA = await join(tokens[0], b.sessionId);
+    expect(returningA.messages.map(m => m.message)).toEqual(["private-a"]);
+  } finally {
+    for (const ws of sockets) ws.terminate();
+  }
 });
 
 for (const embed of [false, true]) {

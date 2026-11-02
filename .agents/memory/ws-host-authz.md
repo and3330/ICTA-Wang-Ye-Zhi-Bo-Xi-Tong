@@ -18,3 +18,19 @@ description: Rules for authorizing host/viewer actions over the /ws WebSocket in
 - Targeted sends (host→one session): require `webinarSessions.get(currentWebinarId)?.has(sessionId)`.
 - Viewer actions (`like`, `vote`): require `currentWebinarId && currentSessionId`, use those (ignore client ids); for `vote` also verify `poll.webinarId === currentWebinarId`.
 - `liveCta` (and any user-supplied URL): validate scheme server-side — only allow `https?://`, `/`, `mailto:`, `tel:` (block `javascript:`/`data:`).
+
+## Viewer transcript isolation
+
+Viewer chat identity must be server-derived from the verified registration and
+webinar, not from a browser's persistent session identifier. Historical public
+host broadcasts must not be copied into every new viewer's transcript.
+
+**Why:** The user requires each person's live-room conversation to be isolated.
+A shared browser identifier survives changing registrants, and trusting it also
+allows deliberately claiming another viewer's identity. Old global host messages
+made newly arriving viewers appear to inherit other conversations.
+
+**How to apply:** Keep person-specific history and host replies separate.
+Owner-authorized live announcements and explicitly configured timed/scripted
+messages are different from another viewer's private transcript; do not silently
+delete stored messages or confuse scripted content with a privacy leak.

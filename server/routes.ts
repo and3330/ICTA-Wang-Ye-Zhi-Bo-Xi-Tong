@@ -12,7 +12,7 @@ import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
 import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
-import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, verifyWatchTokenFor, watchTokenExpiry } from "./watchTokens";
+import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, verifyWatchTokenFor, watchTokenExpiry, viewerChatSessionId } from "./watchTokens";
 import crypto from "crypto";
 import { safeUploadContentType, verifyImageUpload } from "./safeImageUpload";
 import { getUploadStorage, uploadObjectKey } from "./uploadStorage";
@@ -898,10 +898,10 @@ export async function registerRoutes(
           case "join": {
             // A socket already authorized as host must not be downgraded/retargeted
             // to a viewer context (prevents cross-tenant context switching).
-            if (isHost) break;
+            if (isHost || currentWebinarId) break;
             // Each viewer gets a unique session - complete isolation
-            const { webinarId, sessionId, nickname, watchToken } = message.data;
-            if (typeof webinarId !== "string" || typeof sessionId !== "string") break;
+            const { webinarId, sessionId: requestedSessionId, nickname, watchToken } = message.data;
+            if (typeof webinarId !== "string" || typeof requestedSessionId !== "string") break;
             await sessionReady;
             const sessionActor = sessionUserId ? await storage.getUser(sessionUserId) : undefined;
             const requestedWebinar = await storage.getWebinar(webinarId);
@@ -934,6 +934,9 @@ export async function registerRoutes(
               }
               joinedRegistrationId = registration.id;
             }
+            const sessionId = viewerChatSessionId(webinarId, joinedRegistrationId
+              ? `registration:${joinedRegistrationId}`
+              : `preview:${sessionUserId}:${requestedSessionId}`);
             currentWebinarId = webinarId;
             currentSessionId = sessionId;
             currentRegistrationId = joinedRegistrationId;
@@ -1361,7 +1364,7 @@ export async function registerRoutes(
       if (currentWebinarId) {
         if (isHost) {
           hostConnections.get(currentWebinarId)?.delete(ws);
-        } else if (currentSessionId) {
+        } else if (currentSessionId && sessionConnections.get(currentSessionId) === ws) {
           sessionConnections.delete(currentSessionId);
           webinarSessions.get(currentWebinarId)?.delete(currentSessionId);
           sessionNicknames.delete(currentSessionId);

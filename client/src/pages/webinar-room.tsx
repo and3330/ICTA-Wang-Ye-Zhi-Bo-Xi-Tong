@@ -54,6 +54,7 @@ export default function WebinarRoom() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
   const playerRef = useRef<any>(null);
+  const [playerReady, setPlayerReady] = useState(false);
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -530,6 +531,7 @@ export default function WebinarRoom() {
 
   const handlePlayerReady = (player: any) => {
     playerRef.current = player;
+    setPlayerReady(true);
     try {
       const startKey = `liveStart_${id}_${sessionId}`;
       let startedAt = Number(localStorage.getItem(startKey) || 0);
@@ -707,22 +709,26 @@ export default function WebinarRoom() {
             ) : (
               <button
                 type="button"
-                onClick={async () => {
+                disabled={!playerReady}
+                onClick={() => {
                   const player = playerRef.current;
                   if (!player) return;
-                  try {
-                    await player.setMuted(false);
-                    await player.setVolume(1);
-                  } catch {}
-                  player.play().catch(() => {});
+                  // Start within the click gesture, before asynchronous volume
+                  // calls can lose browser playback permission.
+                  void player.play().then(() => {
+                    void player.setMuted(false).catch(() => {});
+                    void player.setVolume(1).catch(() => {});
+                  }).catch(() => {
+                    toast({ title: "影片無法播放", description: "請再次點擊播放；若仍失敗，請確認影片的嵌入權限或稍後重試。", variant: "destructive" });
+                  });
                 }}
                 className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30 transition-colors group"
                 style={{ zIndex: 5 }}
                 data-testid="button-play-video"
-                aria-label="播放影片"
+                aria-label={playerReady ? "播放影片" : "播放器載入中"}
               >
                 <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-white/95 group-hover:bg-white flex items-center justify-center shadow-2xl transition-all group-hover:scale-110">
-                  <Play className="w-10 h-10 sm:w-12 sm:h-12 text-slate-900 fill-slate-900 ml-1" />
+                  {playerReady ? <Play className="w-10 h-10 sm:w-12 sm:h-12 text-slate-900 fill-slate-900 ml-1" /> : <span className="text-sm text-slate-900">載入中</span>}
                 </div>
               </button>
             )}

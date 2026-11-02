@@ -2460,15 +2460,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getChatMessagesBySession(webinarId: string, sessionId: string): Promise<ChatMessage[]> {
-    // Viewer's own messages + host replies to them + canonical host broadcasts (sessionId=null, public)
+    // Only this verified viewer's transcript. Past host broadcasts must not
+    // appear as historical conversation for every newly arriving registrant.
     return db.select().from(chatMessages)
       .where(
         and(
           eq(chatMessages.webinarId, webinarId),
-          or(
-            eq(chatMessages.sessionId, sessionId),
-            and(isNull(chatMessages.sessionId), eq(chatMessages.isPrivate, false))
-          )
+          eq(chatMessages.sessionId, sessionId)
         )
       )
       .orderBy(asc(chatMessages.sentAt));

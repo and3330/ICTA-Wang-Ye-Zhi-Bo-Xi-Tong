@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry } from "./watchTokens";
+import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, watchTokenExpiry, viewerChatSessionId } from "./watchTokens";
+
+test("chat identities are stable within a verified registration and isolated across people and webinars", () => {
+  const previous = process.env.SESSION_SECRET;
+  process.env.SESSION_SECRET = "test-chat-isolation-only";
+  try {
+    const a = viewerChatSessionId("webinar-a", "registration:a");
+    assert.equal(a, viewerChatSessionId("webinar-a", "registration:a"));
+    assert.notEqual(a, viewerChatSessionId("webinar-a", "registration:b"));
+    assert.notEqual(a, viewerChatSessionId("webinar-b", "registration:a"));
+    assert.notEqual(a, viewerChatSessionId("webinar-a", "preview:owner:a"));
+  } finally {
+    if (previous === undefined) delete process.env.SESSION_SECRET;
+    else process.env.SESSION_SECRET = previous;
+  }
+});
 
 test("watch tokens are signed, scoped, and reject tampering", () => {
   const previous = process.env.SESSION_SECRET;

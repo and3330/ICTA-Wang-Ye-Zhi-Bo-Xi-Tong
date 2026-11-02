@@ -16,6 +16,11 @@ function sign(encoded: string): string {
   return crypto.createHmac("sha256", secret()).update(encoded).digest("base64url");
 }
 
+/** Chat identity is bound to verified server context, never a browser-supplied room ID. */
+export function viewerChatSessionId(webinarId: string, identity: string): string {
+  return `viewer_${sign(encode({ purpose: "viewer-chat", webinarId, identity }))}`;
+}
+
 function verify<T extends { v: 1; exp: number }>(token: unknown): T | null {
   if (typeof token !== "string") return null;
   const [encoded, signature, ...extra] = token.split(".");

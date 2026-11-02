@@ -19,7 +19,7 @@ async function openViewer(page: Page, embed = false) {
   await page.route("https://player.vimeo.com/api/player.js", route => route.fulfill({
     contentType: "application/javascript",
     body: `window.Vimeo = { Player: class {
-      on() {} destroy() {} play() { return Promise.resolve(); }
+      on() {} destroy() {} play() { window.__videoPlayCalls = (window.__videoPlayCalls || 0) + 1; return window.__rejectPlay ? Promise.reject(new Error("Play denied")) : Promise.resolve(); }
       pause() { return Promise.resolve(); } setMuted() { return Promise.resolve(); }
       setVolume() { return Promise.resolve(); } getDuration() { return Promise.resolve(3600); }
       getCurrentTime() { return Promise.resolve(0); }
@@ -30,9 +30,25 @@ async function openViewer(page: Page, embed = false) {
   await page.getByTestId(embed ? "input-embed-nickname" : "input-nickname").fill("Viewer");
   await page.getByTestId(embed ? "button-embed-join" : "button-join").click();
   await expect(page.getByTestId("button-video-fullscreen")).toBeVisible();
+  const bounds = await page.getByTestId("fullscreen-video-container").boundingBox();
+  const playerBounds = await page.getByTestId(embed ? "embed-video-player" : "video-player").boundingBox();
+  expect(bounds!.width).toBeGreaterThan(300);
+  expect(bounds!.height).toBeGreaterThan(200);
+  expect(playerBounds!.height).toBeGreaterThan(200);
 }
 
 for (const embed of [false, true]) {
+  test(`${embed ? "embedded" : "standard"} viewer can start playback and sees a rejected playback error`, async ({ page }) => {
+    await openViewer(page, embed);
+    const play = page.getByTestId(embed ? "button-embed-play-video" : "button-play-video");
+    await expect(play).toBeEnabled();
+    await play.click();
+    await expect.poll(() => page.evaluate(() => (window as any).__videoPlayCalls)).toBe(1);
+    await page.evaluate(() => { (window as any).__rejectPlay = true; });
+    await play.click();
+    await expect(page.getByText(/影片無法播放/).first()).toBeVisible();
+  });
+
   test(`${embed ? "embedded" : "standard"} viewer enters and exits native fullscreen without reloading video`, async ({ page }) => {
     await openViewer(page, embed);
     const frame = page.getByTestId(embed ? "embed-video-player" : "video-player");
