@@ -131,8 +131,9 @@ function buildSessionRegistrationCounts(
   // recurrence slots. Historical selected timestamps are added below from the
   // SQL aggregate and are never truncated.
   const availability = getAvailableSessions(webinar, persistedSessions, now);
-  if (!justInTimeEnabled) {
+  {
     for (const session of availability.sessions) {
+      if (session.id === "jit") continue;
       const startTimeMs = canonicalSessionTimeMs(session.scheduledStart);
       if (startTimeMs === null) continue;
       const generatedRecurring = session.id.startsWith("recurring-");

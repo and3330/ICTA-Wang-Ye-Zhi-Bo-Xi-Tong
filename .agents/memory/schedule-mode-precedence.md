@@ -15,7 +15,17 @@ attendance. Treating it as exclusive made all existing session choices disappear
 **How to apply:** Preserve recurring configuration and scheduled sessions, return
 on-demand availability alongside them, and let registration UIs add a non-date
 "隨到隨看" choice. Only real session timestamps should be stored as a selected
-session. Keep just-in-time behavior separate unless product requirements change.
+session.
+
+JIT is also additive: expose its signed immediate-start slot alongside future
+managed/recurring sessions, not instead of them.
+
+**Why:** The user requires session management and future reservations to remain
+usable while both on-demand and JIT are enabled.
+
+**How to apply:** Keep JIT signature verification for dynamic slots; validate
+future reservations against exact eligible session timestamps. Never force a
+future reservation through JIT-token validation.
 
 # Registration-bound watch access
 
@@ -39,4 +49,4 @@ Treat "no future sessions and no on-demand" as closed registration, never as on-
 # Admin UX
 Schedule sub-section saves only flash a toast. Owners need persistent state, so the
 schedule card shows a current-mode banner + per-mode "使用中" active indicators, and
-session-management shows a note that on-demand/JIT need no manual sessions.
+session-management explains that future reservations can coexist with on-demand/JIT.

@@ -2862,7 +2862,9 @@ export async function registerRoutes(
       const persistedSessions = await storage.getWebinarSessions(webinarCheck.id);
       const eligibilityNow = new Date();
       const availability = getAvailableSessions(webinarCheck, persistedSessions, eligibilityNow);
-      const selectedSession = availability.mode === "justInTime"
+      const isScheduledChoice = availability.sessions.some(session =>
+        session.id !== "jit" && session.scheduledStart.getTime() === new Date(requestedSession).getTime());
+      const selectedSession = availability.mode === "justInTime" && !isScheduledChoice
         ? (() => {
           if (requestedSession == null || requestedSession === "") {
             if (availability.onDemandAvailable) return null;

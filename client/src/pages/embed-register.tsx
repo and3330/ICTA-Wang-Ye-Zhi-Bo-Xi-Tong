@@ -478,8 +478,9 @@ export default function EmbedRegister() {
               <ScrollArea className="max-h-56">
                 <div className="p-2 space-y-1">
                   {onDemandAvailable && (
-                    <div
-                      className={`flex items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer text-sm hover-elevate ${
+                    <button
+                      type="button"
+                      className={`flex w-full items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer text-sm hover-elevate focus-visible:outline focus-visible:outline-2 ${
                         selectedSession === ON_DEMAND_VALUE ? "bg-accent font-medium" : ""
                       }`}
                       onClick={() => {
@@ -490,15 +491,16 @@ export default function EmbedRegister() {
                     >
                       <Play className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
                       <span>隨到隨看－報名後立即觀看</span>
-                    </div>
+                    </button>
                   )}
                   {Object.entries(groupedSessions).map(([dateLabel, sessions]) => (
                     <div key={dateLabel}>
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2.5 py-1.5">{dateLabel}</p>
                       {sessions.map((session) => (
-                        <div
+                        <button
+                          type="button"
                           key={session.id}
-                          className={`flex items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer text-sm hover-elevate ${
+                          className={`flex w-full items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer text-sm hover-elevate focus-visible:outline focus-visible:outline-2 ${
                             selectedSession === session.scheduledStart ? "bg-accent font-medium" : ""
                           }`}
                           onClick={() => {
@@ -508,8 +510,8 @@ export default function EmbedRegister() {
                           data-testid={`button-embed-session-${session.id}`}
                         >
                           <Clock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                          <span>{formatShortDate(session.scheduledStart)} @ {formatTimeWithZone(session.scheduledStart)}</span>
-                        </div>
+                          <span>{session.id === "jit" ? "即時開始－" : "預約場次－"}{formatShortDate(session.scheduledStart)} @ {formatTimeWithZone(session.scheduledStart)}</span>
+                        </button>
                       ))}
                     </div>
                   ))}

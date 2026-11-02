@@ -40,6 +40,36 @@ test("hybrid availability adds persisted sessions to recurring and on-demand cho
   assert.ok(result.sessions.some((session) => session.id.startsWith("recurring-")));
 });
 
+test("JIT, on-demand, recurring and managed future sessions coexist with exact scheduled validation", () => {
+  const now = new Date("2026-03-07T12:00:00.000Z");
+  const managed = {
+    id: "managed", webinarId: "webinar-a",
+    scheduledStart: new Date("2026-03-10T18:00:00.000Z"), status: "scheduled",
+  } as WebinarSession;
+  const result = getAvailableSessions(webinar({
+    scheduleMode: { recurring: true, onDemand: true, justInTime: true, justInTimeMinutes: 1 },
+  }), [
+    managed,
+    { ...managed, id: "cancelled", status: "cancelled", scheduledStart: new Date("2026-03-11T18:00:00.000Z") },
+    { ...managed, id: "foreign", webinarId: "other", scheduledStart: new Date("2026-03-12T18:00:00.000Z") },
+    { ...managed, id: "past", scheduledStart: new Date("2020-03-10T18:00:00.000Z") },
+  ], now);
+  assert.equal(result.mode, "justInTime");
+  assert.equal(result.onDemandAvailable, true);
+  assert.equal(result.sessions[0].id, "jit");
+  assert.equal(result.sessions[0].scheduledStart.toISOString(), "2026-03-07T12:01:00.000Z");
+  assert.ok(result.sessions.some(s => s.id.startsWith("recurring-")));
+  assert.ok(result.sessions.some(s => s.id === "managed"));
+  assert.ok(!result.sessions.some(s => ["foreign", "cancelled", "past"].includes(s.id)));
+  assert.equal(normalizeSelectedSession(null, result, now), null);
+  assert.equal(normalizeSelectedSession(managed.scheduledStart, result, now)?.getTime(), managed.scheduledStart.getTime());
+  const recurring = result.sessions.find(s => s.id.startsWith("recurring-"))!;
+  assert.equal(normalizeSelectedSession(recurring.scheduledStart, result, now)?.getTime(), recurring.scheduledStart.getTime());
+  assert.throws(() => normalizeSelectedSession("2026-03-07T12:00:30.000Z", result, now), /不屬於/);
+  assert.throws(() => normalizeSelectedSession(result.sessions[0].scheduledStart, result, now), /不屬於/,
+    "JIT selections require the signed-token registration path");
+});
+
 test("recurring civil times use the webinar timezone across DST", () => {
   assert.equal(
     zonedDateTimeToDate(2026, 3, 8, 2, 30, "America/New_York"),

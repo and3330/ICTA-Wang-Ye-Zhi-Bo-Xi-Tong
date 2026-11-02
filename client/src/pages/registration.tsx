@@ -442,7 +442,7 @@ export default function Registration() {
                       value={session.scheduledStart}
                       data-testid={`option-session-${session.id}`}
                     >
-                      {formatSessionOption(session.scheduledStart)}
+                      {session.id === "jit" ? `即時開始（約 ${availableSessions.nextStartMinutes} 分鐘後）－` : "預約場次－"}{formatSessionOption(session.scheduledStart)}
                     </SelectItem>
                   ))}
                 </SelectContent>

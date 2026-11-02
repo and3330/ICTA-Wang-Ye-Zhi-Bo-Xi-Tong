@@ -388,7 +388,7 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedModeOnDemand: "隨選觀看",
     schedModeJustInTime: "即時開始",
     schedActiveBadge: "✓ 使用中",
-    schedSessionNotNeeded: "目前為「隨選觀看」或「即時開始」模式，無需新增場次，觀眾報名後即可立即觀看。",
+    schedSessionNotNeeded: "可新增未來預約場次，並與「隨到隨看」、「即時開始」同時開放；觀眾可在報名時自行選擇。",
     notifEmailTitle: "郵件設定",
     notifEmailDesc: "控制自動郵件通知的開關和內容",
     notifEmailConfirmation: "報名確認信",
@@ -837,7 +837,7 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedModeOnDemand: "随选观看",
     schedModeJustInTime: "即时开始",
     schedActiveBadge: "✓ 使用中",
-    schedSessionNotNeeded: "当前为「随选观看」或「即时开始」模式，无需新增场次，观众报名后即可立即观看。",
+    schedSessionNotNeeded: "可新增未来预约场次，并与「随到随看」、「即时开始」同时开放；观众可在报名时自行选择。",
     notifEmailTitle: "邮件设置",
     notifEmailDesc: "控制自动邮件通知的开关和内容",
     notifEmailConfirmation: "报名确认信",
@@ -2907,6 +2907,7 @@ export default function AdminWebinarDetail() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <Input
                             type="datetime-local"
+                            aria-label={s.schedAddSession}
                             value={newSessionDate}
                             onChange={(e) => setNewSessionDate(e.target.value)}
                             data-testid="input-new-session-date"

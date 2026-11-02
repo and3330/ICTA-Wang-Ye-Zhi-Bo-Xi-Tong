@@ -184,19 +184,12 @@ export function getAvailableSessions(
   const scheduleMode = webinar.scheduleMode;
   const onDemandAvailable = Boolean(scheduleMode?.onDemand);
 
-  // JIT is intentionally not mixed with persisted or recurring schedules.
-  if (scheduleMode?.justInTime) {
-    const minutes = Math.max(1, scheduleMode.justInTimeMinutes || 15);
+  const jitEnabled = Boolean(scheduleMode?.justInTime);
+  const jitSessions: AvailableSession[] = [];
+  if (jitEnabled) {
+    const minutes = Math.max(1, scheduleMode?.justInTimeMinutes || 15);
     const nextStart = new Date(Math.ceil(now.getTime() / 60_000) * 60_000 + minutes * 60_000);
-    return {
-      mode: "justInTime",
-      sessions: [{ id: "jit", scheduledStart: nextStart, status: "scheduled" }],
-      hasSessions: true,
-      onDemandAvailable,
-      registrationOpen: true,
-      nextStartMinutes: minutes,
-      message: `下一場將在 ${minutes} 分鐘內開始`,
-    };
+    jitSessions.push({ id: "jit", scheduledStart: nextStart, status: "scheduled" });
   }
 
   const sessions = [
@@ -209,7 +202,7 @@ export function getAvailableSessions(
       .map((session) => ({ ...session, scheduledStart: new Date(session.scheduledStart) })),
   ];
 
-  if (sessions.length === 0) {
+  if (sessions.length === 0 && !jitEnabled) {
     const mainStart = new Date(webinar.startTime);
     if (mainStart.getTime() > now.getTime()) {
       sessions.push({ id: "main", scheduledStart: mainStart, status: "scheduled" });
@@ -224,11 +217,15 @@ export function getAvailableSessions(
   const recurring = Boolean(scheduleMode?.recurring || webinar.recurringSchedule?.enabled);
 
   return {
-    mode: recurring ? "recurring" : onDemandAvailable && unique.length === 0 ? "onDemand" : "fixed",
-    sessions: unique,
-    hasSessions: unique.length > 0,
+    mode: jitEnabled ? "justInTime" : recurring ? "recurring" : onDemandAvailable && unique.length === 0 ? "onDemand" : "fixed",
+    sessions: [...jitSessions, ...unique],
+    hasSessions: jitEnabled || unique.length > 0,
     onDemandAvailable,
-    registrationOpen: onDemandAvailable || unique.length > 0,
+    registrationOpen: jitEnabled || onDemandAvailable || unique.length > 0,
+    ...(jitEnabled ? {
+      nextStartMinutes: Math.max(1, scheduleMode?.justInTimeMinutes || 15),
+      message: `下一場將在 ${Math.max(1, scheduleMode?.justInTimeMinutes || 15)} 分鐘內開始`,
+    } : {}),
   };
 }
 
@@ -246,19 +243,8 @@ export function normalizeSelectedSession(
     throw new Error("所選場次無效或已過期");
   }
 
-  if (availability.mode === "justInTime") {
-    const jit = availability.sessions[0]?.scheduledStart;
-    // A JIT slot returned shortly before registration remains valid even if
-    // the current minute has rolled over.
-    const latest = availability.sessions[0]?.scheduledStart.getTime() ?? 0;
-    if (!jit || requested.getTime() > latest || requested.getTime() < now.getTime()) {
-      throw new Error("所選即時場次無效或已過期");
-    }
-    return requested;
-  }
-
   const exact = availability.sessions.find(
-    (session) => session.scheduledStart.getTime() === requested.getTime(),
+    (session) => session.id !== "jit" && session.scheduledStart.getTime() === requested.getTime(),
   );
   if (!exact) throw new Error("所選場次不屬於此直播間或無法報名");
   return new Date(exact.scheduledStart);
