@@ -26,7 +26,7 @@
 - **用戶註冊**：bcrypt 密碼雜湊（10 rounds），支援 username/email/password/companyName
 - **Session 管理**：session 存 userId，非 isAdmin boolean
 - **資料隔離**：所有 admin 路由使用 requireWebinarOwner 中間件驗證 webinar 所有權
-- **預設管理員**：admin / aa3210（已 bcrypt 雜湊）
+- **超級管理員**：帳號 admin（密碼不寫在文件裡，由老闆保管）
 
 ## 核心功能
 
@@ -59,7 +59,7 @@
 - Stripe 路由：checkout、portal、config、handle-subscription、webhook
 
 ### 後台功能（管理員）
-- **帳號**：admin / aa3210（超級管理員）
+- **帳號**：超級管理員 admin（密碼不寫在文件裡）
 - **直播間管理**：建立多個直播、設定 Vimeo 連結、開始時間、刪除直播
 - **7 大分頁管理介面**（eWebinar 風格）：
   - 排程 (Schedule)：排程模式、時區、重播、場次管理、循環排程
