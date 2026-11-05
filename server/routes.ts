@@ -3084,6 +3084,21 @@ export async function registerRoutes(
     }
   }));
 
+  app.patch("/api/webinars/:id/fake-users/:userId", requireWebinarOwner, withMediaReferenceLock(async (req, res) => {
+    try {
+      const patch = z.object({
+        name: z.string().trim().min(1).max(100).optional(),
+        avatar: z.string().max(2000).nullish(),
+      }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required").parse(req.body);
+      if (patch.avatar) await verifyReferencedMediaUrls(patch.avatar);
+      const fakeUser = await storage.updateFakeUser(req.params.id as string, req.params.userId as string, patch);
+      if (!fakeUser) return res.status(404).json({ message: "Fake user not found" });
+      res.json(fakeUser);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  }));
+
   app.delete("/api/webinars/:id/fake-users/:userId", requireWebinarOwner, async (req, res) => {
     const deleted = await storage.deleteFakeUser(req.params.id as string, req.params.userId as string);
     if (!deleted) return res.status(404).json({ message: "Fake user not found" });
@@ -3113,6 +3128,26 @@ export async function registerRoutes(
         if (!belongs) return res.status(400).json({ message: "fakeUserId does not belong to this webinar" });
       }
       const message = await storage.createScheduledMessage(data);
+      res.json(message);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.patch("/api/webinars/:id/scheduled-messages/:msgId", requireWebinarOwner, async (req, res) => {
+    try {
+      const patch = z.object({
+        fakeUserId: z.string().min(1).optional(),
+        message: z.string().trim().min(1).max(2000).optional(),
+        triggerTime: z.number().int().min(0).optional(),
+      }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required").parse(req.body);
+      if (patch.fakeUserId) {
+        const belongs = (await storage.getFakeUsersByWebinar(req.params.id as string))
+          .some((fakeUser) => fakeUser.id === patch.fakeUserId);
+        if (!belongs) return res.status(400).json({ message: "fakeUserId does not belong to this webinar" });
+      }
+      const message = await storage.updateScheduledMessage(req.params.id as string, req.params.msgId as string, patch);
+      if (!message) return res.status(404).json({ message: "Scheduled message not found" });
       res.json(message);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -4401,6 +4436,28 @@ export async function registerRoutes(
       }
       const data = insertWebinarSessionSchema.parse(body);
       const session = await storage.createWebinarSession(data);
+      res.json(session);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.patch("/api/webinars/:id/sessions/:sessionId", requireWebinarOwner, async (req, res) => {
+    try {
+      const { scheduledStart } = z.object({ scheduledStart: z.string().datetime() }).strict().parse(req.body);
+      const webinarId = req.params.id as string;
+      const existing = (await storage.getWebinarSessions(webinarId)).find(item => item.id === req.params.sessionId);
+      if (!existing) return res.status(404).json({ message: "Session not found" });
+      // Registrations store the chosen start time, not the session id, so
+      // moving a session people already picked would strand them on the old
+      // time (reminders and watch window). Only unclaimed sessions can move.
+      const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(registrations)
+        .where(and(eq(registrations.webinarId, webinarId), eq(registrations.selectedSession, existing.scheduledStart)));
+      if (count > 0) {
+        return res.status(409).json({ message: `已有 ${count} 人報名這個場次，不能改時間。請新增一個場次，再通知已報名的觀眾。` });
+      }
+      const session = await storage.moveWebinarSession(webinarId, existing.id, { scheduledStart: new Date(scheduledStart) });
       res.json(session);
     } catch (error: any) {
       res.status(400).json({ message: error.message });

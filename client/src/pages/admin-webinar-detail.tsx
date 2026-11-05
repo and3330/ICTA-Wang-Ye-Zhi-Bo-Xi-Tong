@@ -1097,6 +1097,15 @@ function createSchemas(s: Record<string, string>) {
   };
 }
 
+type SurveyDraftQuestion = {
+  id: string;
+  type: "rating" | "text" | "multiChoice";
+  question: string;
+  options: string;
+  required: boolean;
+};
+type SurveyDraft = { title: string; questions: SurveyDraftQuestion[] };
+
 export default function AdminWebinarDetail() {
   const { id } = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
@@ -1134,6 +1143,11 @@ export default function AdminWebinarDetail() {
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [editingPoll, setEditingPoll] = useState<Poll | null>(null);
   const [editingTip, setEditingTip] = useState<Tip | null>(null);
+  const [editingFakeUser, setEditingFakeUser] = useState<FakeUser | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ScheduledMessage | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionDate, setEditingSessionDate] = useState("");
+  const [surveyDraft, setSurveyDraft] = useState<SurveyDraft | null>(null);
   const [funnelFrom, setFunnelFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 30);
@@ -1676,30 +1690,37 @@ export default function AdminWebinarDetail() {
 
   const createFakeUser = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.fakeUser>) => {
-      return apiRequest("POST", `/api/webinars/${id}/fake-users`, data);
+      return editingFakeUser
+        ? apiRequest("PATCH", `/api/webinars/${id}/fake-users/${editingFakeUser.id}`, { name: data.name })
+        : apiRequest("POST", `/api/webinars/${id}/fake-users`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "fake-users"] });
       setIsFakeUserOpen(false);
+      toast({ title: editingFakeUser ? "假人已更新" : s.toastFakeUserCreated });
+      setEditingFakeUser(null);
       fakeUserForm.reset();
-      toast({ title: s.toastFakeUserCreated });
     },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
 
   const createMessage = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.scheduledMessage>) => {
       const [min, sec] = data.triggerTime.split(":").map(Number);
-      return apiRequest("POST", `/api/webinars/${id}/scheduled-messages`, {
-        ...data,
-        triggerTime: min * 60 + (sec || 0),
-      });
+      return apiRequest(
+        editingMessage ? "PATCH" : "POST",
+        editingMessage ? `/api/webinars/${id}/scheduled-messages/${editingMessage.id}` : `/api/webinars/${id}/scheduled-messages`,
+        { ...data, triggerTime: min * 60 + (sec || 0) },
+      );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "scheduled-messages"] });
       setIsMessageOpen(false);
+      toast({ title: editingMessage ? "預排訊息已更新" : s.toastScheduledMsgCreated });
+      setEditingMessage(null);
       messageForm.reset();
-      toast({ title: s.toastScheduledMsgCreated });
     },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
 
   const createCta = useMutation({
@@ -1805,6 +1826,47 @@ export default function AdminWebinarDetail() {
       toast({ title: editingTip ? "小提示已更新" : s.toastTipCreated });
       setEditingTip(null);
       tipForm.reset();
+    },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
+  });
+
+  const moveSession = useMutation({
+    mutationFn: async ({ sessionId, date }: { sessionId: string; date: string }) =>
+      apiRequest("PATCH", `/api/webinars/${id}/sessions/${sessionId}`, { scheduledStart: new Date(date).toISOString() }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "sessions"] });
+      setEditingSessionId(null);
+      toast({ title: "場次時間已更新" });
+    },
+    onError: (error: Error) => toast({
+      title: s.toastSaveFailed,
+      description: error.message.replace(/^\d+:\s*/, "").replace(/^\{"message":"(.*)"\}$/, "$1"),
+      variant: "destructive",
+    }),
+  });
+
+  const saveSurvey = useMutation({
+    mutationFn: async ({ surveyId, draft }: { surveyId: string; draft: SurveyDraft }) => {
+      const questions = draft.questions.map((q) => {
+        const options = q.options.split(/[,，]/).map((o) => o.trim()).filter(Boolean);
+        if (!q.question.trim()) throw new Error("每一題都要填題目");
+        if (q.type === "multiChoice" && options.length < 2) throw new Error(`「${q.question}」至少要有 2 個選項`);
+        return {
+          id: q.id,
+          type: q.type,
+          question: q.question.trim(),
+          required: q.required,
+          ...(q.type === "multiChoice" ? { options } : {}),
+        };
+      });
+      if (!draft.title.trim()) throw new Error("請填問卷標題");
+      if (questions.length === 0) throw new Error("問卷至少要有 1 題");
+      return apiRequest("PATCH", `/api/webinars/${id}/feedback-survey/${surveyId}`, { title: draft.title.trim(), questions });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "feedback-survey"] });
+      setSurveyDraft(null);
+      toast({ title: "問卷已更新" });
     },
     onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
@@ -2972,6 +3034,43 @@ export default function AdminWebinarDetail() {
                                     {new Date(session.scheduledStart) > new Date() ? s.schedSessionUpcoming : s.schedSessionExpired}
                                   </Badge>
                                 </div>
+                                {editingSessionId === session.id ? (
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    <Input
+                                      type="datetime-local"
+                                      aria-label="新的場次時間"
+                                      value={editingSessionDate}
+                                      onChange={(e) => setEditingSessionDate(e.target.value)}
+                                      className="h-8 w-auto"
+                                      data-testid={`input-edit-session-${session.id}`}
+                                    />
+                                    <Button
+                                      size="sm"
+                                      disabled={!editingSessionDate || moveSession.isPending}
+                                      onClick={() => moveSession.mutate({ sessionId: session.id, date: editingSessionDate })}
+                                      data-testid={`button-save-session-${session.id}`}
+                                    >
+                                      儲存
+                                    </Button>
+                                    <Button size="sm" variant="ghost" onClick={() => setEditingSessionId(null)}>
+                                      {s.btnCancel}
+                                    </Button>
+                                  </div>
+                                ) : (
+                                <div className="flex items-center">
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  aria-label="修改場次時間"
+                                  onClick={() => {
+                                    const start = new Date(session.scheduledStart);
+                                    setEditingSessionDate(new Date(start.getTime() - start.getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
+                                    setEditingSessionId(session.id);
+                                  }}
+                                  data-testid={`button-edit-session-${session.id}`}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
                                 <Button
                                   size="icon"
                                   variant="ghost"
@@ -2988,6 +3087,8 @@ export default function AdminWebinarDetail() {
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
+                                </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -3985,6 +4086,24 @@ export default function AdminWebinarDetail() {
                           <Badge variant={feedbackSurvey.isActive ? "default" : "secondary"}>
                             {feedbackSurvey.isActive ? s.interFeedbackActive : s.interFeedbackInactive}
                           </Badge>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSurveyDraft({
+                              title: feedbackSurvey.title,
+                              questions: ((feedbackSurvey.questions as any[]) || []).map((q: any) => ({
+                                id: String(q.id),
+                                type: q.type === "rating" || q.type === "text" ? q.type : "multiChoice",
+                                question: q.question || "",
+                                options: (q.options || []).join(", "),
+                                required: !!q.required,
+                              })),
+                            })}
+                            data-testid="button-edit-survey"
+                          >
+                            <Edit className="h-4 w-4 mr-1" />
+                            編輯
+                          </Button>
                           <Switch
                             checked={!!feedbackSurvey.isActive}
                             disabled={toggleSurvey.isPending}
@@ -4139,6 +4258,101 @@ export default function AdminWebinarDetail() {
                   </CardContent>
                 </Card>
               )}
+
+              <Dialog open={!!surveyDraft} onOpenChange={(open) => { if (!open) setSurveyDraft(null); }}>
+                <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>編輯回饋問卷</DialogTitle>
+                    <DialogDescription>題目改了之後，舊的統計仍照原題目編號計算；刪掉的題目不再顯示統計。</DialogDescription>
+                  </DialogHeader>
+                  {surveyDraft && (
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <Label>問卷標題</Label>
+                        <Input
+                          value={surveyDraft.title}
+                          onChange={(e) => setSurveyDraft({ ...surveyDraft, title: e.target.value })}
+                          data-testid="input-survey-title"
+                        />
+                      </div>
+                      {surveyDraft.questions.map((q, index) => {
+                        const update = (patch: Partial<SurveyDraftQuestion>) => setSurveyDraft({
+                          ...surveyDraft,
+                          questions: surveyDraft.questions.map((item, i) => i === index ? { ...item, ...patch } : item),
+                        });
+                        return (
+                          <div key={q.id} className="space-y-2 rounded-md border p-3" data-testid={`survey-question-editor-${index}`}>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">第 {index + 1} 題</span>
+                              <Select value={q.type} onValueChange={(value) => update({ type: value as SurveyDraftQuestion["type"] })}>
+                                <SelectTrigger className="h-8 w-[120px]"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="rating">{s.interFeedbackRating}</SelectItem>
+                                  <SelectItem value="text">{s.interFeedbackText}</SelectItem>
+                                  <SelectItem value="multiChoice">{s.interFeedbackChoice}</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="flex items-center gap-1 ml-auto">
+                                <Checkbox
+                                  id={`survey-required-${q.id}`}
+                                  checked={q.required}
+                                  onCheckedChange={(value) => update({ required: value === true })}
+                                />
+                                <Label htmlFor={`survey-required-${q.id}`} className="text-xs cursor-pointer">{s.interFeedbackRequired}</Label>
+                              </div>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                aria-label="刪除這題"
+                                onClick={() => setSurveyDraft({ ...surveyDraft, questions: surveyDraft.questions.filter((_, i) => i !== index) })}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </div>
+                            <Input
+                              value={q.question}
+                              placeholder="題目"
+                              onChange={(e) => update({ question: e.target.value })}
+                              data-testid={`input-survey-question-${index}`}
+                            />
+                            {q.type === "multiChoice" && (
+                              <Input
+                                value={q.options}
+                                placeholder="選項，用逗號分隔"
+                                onChange={(e) => update({ options: e.target.value })}
+                                data-testid={`input-survey-options-${index}`}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSurveyDraft({
+                          ...surveyDraft,
+                          questions: [...surveyDraft.questions, { id: `q${Date.now().toString(36)}`, type: "text", question: "", options: "", required: false }],
+                        })}
+                        data-testid="button-add-survey-question"
+                      >
+                        <Plus className="h-4 w-4 mr-1" />
+                        新增題目
+                      </Button>
+                      <div className="flex justify-end gap-2 border-t pt-3">
+                        <Button variant="ghost" onClick={() => setSurveyDraft(null)}>{s.btnCancel}</Button>
+                        <Button
+                          disabled={saveSurvey.isPending || !feedbackSurvey}
+                          onClick={() => feedbackSurvey && saveSurvey.mutate({ surveyId: feedbackSurvey.id, draft: surveyDraft })}
+                          data-testid="button-save-survey"
+                        >
+                          {saveSurvey.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                          儲存
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </DialogContent>
+              </Dialog>
 
               <Card id="webinar-section-questions" className="scroll-mt-28">
                 <CardHeader>
@@ -4340,16 +4554,16 @@ export default function AdminWebinarDetail() {
                     <CardTitle className="text-base">{s.chatFakeUserTitle}</CardTitle>
                     <CardDescription>{s.chatFakeUserDesc}</CardDescription>
                   </div>
-                  <Dialog open={isFakeUserOpen} onOpenChange={setIsFakeUserOpen}>
+                  <Dialog open={isFakeUserOpen} onOpenChange={open => { setIsFakeUserOpen(open); if (!open) setEditingFakeUser(null); }}>
                     <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-fake-user">
+                      <Button size="sm" data-testid="button-add-fake-user" onClick={() => { setEditingFakeUser(null); fakeUserForm.reset(); }}>
                         <Plus className="h-4 w-4 mr-1" />
                         {s.chatAddFakeUser}
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{s.chatFakeUserDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingFakeUser ? "編輯假人" : s.chatFakeUserDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...fakeUserForm}>
                         <form onSubmit={fakeUserForm.handleSubmit((data) => createFakeUser.mutate(data))} className="space-y-4">
@@ -4368,7 +4582,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createFakeUser.isPending}>
                             {createFakeUser.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {s.btnCreate}
+                            {editingFakeUser ? "儲存" : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -4381,13 +4595,28 @@ export default function AdminWebinarDetail() {
                       {fakeUsers.map((user) => (
                         <div key={user.id} className="flex items-center justify-between p-3 bg-muted rounded-md">
                           <span className="font-medium">{user.name}</span>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => deleteMutation.mutate({ type: "fake-users", itemId: user.id })}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
+                          <div className="flex items-center">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label="編輯假人"
+                              data-testid={`button-edit-fake-user-${user.id}`}
+                              onClick={() => {
+                                setEditingFakeUser(user);
+                                fakeUserForm.reset({ name: user.name, avatar: user.avatar || "" });
+                                setIsFakeUserOpen(true);
+                              }}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => deleteMutation.mutate({ type: "fake-users", itemId: user.id })}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -4403,16 +4632,16 @@ export default function AdminWebinarDetail() {
                     <CardTitle className="text-base">{s.chatScheduledMsgTitle}</CardTitle>
                     <CardDescription>{s.chatScheduledMsgDesc}</CardDescription>
                   </div>
-                  <Dialog open={isMessageOpen} onOpenChange={setIsMessageOpen}>
+                  <Dialog open={isMessageOpen} onOpenChange={open => { setIsMessageOpen(open); if (!open) setEditingMessage(null); }}>
                     <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-scheduled-message">
+                      <Button size="sm" data-testid="button-add-scheduled-message" onClick={() => { setEditingMessage(null); messageForm.reset(); }}>
                         <Plus className="h-4 w-4 mr-1" />
                         {s.chatAddMessage}
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{s.chatMsgDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingMessage ? "編輯預排訊息" : s.chatMsgDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...messageForm}>
                         <form onSubmit={messageForm.handleSubmit((data) => createMessage.mutate(data))} className="space-y-4">
@@ -4468,7 +4697,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createMessage.isPending}>
                             {createMessage.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {s.btnCreate}
+                            {editingMessage ? "儲存" : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -4493,6 +4722,23 @@ export default function AdminWebinarDetail() {
                                 </div>
                                 <p className="text-sm text-muted-foreground mt-1">{msg.message}</p>
                               </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="編輯預排訊息"
+                                data-testid={`button-edit-scheduled-message-${msg.id}`}
+                                onClick={() => {
+                                  setEditingMessage(msg);
+                                  messageForm.reset({
+                                    fakeUserId: msg.fakeUserId || "",
+                                    message: msg.message,
+                                    triggerTime: formatTime(msg.triggerTime),
+                                  });
+                                  setIsMessageOpen(true);
+                                }}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"

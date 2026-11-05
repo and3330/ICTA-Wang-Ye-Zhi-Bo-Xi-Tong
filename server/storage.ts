@@ -213,11 +213,13 @@ export interface IStorage {
   createFakeUser(data: InsertFakeUser): Promise<FakeUser>;
   getFakeUsersByWebinar(webinarId: string): Promise<FakeUser[]>;
   deleteFakeUser(webinarId: string, id: string): Promise<boolean>;
+  updateFakeUser(webinarId: string, id: string, data: { name?: string; avatar?: string | null }): Promise<FakeUser | undefined>;
   
   // Scheduled Messages
   createScheduledMessage(data: InsertScheduledMessage): Promise<ScheduledMessage>;
   getScheduledMessagesByWebinar(webinarId: string): Promise<ScheduledMessage[]>;
   deleteScheduledMessage(webinarId: string, id: string): Promise<boolean>;
+  updateScheduledMessage(webinarId: string, id: string, data: { fakeUserId?: string; message?: string; triggerTime?: number }): Promise<ScheduledMessage | undefined>;
   
   // CTA Buttons
   createWebinarOffer(data: typeof webinarOffers.$inferInsert): Promise<WebinarOffer>;
@@ -324,6 +326,7 @@ export interface IStorage {
   getUpcomingSessions(webinarId: string): Promise<WebinarSession[]>;
   updateWebinarSession(id: string, data: Partial<WebinarSession>): Promise<void>;
   deleteWebinarSession(webinarId: string, id: string): Promise<boolean>;
+  moveWebinarSession(webinarId: string, id: string, data: { scheduledStart: Date }): Promise<WebinarSession | undefined>;
   
   // Webhooks
   createWebhook(data: InsertWebhook): Promise<Webhook>;
@@ -1811,6 +1814,12 @@ export class DatabaseStorage implements IStorage {
       .returning({ id: fakeUsers.id })).length === 1;
   }
 
+  async updateFakeUser(webinarId: string, id: string, data: { name?: string; avatar?: string | null }): Promise<FakeUser | undefined> {
+    const result = await db.update(fakeUsers).set(data)
+      .where(and(eq(fakeUsers.id, id), eq(fakeUsers.webinarId, webinarId))).returning();
+    return result[0];
+  }
+
   // Scheduled Messages
   async createScheduledMessage(data: InsertScheduledMessage): Promise<ScheduledMessage> {
     const result = await db.insert(scheduledMessages).values(data).returning();
@@ -1827,6 +1836,13 @@ export class DatabaseStorage implements IStorage {
     return (await db.delete(scheduledMessages).where(and(
       eq(scheduledMessages.id, id), eq(scheduledMessages.webinarId, webinarId),
     )).returning({ id: scheduledMessages.id })).length === 1;
+  }
+
+  async updateScheduledMessage(webinarId: string, id: string, data: { fakeUserId?: string; message?: string; triggerTime?: number }): Promise<ScheduledMessage | undefined> {
+    const result = await db.update(scheduledMessages).set(data).where(and(
+      eq(scheduledMessages.id, id), eq(scheduledMessages.webinarId, webinarId),
+    )).returning();
+    return result[0];
   }
 
   // CTA Buttons
@@ -2532,6 +2548,13 @@ export class DatabaseStorage implements IStorage {
 
   async updateWebinarSession(id: string, data: Partial<WebinarSession>): Promise<void> {
     await db.update(webinarSessions).set(data).where(eq(webinarSessions.id, id));
+  }
+
+  async moveWebinarSession(webinarId: string, id: string, data: { scheduledStart: Date }): Promise<WebinarSession | undefined> {
+    const result = await db.update(webinarSessions).set({ scheduledStart: data.scheduledStart }).where(and(
+      eq(webinarSessions.id, id), eq(webinarSessions.webinarId, webinarId),
+    )).returning();
+    return result[0];
   }
 
   async deleteWebinarSession(webinarId: string, id: string): Promise<boolean> {
