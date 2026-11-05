@@ -468,7 +468,7 @@ const t: Record<LangAdmin, Record<string, string>> = {
     interCtaStartTime: "開始時間 (分:秒)",
     interCtaEndTime: "結束時間（選填）",
     interCtaStyle: "樣式",
-    interCtaStylePrimary: "主要（藍色）",
+    interCtaStylePrimary: "主要（品牌主色，未設定則藍色）",
     interCtaStyleSecondary: "次要（灰色）",
     interCtaStyleDanger: "強調（紅色）",
     interCtaEnd: "結束",

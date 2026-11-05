@@ -1,3 +1,4 @@
+import { ctaButtonAppearance } from "@/lib/cta-style";
 import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
 import { useState, useEffect, useRef } from "react";
 import { collectScheduledChat, collectTipChat } from "@/lib/scheduled-chat";
@@ -792,7 +793,8 @@ export default function WebinarRoom() {
                   <Button
                     key={cta.id}
                     asChild={!!cta.url && !cta.offerId}
-                    variant={cta.style === "primary" ? "default" : cta.style === "danger" ? "destructive" : "secondary"}
+                    variant={ctaButtonAppearance(cta.style, brandSettings?.primaryColor).variant}
+                    style={ctaButtonAppearance(cta.style, brandSettings?.primaryColor).style}
                     className="w-full sm:w-auto animate-[pulse_1s_ease-in-out_3]"
                     onClick={(event) => {
                       if (cta.offerId && id) {

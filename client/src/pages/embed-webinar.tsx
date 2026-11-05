@@ -1,3 +1,4 @@
+import { ctaButtonAppearance } from "@/lib/cta-style";
 import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
 import { useState, useEffect, useRef } from "react";
 import { collectScheduledChat, collectTipChat } from "@/lib/scheduled-chat";
@@ -519,7 +520,8 @@ export default function EmbedWebinar() {
               key={cta.id}
               asChild={!!cta.url && !cta.offerId}
               size="sm"
-              variant={cta.style === "danger" ? "destructive" : cta.style === "secondary" ? "secondary" : "default"}
+              variant={ctaButtonAppearance(cta.style, (webinar?.brandSettings as { primaryColor?: string } | null)?.primaryColor).variant}
+              style={ctaButtonAppearance(cta.style, (webinar?.brandSettings as { primaryColor?: string } | null)?.primaryColor).style}
               data-testid={`embed-cta-${cta.id}`}
               onClick={(event) => {
                 if (cta.offerId && id) {
