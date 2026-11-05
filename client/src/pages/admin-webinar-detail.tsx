@@ -387,7 +387,9 @@ const t: Record<LangAdmin, Record<string, string>> = {
     tzParis: "巴黎",
     tzSydney: "雪梨",
     schedScheduledTitle: "排程場次",
-    schedScheduledDesc: "循環活動會自動在指定時間排程",
+    schedScheduledDesc: "儲存後會自動排出接下來 14 天的場次；每一場時間一過，報名表就自動改成下一場，不需要手動產生。",
+    schedJitOverridesRecurring: "「即時開始」目前是開啟的，報名表會先列出「即時開始」場次。只想用上面的固定時段，請到左側「即時開始」停用。",
+    schedJitDisable: "停用即時開始",
     schedEveryDay: "每天",
     schedEveryWeek: "每週",
     schedEveryTwoWeeks: "每兩週",
@@ -878,7 +880,9 @@ const t: Record<LangAdmin, Record<string, string>> = {
     tzParis: "巴黎",
     tzSydney: "悉尼",
     schedScheduledTitle: "排程场次",
-    schedScheduledDesc: "循环活动会自动在指定时间排程",
+    schedScheduledDesc: "保存后会自动排出接下来 14 天的场次；每一场时间一过，报名表就自动改成下一场，不需要手动生成。",
+    schedJitOverridesRecurring: "「即时开始」目前是开启的，报名表会先列出「即时开始」场次。只想用上面的固定时段，请到左侧「即时开始」停用。",
+    schedJitDisable: "停用即时开始",
     schedEveryDay: "每天",
     schedEveryWeek: "每周",
     schedEveryTwoWeeks: "每两周",
@@ -2843,6 +2847,11 @@ export default function AdminWebinarDetail() {
                       <div className="space-y-6">
                         <h2 className="text-lg font-semibold" data-testid="text-scheduled-webinars-title">{s.schedScheduledTitle}</h2>
                         <p className="text-sm text-muted-foreground">{s.schedScheduledDesc}</p>
+                        {(webinar?.scheduleMode as any)?.justInTime && (
+                          <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200" data-testid="warning-jit-overrides-recurring">
+                            {s.schedJitOverridesRecurring}
+                          </p>
+                        )}
 
                         <div className="space-y-4">
                           <div className="flex items-center gap-3 flex-wrap">
@@ -3061,6 +3070,20 @@ export default function AdminWebinarDetail() {
                           {updateWebinar.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                           {s.schedSaveJit}
                         </Button>
+                        {(webinar?.scheduleMode as any)?.justInTime && (
+                          <Button
+                            variant="ghost"
+                            className="ml-2 text-muted-foreground"
+                            onClick={() => {
+                              const existingSm = webinar?.scheduleMode as any;
+                              updateWebinar.mutate({ scheduleMode: { ...existingSm, justInTime: false } });
+                            }}
+                            disabled={updateWebinar.isPending}
+                            data-testid="button-disable-jit"
+                          >
+                            {s.schedJitDisable}
+                          </Button>
+                        )}
                       </div>
                     )}
 
