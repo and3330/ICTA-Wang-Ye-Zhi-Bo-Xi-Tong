@@ -176,7 +176,11 @@ for (const embed of [false, true]) {
     await expect(play).toBeEnabled();
     await play.click();
     await expect.poll(() => page.evaluate(() => (window as any).__videoPlayCalls)).toBe(1);
-    await page.evaluate(() => { (window as any).__rejectPlay = true; });
+    await page.evaluate(() => {
+      (window as any).__testPlayer.handlers.pause?.();
+      (window as any).__rejectPlay = true;
+    });
+    await expect(play).toBeVisible();
     await play.click();
     await expect(page.getByText(/影片無法播放/).first()).toBeVisible();
   });
