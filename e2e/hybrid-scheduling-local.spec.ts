@@ -90,6 +90,55 @@ test("repeat email signups still respect the atomic monthly registration limit",
   expect(new Set(admitted.map(r => r!.id)).size).toBe(2);
 });
 
+for (const width of [390, 900]) {
+  test(`embedded registration scrolls all session choices and form fields at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 650 });
+    await page.route(`**/api/webinars/${webinarId}/available-sessions`, async route => {
+      const original = await route.fetch();
+      const data = await original.json();
+      data.sessions = Array.from({ length: 24 }, (_, i) => ({
+        id: `scroll-session-${i}`,
+        scheduledStart: new Date(new Date(future).getTime() + i * 3_600_000).toISOString(),
+      }));
+      await route.fulfill({ response: original, json: data });
+    });
+    // Exercise a fixed-height iframe like the external site's registration
+    // dialog, not just the standalone embed URL.
+    await page.route("**/scroll-test-host", route => route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `<html><head><meta charset="utf-8"></head><body style="margin:0"><iframe title="報名表" src="/embed/register/${webinarId}" style="width:100%;height:500px;border:0"></iframe></body></html>`,
+    }));
+    await page.goto("/scroll-test-host");
+    const frame = page.frameLocator('iframe[title="報名表"]');
+    const trigger = frame.getByTestId("button-embed-session-dropdown");
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const scroll = frame.getByTestId("embed-session-scroll");
+    expect(await scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await scroll.hover();
+    await page.mouse.wheel(0, 500);
+    await expect.poll(() => scroll.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    await scroll.focus();
+    await page.keyboard.press("Control+End");
+    const last = frame.getByTestId("button-embed-session-scroll-session-23");
+    await last.focus();
+    await page.keyboard.press("Enter");
+    await expect(scroll).not.toBeAttached();
+    await trigger.click();
+    await scroll.focus();
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await frame.getByTestId("input-embed-name").fill("捲動測試");
+    await frame.getByTestId("input-embed-phone").fill("0912345678");
+    await frame.getByTestId("input-embed-email").fill("scroll@example.test");
+    await frame.getByTestId("button-embed-register").scrollIntoViewIfNeeded();
+    await expect(frame.getByTestId("button-embed-register")).toBeVisible();
+    expect(await frame.locator("body").evaluate(() => document.scrollingElement!.scrollTop)).toBeGreaterThan(0);
+  });
+}
+
 test("verified viewers cannot reuse another person's chat identity or inherit historical host broadcasts", async ({ request }) => {
   const tokens: string[] = [];
   for (let i = 0; i < 2; i++) {

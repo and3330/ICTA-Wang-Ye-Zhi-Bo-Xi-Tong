@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -11,7 +11,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
@@ -79,6 +78,7 @@ function Countdown({ target }: { target: number }) {
 }
 
 export default function EmbedRegister() {
+  const sessionTrigger = useRef<HTMLButtonElement>(null);
   const { id } = useParams<{ id: string }>();
   const [registered, setRegistered] = useState(false);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
@@ -450,8 +450,12 @@ export default function EmbedRegister() {
 
       {showSessionChoice && (
         <div className="mb-4 relative">
-          <div
-            className="border rounded-md p-2.5 flex items-center justify-between cursor-pointer hover-elevate"
+          <button
+            ref={sessionTrigger}
+            type="button"
+            aria-expanded={showSessionPicker}
+            aria-controls="embed-session-options"
+            className="w-full text-left border rounded-md p-2.5 flex items-center justify-between cursor-pointer hover-elevate focus-visible:outline focus-visible:outline-2"
             onClick={() => setShowSessionPicker(!showSessionPicker)}
             data-testid="button-embed-session-dropdown"
           >
@@ -471,11 +475,26 @@ export default function EmbedRegister() {
               )}
             </span>
             <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showSessionPicker ? "rotate-180" : ""}`} />
-          </div>
+          </button>
 
           {showSessionPicker && (
             <div className="absolute left-0 right-0 top-full mt-1 border rounded-md bg-card shadow-lg z-50">
-              <ScrollArea className="max-h-56">
+              <div
+                id="embed-session-options"
+                role="region"
+                aria-label="可報名場次"
+                tabIndex={0}
+                data-testid="embed-session-scroll"
+                className="focus-visible:outline focus-visible:outline-2"
+                style={{ maxHeight: "min(14rem, 45dvh)", overflowY: "auto", overscrollBehaviorY: "contain", WebkitOverflowScrolling: "touch" }}
+                onKeyDown={event => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setShowSessionPicker(false);
+                    sessionTrigger.current?.focus();
+                  }
+                }}
+              >
                 <div className="p-2 space-y-1">
                   {onDemandAvailable && (
                     <button
@@ -516,7 +535,7 @@ export default function EmbedRegister() {
                     </div>
                   ))}
                 </div>
-              </ScrollArea>
+              </div>
               <div className="border-t px-3 py-1.5">
                 <span className="flex items-center justify-center gap-1.5 text-[9px] text-muted-foreground opacity-60">
                   Powered by <SellCaseLogo className="h-auto w-[76px]" />
