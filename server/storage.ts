@@ -295,6 +295,7 @@ export interface IStorage {
   
   // Viewer Progress
   getViewerProgress(webinarId: string, sessionId: string): Promise<ViewerProgress | undefined>;
+  getLatestViewerProgressForRegistration(webinarId: string, registrationId: string): Promise<ViewerProgress | undefined>;
   upsertViewerProgress(data: InsertViewerProgress): Promise<ViewerProgress>;
   
   // Analytics
@@ -2308,6 +2309,14 @@ export class DatabaseStorage implements IStorage {
         eq(viewerProgress.webinarId, webinarId),
         eq(viewerProgress.viewerSessionId, sessionId)
       ));
+    return result[0];
+  }
+
+  async getLatestViewerProgressForRegistration(webinarId: string, registrationId: string): Promise<ViewerProgress | undefined> {
+    const result = await db.select().from(viewerProgress)
+      .where(and(eq(viewerProgress.webinarId, webinarId), eq(viewerProgress.registrationId, registrationId)))
+      .orderBy(desc(viewerProgress.updatedAt))
+      .limit(1);
     return result[0];
   }
 

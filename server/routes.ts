@@ -4351,6 +4351,14 @@ export async function registerRoutes(
     totalWatched: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
   });
 
+  // Where this registration stopped watching, from whichever device saved last.
+  app.get("/api/webinars/:id/progress", requirePublishedOrOwner, async (req, res) => {
+    const registration = await progressViewer(req);
+    if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
+    const progress = await storage.getLatestViewerProgressForRegistration(req.params.id as string, registration.id);
+    res.json({ lastPosition: progress?.lastPosition || 0, updatedAt: progress?.updatedAt || null });
+  });
+
   app.get("/api/webinars/:id/progress/:sessionId", requirePublishedOrOwner, async (req, res) => {
     const registration = await progressViewer(req);
     if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
