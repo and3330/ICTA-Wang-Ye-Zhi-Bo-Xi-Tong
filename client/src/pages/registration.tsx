@@ -1,3 +1,4 @@
+import { RoomOpenGate } from "@/components/room-open-gate";
 import { useState, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -328,6 +329,7 @@ export default function Registration() {
                 {thankYou.ctaText}
               </Button>
             )}
+            <RoomOpenGate start={selectedSession || webinar.startTime} onDemand={isOnDemandSelection}>
             <Button
               onClick={() => {
                 trackWebinarEvent(id, "webinar_enter");
@@ -340,6 +342,7 @@ export default function Registration() {
             >
               {isOnDemandSelection ? "立即觀看" : "進入直播間"}
             </Button>
+            </RoomOpenGate>
           </CardContent>
         </Card>
       </div>
