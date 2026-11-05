@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import net from "node:net";
 import dns from "node:dns/promises";
 import type { Express, Request, Response } from "express";
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import {
   externalBrowserReportSchema, externalHandoffExchangeSchema, externalJourneyPublishSchema, externalJourneySaveSchema,
   externalJourneySettingsSchema, externalMerchantEventSchema, externalOrderListQuerySchema,
@@ -388,7 +388,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
       const token = verifyWatchToken(req.get("X-Watch-Token"));
       let registration: any;
       if (token?.webinarId === available.webinar.id) {
-        [registration] = await db.select().from(registrations).where(and(eq(registrations.id, token.registrationId), eq(registrations.webinarId, available.webinar.id))).limit(1);
+        [registration] = await db.select().from(registrations).where(and(eq(registrations.id, token.registrationId), eq(registrations.webinarId, available.webinar.id), isNull(registrations.deletedAt))).limit(1);
       }
       let declaredSession: any;
       let selectedSession: Date | null = registration?.selectedSession || null;

@@ -281,6 +281,11 @@ export const registrations = pgTable("registrations", {
 
   // 報名者標籤 / 分群
   tags: text("tags").array().default(sql`'{}'::text[]`),
+
+  // 主辦方整理名單：封存只是從清單收起來，報名照常有效；
+  // 刪除則讓這筆報名失效（看不到、不寄信、觀看連結失效），資料保留以免破壞訂單與分析關聯。
+  archivedAt: timestamp("archived_at"),
+  deletedAt: timestamp("deleted_at"),
 });
 
 export const registrationIdentityKeys = pgTable("registration_identity_keys", {
@@ -293,7 +298,7 @@ export const registrationIdentityKeys = pgTable("registration_identity_keys", {
 }));
 
 export const insertRegistrationSchema = createInsertSchema(registrations).omit({ 
-  id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true 
+  id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true, archivedAt: true, deletedAt: true 
 }).extend({
   viewerTimezone: z.string().trim().min(1).max(100).refine((value) => {
     try {

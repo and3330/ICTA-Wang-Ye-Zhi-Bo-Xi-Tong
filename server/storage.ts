@@ -206,6 +206,7 @@ export interface IStorage {
   getFunnelEventsByRegistration(webinarId: string, registrationId: string): Promise<WebinarFunnelEvent[]>;
   getFunnelEventsByRegistrations(webinarId: string, registrationIds: string[]): Promise<WebinarFunnelEvent[]>;
   getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined>;
+  bulkUpdateRegistrations(webinarId: string, ids: string[], action: "archive" | "unarchive" | "delete"): Promise<number>;
   updateRegistration(id: string, data: Partial<Registration>): Promise<Registration | undefined>;
   updateRegistrationForWebinar(webinarId: string, id: string, data: Partial<Registration>): Promise<Registration | undefined>;
   
@@ -1762,30 +1763,53 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRegistration(id: string): Promise<Registration | undefined> {
-    const result = await db.select().from(registrations).where(eq(registrations.id, id));
+    const result = await db.select().from(registrations).where(and(eq(registrations.id, id), isNull(registrations.deletedAt)));
     return result[0];
   }
 
   async getRegistrationsByWebinar(webinarId: string): Promise<Registration[]> {
-    return db.select().from(registrations).where(eq(registrations.webinarId, webinarId));
+    return db.select().from(registrations).where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt)));
   }
 
   async getRegistrationsByWebinarPage(webinarId: string, limit: number, offset: number): Promise<{ registrations: Registration[]; total: number }> {
     const [rows, totals] = await Promise.all([
       db.select().from(registrations)
-        .where(eq(registrations.webinarId, webinarId))
+        .where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt)))
         .orderBy(desc(registrations.registeredAt), desc(registrations.id))
         .limit(limit)
         .offset(offset),
-      db.select({ value: count() }).from(registrations).where(eq(registrations.webinarId, webinarId)),
+      db.select({ value: count() }).from(registrations).where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt))),
     ]);
     return { registrations: rows, total: Number(totals[0]?.value || 0) };
   }
 
   async getRegistrationByEmail(webinarId: string, email: string): Promise<Registration | undefined> {
     const result = await db.select().from(registrations)
-      .where(and(eq(registrations.webinarId, webinarId), sql`lower(btrim(${registrations.email})) = ${email.trim().toLowerCase()}`));
+      .where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt), sql`lower(btrim(${registrations.email})) = ${email.trim().toLowerCase()}`));
     return result[0];
+  }
+
+  async bulkUpdateRegistrations(webinarId: string, ids: string[], action: "archive" | "unarchive" | "delete"): Promise<number> {
+    if (ids.length === 0) return 0;
+    return db.transaction(async (tx) => {
+      const now = new Date();
+      const changes = action === "archive" ? { archivedAt: now }
+        : action === "unarchive" ? { archivedAt: null }
+        : { deletedAt: now };
+      const changed = await tx.update(registrations).set(changes).where(and(
+        eq(registrations.webinarId, webinarId),
+        inArray(registrations.id, ids),
+        isNull(registrations.deletedAt),
+      )).returning({ id: registrations.id });
+      if (action === "delete" && changed.length > 0) {
+        // A deleted registrant must not keep receiving reminders.
+        await tx.update(emailReminders).set({ status: "cancelled" }).where(and(
+          inArray(emailReminders.registrationId, changed.map(row => row.id)),
+          eq(emailReminders.status, "pending"),
+        ));
+      }
+      return changed.length;
+    });
   }
 
   async updateRegistration(id: string, data: Partial<Registration>): Promise<Registration | undefined> {

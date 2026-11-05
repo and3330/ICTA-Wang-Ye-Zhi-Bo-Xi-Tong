@@ -265,6 +265,7 @@ async function loadRegistrationAggregates(
     .where(and(
       eq(webinars.userId, ownerId),
       isNull(webinars.deletedAt),
+      isNull(registrations.deletedAt),
       inArray(webinars.id, webinarIds),
     ))
     .groupBy(registrations.webinarId, selectedSessionMilliseconds);

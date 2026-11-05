@@ -26,7 +26,7 @@ import {
   Mail, Palette, Calendar, Edit, Save, RefreshCw, FileText, Eye,
   Upload, ImagePlus, X, Bell, Link2, Download, Globe, Languages, Bot,
   Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit, ShoppingBag
-  , Flame, Snowflake, ChevronRight, Target, AlertCircle
+  , Flame, Snowflake, ChevronRight, Target, AlertCircle, ArchiveRestore
 } from "lucide-react";
 import { EmailPreviewDialog, type EmailPreviewRequest } from "@/components/email-preview-dialog";
 import { Switch } from "@/components/ui/switch";
@@ -1322,6 +1322,9 @@ export default function AdminWebinarDetail() {
   });
   const [funnelTo, setFunnelTo] = useState(() => localDateInput(new Date()));
   const [sourceFilter, setSourceFilter] = useState("__all__");
+  const [regView, setRegView] = useState<"active" | "archived">("active");
+  const [selectedRegIds, setSelectedRegIds] = useState<Set<string>>(() => new Set());
+  const [confirmRegDelete, setConfirmRegDelete] = useState(false);
   const [answeringQuestionId, setAnsweringQuestionId] = useState<string | null>(null);
   const [answerInput, setAnswerInput] = useState("");
 
@@ -1515,6 +1518,21 @@ export default function AdminWebinarDetail() {
     enabled: !!id,
     ...LIVE_REFRESH,
   });
+  const archivedRegCount = useMemo(() => (registrations || []).filter((reg) => reg.archivedAt).length, [registrations]);
+  const visibleRegistrations = useMemo(() => (registrations || [])
+    .filter((reg) => (regView === "archived" ? !!reg.archivedAt : !reg.archivedAt))
+    .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
+    .filter((reg) => sourceFilter === "__all__" || registrationSource(reg).label === sourceFilter),
+  [registrations, regView, tagFilter, sourceFilter]);
+  // Only rows on screen can stay selected, so a bulk action never touches hidden people.
+  useEffect(() => {
+    setSelectedRegIds((current) => {
+      if (current.size === 0) return current;
+      const visible = new Set(visibleRegistrations.map((reg) => reg.id));
+      const next = new Set(Array.from(current).filter((regId) => visible.has(regId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleRegistrations]);
 
   const leadInsightsQuery = useQuery<LeadInsightsResponse>({
     queryKey: [`/api/webinars/${id}/lead-insights?limit=50&offset=${leadPage * 50}`],
@@ -2233,6 +2251,25 @@ export default function AdminWebinarDetail() {
     },
     onError: (error: Error) => {
       toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" });
+    },
+  });
+
+  const bulkRegistrations = useMutation({
+    mutationFn: async ({ action, ids }: { action: "archive" | "unarchive" | "delete"; ids: string[] }) => {
+      const response = await apiRequest("POST", `/api/webinars/${id}/registrations/bulk`, { action, ids });
+      return { action, ...(await response.json() as { updated: number }) };
+    },
+    onSuccess: ({ action, updated }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "registrations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "session-registration-counts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "analytics"] });
+      setSelectedRegIds(new Set());
+      setConfirmRegDelete(false);
+      const verb = action === "archive" ? "封存" : action === "unarchive" ? "移回名單" : "刪除";
+      toast({ title: `已${verb} ${updated} 筆報名` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "批次處理失敗", description: error.message, variant: "destructive" });
     },
   });
 
@@ -5074,6 +5111,20 @@ export default function AdminWebinarDetail() {
                   <CardDescription>{s.regDesc}</CardDescription>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                  <div className="inline-flex h-9 rounded-md border bg-muted/40 p-0.5" role="group" aria-label="名單檢視">
+                    {([["active", "名單"], ["archived", `已封存${archivedRegCount ? ` ${archivedRegCount}` : ""}`]] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={regView === value}
+                        onClick={() => setRegView(value)}
+                        className={cn("rounded px-3 text-xs font-medium transition-colors", regView === value ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground")}
+                        data-testid={`button-reg-view-${value}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
                     <SelectTrigger className="w-[170px] h-9" data-testid="select-source-filter">
                       <SelectValue placeholder="報名來源" />
@@ -5153,10 +5204,60 @@ export default function AdminWebinarDetail() {
                       </div>
                     );
                   })()}
+                  {selectedRegIds.size > 0 && (
+                    <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-t bg-primary/5 px-5 py-2.5" data-testid="registration-bulk-bar">
+                      <span className="text-sm font-medium">已選 {selectedRegIds.size} 筆</span>
+                      <div className="ml-auto flex flex-wrap items-center gap-2">
+                        {regView === "active" ? (
+                          <Button size="sm" variant="outline" disabled={bulkRegistrations.isPending} onClick={() => bulkRegistrations.mutate({ action: "archive", ids: Array.from(selectedRegIds) })} data-testid="button-bulk-archive">
+                            <Archive className="mr-1 h-4 w-4" />封存
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" disabled={bulkRegistrations.isPending} onClick={() => bulkRegistrations.mutate({ action: "unarchive", ids: Array.from(selectedRegIds) })} data-testid="button-bulk-unarchive">
+                            <ArchiveRestore className="mr-1 h-4 w-4" />移回名單
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10" disabled={bulkRegistrations.isPending} onClick={() => setConfirmRegDelete(true)} data-testid="button-bulk-delete">
+                          <Trash2 className="mr-1 h-4 w-4" />刪除
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setSelectedRegIds(new Set())}>取消選取</Button>
+                      </div>
+                    </div>
+                  )}
+                  <AlertDialog open={confirmRegDelete} onOpenChange={(open) => !bulkRegistrations.isPending && setConfirmRegDelete(open)}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>刪除 {selectedRegIds.size} 筆報名？</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          刪除後這些人會從名單、統計和匯出中移除，尚未寄出的提醒信會取消，他們的觀看連結也會失效。這個動作無法在後台復原；只想把名單收乾淨的話，請改用「封存」。
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel disabled={bulkRegistrations.isPending}>取消</AlertDialogCancel>
+                        <AlertDialogAction
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          disabled={bulkRegistrations.isPending}
+                          onClick={(event) => { event.preventDefault(); bulkRegistrations.mutate({ action: "delete", ids: Array.from(selectedRegIds) }); }}
+                          data-testid="button-confirm-bulk-delete"
+                        >
+                          {bulkRegistrations.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1 h-4 w-4" />}
+                          確定刪除
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                   <div className="max-h-[560px] overflow-auto border-t">
-                    <Table className="min-w-[1100px]">
+                    <Table className="min-w-[1140px]">
                       <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
                         <TableRow className="hover:bg-transparent">
+                          <TableHead className="w-[40px] pr-0">
+                            <Checkbox
+                              aria-label="全選目前顯示的報名"
+                              checked={visibleRegistrations.length > 0 && visibleRegistrations.every((reg) => selectedRegIds.has(reg.id)) ? true : selectedRegIds.size > 0 ? "indeterminate" : false}
+                              onCheckedChange={(checked) => setSelectedRegIds(checked === true ? new Set(visibleRegistrations.map((reg) => reg.id)) : new Set())}
+                              data-testid="checkbox-select-all-registrations"
+                            />
+                          </TableHead>
                           <TableHead className="w-[150px]">姓名</TableHead>
                           <TableHead className="w-[220px]">聯絡資料</TableHead>
                           <TableHead className="w-[200px]">場次</TableHead>
@@ -5168,18 +5269,35 @@ export default function AdminWebinarDetail() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {registrations
-                          .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
-                          .filter((reg) => sourceFilter === "__all__" || registrationSource(reg).label === sourceFilter)
+                        {visibleRegistrations.length === 0 && (
+                          <TableRow className="hover:bg-transparent">
+                            <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                              {regView === "archived" ? "沒有已封存的報名。" : "沒有符合篩選條件的報名。"}
+                            </TableCell>
+                          </TableRow>
+                        )}
+                        {visibleRegistrations
                           .map((reg, index) => {
                             const watchMinutes = Math.floor((reg.watchDuration || 0) / 60);
                             const watchSeconds = (reg.watchDuration || 0) % 60;
                             return (
                               <TableRow
                                 key={reg.id}
-                                className={cn(index % 2 === 1 && "bg-muted/35")}
+                                className={cn(index % 2 === 1 && "bg-muted/35", selectedRegIds.has(reg.id) && "bg-primary/5")}
                                 data-testid={`row-registration-${reg.id}`}
                               >
+                                <TableCell className="w-[40px] pr-0 align-top">
+                                  <Checkbox
+                                    aria-label={`選取 ${reg.name}`}
+                                    checked={selectedRegIds.has(reg.id)}
+                                    onCheckedChange={(checked) => setSelectedRegIds((current) => {
+                                      const next = new Set(current);
+                                      if (checked === true) next.add(reg.id); else next.delete(reg.id);
+                                      return next;
+                                    })}
+                                    data-testid={`checkbox-registration-${reg.id}`}
+                                  />
+                                </TableCell>
                                 <TableCell className="align-top font-medium">
                                   <div className="max-w-[140px] truncate" title={reg.name}>{reg.name}</div>
                                   {reg.nickname && reg.nickname !== reg.name && (

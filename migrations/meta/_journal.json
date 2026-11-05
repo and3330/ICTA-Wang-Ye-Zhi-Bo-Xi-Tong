@@ -253,6 +253,13 @@
       "when": 1793980800000,
       "tag": "0036_repeat_registrations",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793990000000,
+      "tag": "0037_registration_archive_delete",
+      "breakpoints": true
     }
   ]
 }
