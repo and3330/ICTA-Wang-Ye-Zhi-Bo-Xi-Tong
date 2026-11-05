@@ -17,7 +17,13 @@ description: Rules for authorizing host/viewer actions over the /ws WebSocket in
 - All host-only handlers: gate on `isHost && currentWebinarId`, and use `currentWebinarId` (not client data) as the webinar id.
 - Targeted sends (host→one session): require `webinarSessions.get(currentWebinarId)?.has(sessionId)`.
 - Viewer actions (`like`, `vote`): require `currentWebinarId && currentSessionId`, use those (ignore client ids); for `vote` also verify `poll.webinarId === currentWebinarId`.
-- `liveCta` (and any user-supplied URL): validate scheme server-side — only allow `https?://`, `/`, `mailto:`, `tel:` (block `javascript:`/`data:`).
+- Live CTA external destinations follow the persisted CTA policy: absolute HTTP(S) only; reject `#`, relative paths, and non-HTTP(S) schemes server-side.
+
+Host controls must distinguish socket-open, host authorization, server acceptance, and actual viewer rendering. A successful local `send` is not proof that the operation was accepted.
+
+**Why:** The console previously accepted `#` locally and announced success even though server validation silently rejected the CTA. A connected socket could also lack host privileges.
+
+**How to apply:** Show CTA success only after its matching server confirmation. A missing confirmation is an unknown result, not proof of no side effect; do not automatically retry without server idempotency. Other host tools must not claim the CTA acknowledgement protocol covers their operations.
 
 ## Viewer transcript isolation
 

@@ -219,6 +219,119 @@ test("real poll votes return their poll ID and repeated votes do not count twice
   }
 });
 
+test("control studio validates CTA targets and confirms real pushes to an authorized viewer", async ({ page }) => {
+  test.setTimeout(120_000);
+  const sockets: WebSocket[] = [];
+  let pollId: string | undefined;
+  const open = async (cookie?: string) => {
+    const socket = new WebSocket("ws://127.0.0.1:5000/ws", cookie ? { headers: { Cookie: cookie } } : undefined);
+    sockets.push(socket);
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+    return socket;
+  };
+  const next = (socket: WebSocket, type: string, send?: any) => new Promise<any>((resolve, reject) => {
+    const timer = setTimeout(() => { socket.off("message", onMessage); reject(new Error(`Missing ${type} response`)); }, 8_000);
+    const onMessage = (raw: any) => {
+      const message = JSON.parse(raw.toString());
+      if (message.type === type) {
+        clearTimeout(timer); socket.off("message", onMessage); resolve(message.data);
+      }
+    };
+    socket.on("message", onMessage);
+    if (send) socket.send(JSON.stringify(send));
+  });
+  try {
+    await page.addInitScript(() => {
+      const Native = window.WebSocket;
+      (window as any).__studioSockets = [];
+      window.WebSocket = class extends Native {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          if (String(url).endsWith("/ws")) (window as any).__studioSockets.push(this);
+        }
+      };
+    });
+    await page.goto("/");
+    await page.locator("h1").first().waitFor();
+    expect((await page.request.post("/api/admin/login", { data: { username, password } })).status()).toBe(200);
+    const poll = await page.request.post(`/api/webinars/${webinarId}/polls`, { data: {
+      question: "即時推送投票", options: ["甲", "乙"], triggerTime: 0, duration: 60,
+    } });
+    expect(poll.status()).toBe(200);
+    pollId = (await poll.json()).id;
+    const registered = await page.request.post("/api/registrations", { data: {
+      webinarId, name: "Studio viewer test", phone: "0912345678", email: `${randomUUID()}@example.test`,
+    } });
+    expect(registered.status()).toBe(200);
+    const { watchToken } = await registered.json();
+    const viewer = await open();
+    await next(viewer, "sessionConfirmed", { type: "join", data: { webinarId, watchToken, nickname: "Studio viewer", sessionId: randomUUID() } });
+    const cookies = (await page.context().cookies()).map(c => `${c.name}=${c.value}`).join("; ");
+    const host = await open(cookies);
+    await next(host, "history", { type: "joinAsHost", data: { webinarId } });
+    const bad = await next(host, "hostActionResult", { type: "liveCta", data: { text: "Bad URL", url: "#", requestId: "bad-url" } });
+    expect(bad).toMatchObject({ requestId: "bad-url", success: false });
+    const anonymous = await open();
+    const denied = await next(anonymous, "hostActionResult", { type: "liveCta", data: { text: "Denied", url: "https://example.com", requestId: "denied" } });
+    expect(denied.success).toBe(false);
+    await page.evaluate(path => { history.pushState({}, "", path); dispatchEvent(new PopStateEvent("popstate")); }, `/admin/webinar/${webinarId}/control`);
+    const push = page.getByTestId("button-studio-push-cta");
+    await expect(push).toBeEnabled({ timeout: 20_000 });
+    await page.getByTestId("input-studio-cta-text").fill("即時 CTA 測試");
+    await page.getByTestId("input-studio-cta-url").fill("#");
+    await push.click();
+    await expect(page.getByText(/不能使用 # 或相對路徑/).first()).toBeVisible();
+    expect((await db.select({ id: schema.ctaButtons.id }).from(schema.ctaButtons).where(eq(schema.ctaButtons.webinarId, webinarId))).length).toBe(0);
+    await page.getByTestId("input-studio-cta-url").fill("https://example.com/offer");
+    await page.getByTestId("input-studio-cta-dur").fill("45");
+    const delivered = next(viewer, "liveCta");
+    await push.click();
+    const cta = await delivered;
+    expect(cta.url).toBe("https://example.com/offer");
+    expect(cta.text).toBe("即時 CTA 測試");
+    expect(cta.expiresAt).toBeGreaterThan(Date.now());
+    await expect(page.getByText(/已推送給目前連線的觀眾/).first()).toBeVisible();
+    await page.getByRole("tab", { name: "快速小提示卡", exact: true }).click();
+    await page.getByTestId("input-studio-tip-title").fill("即時提示");
+    await page.getByTestId("input-studio-tip-content").fill("聊天室資料");
+    const tip = next(viewer, "liveTip");
+    await page.getByTestId("button-studio-push-tip").click();
+    expect((await tip).content).toBe("聊天室資料");
+    await page.getByRole("tab", { name: "快速假人聊天", exact: true }).click();
+    await page.getByTestId("input-studio-chat-message").fill("即時聊天室測試");
+    const chat = next(viewer, "chat");
+    await page.getByTestId("button-studio-push-chat").click();
+    expect((await chat).message).toBe("即時聊天室測試");
+    await page.getByRole("tab", { name: "投票", exact: true }).click();
+    const pollMessage = next(viewer, "poll");
+    await page.getByTestId(`button-trigger-poll-${pollId}`).click();
+    expect((await pollMessage).id).toBe(pollId);
+    await page.getByRole("tab", { name: "CTA", exact: true }).click();
+    // Suppress only the acknowledgement: no automatic retry or false success.
+    await page.evaluate(() => {
+      const socket = (window as any).__studioSockets.at(-1);
+      const original = socket.onmessage;
+      socket.onmessage = (event: MessageEvent) => {
+        if (JSON.parse(event.data).type !== "hostActionResult") original.call(socket, event);
+      };
+    });
+    const second = next(viewer, "liveCta");
+    await push.click();
+    await second;
+    await expect(page.getByText(/未收到推送確認/).first()).toBeVisible({ timeout: 15_000 });
+    expect((await db.select({ id: schema.ctaButtons.id }).from(schema.ctaButtons).where(eq(schema.ctaButtons.webinarId, webinarId))).length).toBe(2);
+    await page.evaluate(() => (window as any).__studioSockets.at(-1).close());
+    await expect(push).toBeDisabled();
+  } finally {
+    sockets.forEach(socket => socket.terminate());
+    await db.delete(schema.ctaButtons).where(eq(schema.ctaButtons.webinarId, webinarId));
+    if (pollId) {
+      await db.delete(schema.pollVotes).where(eq(schema.pollVotes.pollId, pollId));
+      await db.delete(schema.polls).where(eq(schema.polls.id, pollId));
+    }
+  }
+});
+
 for (const width of [390, 900]) {
   test(`embedded registration scrolls all session choices and form fields at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 650 });
@@ -317,6 +430,54 @@ test("verified viewers cannot reuse another person's chat identity or inherit hi
 });
 
 for (const embed of [false, true]) {
+  for (const deniedStorage of [false, true]) {
+    test(`mobile ${embed ? "embed" : "public"} registration opens its verified viewer with ${deniedStorage ? "blocked" : "available"} storage`, async ({ page, context }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await db.update(schema.webinars).set({ vimeoUrl: "https://vimeo.com/76979871" }).where(eq(schema.webinars.id, webinarId));
+      await context.route(/https:\/\/(connect\.facebook\.net|www\.facebook\.com|www\.googletagmanager\.com|player\.vimeo\.com)\//, r => r.abort());
+      if (deniedStorage) await context.addInitScript(() => {
+        Object.defineProperty(window, "sessionStorage", { configurable: true, get() { throw new DOMException("Storage blocked", "SecurityError"); } });
+      });
+      await page.goto(embed ? `/embed/register/${webinarId}` : `/register/${webinarId}`);
+      const prefix = embed ? "input-embed-" : "input-";
+      await page.getByTestId(`${prefix}name`).fill("Mobile viewer test");
+      await page.getByTestId(`${prefix}phone`).fill("0912345678");
+      await page.getByTestId(`${prefix}email`).fill(`${randomUUID()}@example.test`);
+      await page.getByTestId(embed ? "button-embed-session-dropdown" : "select-session").click();
+      await page.getByTestId(embed ? "button-embed-session-on-demand" : "option-session-on-demand").click();
+      const registered = page.waitForResponse(r => r.url().endsWith("/api/registrations") && r.request().method() === "POST");
+      await page.getByTestId(embed ? "button-embed-register" : "button-register").click();
+      const response = await registered;
+      expect(response.status()).toBe(200);
+      const result = await response.json();
+      const enter = page.getByTestId(embed ? "button-embed-enter-webinar" : "button-enter-webinar");
+      await expect(enter).toBeVisible();
+      let viewer = page;
+      if (embed) {
+        // noopener means the new page has no inherited registration storage.
+        const opened = context.waitForEvent("page");
+        await enter.click();
+        viewer = await opened;
+        await viewer.setViewportSize({ width: 390, height: 844 });
+        await expect.poll(() => new URL(viewer.url()).pathname).toBe(`/webinar/${webinarId}`);
+      } else {
+        await enter.click();
+        await expect.poll(() => new URL(page.url()).pathname).toBe(`/webinar/${webinarId}`);
+      }
+      // Do not print the private URL or token in assertions or logs.
+      expect(new URL(viewer.url()).searchParams.get("watchToken") === result.watchToken).toBe(true);
+      await expect(viewer.getByTestId("input-nickname")).toBeVisible({ timeout: 20_000 });
+      await expect(viewer.getByText("內容暫時無法使用", { exact: true })).toHaveCount(0);
+      const state = await viewer.request.get(`/api/webinars/${webinarId}/watch-state`, { params: { watchToken: result.watchToken } });
+      expect(state.status()).toBe(200);
+      const verified = await state.json();
+      expect(verified.canWatch).toBe(true);
+      expect(verified.registrationId === result.id).toBe(true);
+      await viewer.reload();
+      await expect(viewer.getByTestId("input-nickname")).toBeVisible();
+      if (embed) await viewer.close();
+    });
+  }
   for (const choice of ["on-demand", "jit", "future"]) {
     test(`${embed ? "embed" : "public"} saves ${choice} alongside the other choices`, async ({ page }) => {
       await page.route(/https:\/\/(connect\.facebook\.net|www\.facebook\.com|www\.googletagmanager\.com)\//, r => r.abort());

@@ -19,7 +19,7 @@ import { Calendar, CheckCircle, Loader2, Play, Zap, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent, trackCompletedWebinarRegistration } from "@/lib/webinar-tracking";
-import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
+import { saveWatchAccess, watchUrl } from "@/lib/watch-access";
 import { LandingCountdown as Countdown, WebinarLanding } from "@/components/webinar-landing";
 import type { PlaybackSource } from "@/lib/media";
 
@@ -54,6 +54,7 @@ export default function Registration() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [registered, setRegistered] = useState(false);
+  const [registrationWatchToken, setRegistrationWatchToken] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [customFieldErrors, setCustomFieldErrors] = useState<Record<string, boolean>>({});
@@ -119,6 +120,7 @@ export default function Registration() {
       return response.json();
     },
     onSuccess: (response: any) => {
+      setRegistrationWatchToken(typeof response?.watchToken === "string" ? response.watchToken : null);
       saveWatchAccess(id!, response);
       setRegistered(true);
       toast({
@@ -329,16 +331,20 @@ export default function Registration() {
                 {thankYou.ctaText}
               </Button>
             )}
+            {!registrationWatchToken && (
+              <p role="alert">報名已完成，但未取得觀看連結，請使用報名確認信中的連結。</p>
+            )}
             <RoomOpenGate start={selectedSession || webinar.startTime} onDemand={isOnDemandSelection}>
             <Button
               onClick={() => {
                 trackWebinarEvent(id, "webinar_enter");
-               const nextUrl = new URL(watchUrl(`/webinar/${id}`, id!, getWatchToken(id)));
+               const nextUrl = new URL(watchUrl(`/webinar/${id}`, id!, registrationWatchToken));
                setLocation(`${nextUrl.pathname}${nextUrl.search}`);
               }}
               className="w-full"
               variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
               data-testid="button-enter-webinar"
+              disabled={!registrationWatchToken}
             >
               {isOnDemandSelection ? "立即觀看" : "進入直播間"}
             </Button>

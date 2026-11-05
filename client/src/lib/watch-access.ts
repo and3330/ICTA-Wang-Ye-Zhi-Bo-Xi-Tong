@@ -34,13 +34,21 @@ const tokenKey = (webinarId: string) => `icta_watch_token_${webinarId}`;
 const stateKey = (webinarId: string) => `icta_watch_state_${webinarId}`;
 
 export function saveWatchAccess(webinarId: string, response: any) {
-  if (response?.watchToken) sessionStorage.setItem(tokenKey(webinarId), response.watchToken);
-  if (response?.watchState) sessionStorage.setItem(stateKey(webinarId), JSON.stringify(response.watchState));
+  try {
+    if (response?.watchToken) sessionStorage.setItem(tokenKey(webinarId), response.watchToken);
+    if (response?.watchState) sessionStorage.setItem(stateKey(webinarId), JSON.stringify(response.watchState));
+  } catch {
+    // Storage is only a convenience cache. The success page retains the new
+    // token in memory and explicitly includes it in the viewer navigation.
+  }
 }
 
 export function getWatchToken(webinarId?: string) {
   if (!webinarId) return null;
-  return new URLSearchParams(window.location.search).get("watchToken") || sessionStorage.getItem(tokenKey(webinarId));
+  const urlToken = new URLSearchParams(window.location.search).get("watchToken");
+  if (urlToken) return urlToken;
+  try { return sessionStorage.getItem(tokenKey(webinarId)); }
+  catch { return null; }
 }
 
 export function getStoredWatchState(webinarId?: string): WatchState | null {

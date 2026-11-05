@@ -16,7 +16,7 @@ import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } 
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent, trackCompletedWebinarRegistration } from "@/lib/webinar-tracking";
-import { saveWatchAccess } from "@/lib/watch-access";
+import { saveWatchAccess, watchUrl } from "@/lib/watch-access";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import type { ExternalJourneyPublicSettings } from "@shared/externalJourneys";
 
@@ -82,6 +82,7 @@ export default function EmbedRegister() {
   const sessionTrigger = useRef<HTMLButtonElement>(null);
   const { id } = useParams<{ id: string }>();
   const [registered, setRegistered] = useState(false);
+  const [registrationWatchToken, setRegistrationWatchToken] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -174,6 +175,7 @@ export default function EmbedRegister() {
       return response.json();
     },
     onSuccess: (response: any) => {
+      setRegistrationWatchToken(typeof response?.watchToken === "string" ? response.watchToken : null);
       try {
         saveWatchAccess(id!, response);
       } catch {
@@ -369,18 +371,26 @@ export default function EmbedRegister() {
           </Button>
         )}
         <RoomOpenGate start={selectedSession || webinar.startTime} onDemand={isOnDemandSelection}>
+        {registrationWatchToken ? (
         <Button
+          asChild
           className="w-full"
           variant={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? "outline" : "default"}
           style={thankYou?.enabled && thankYou.ctaText && thankYou.ctaUrl ? undefined : { backgroundColor: accentColor }}
-          onClick={() => {
-            trackWebinarEvent(id, "webinar_enter");
-            window.open(`${window.location.origin}/webinar/${id}`, "_blank", "noopener,noreferrer");
-          }}
           data-testid="button-embed-enter-webinar"
         >
-          {isOnDemandSelection ? "立即觀看" : "進入直播間"}
+          <a
+            href={watchUrl(`/webinar/${id}`, id!, registrationWatchToken)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => trackWebinarEvent(id, "webinar_enter")}
+          >
+            {isOnDemandSelection ? "立即觀看" : "進入直播間"}
+          </a>
         </Button>
+        ) : (
+          <p role="alert">報名已完成，但未取得觀看連結，請使用報名確認信中的連結。</p>
+        )}
         </RoomOpenGate>
       </div>
     );

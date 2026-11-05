@@ -34,3 +34,4 @@
 - [Embed framing boundary](embed-framing-boundary.md) — external framing is limited to the two embed namespaces; registration must work without third-party cookies.
 - [Repeat registration policy](repeat-registration-policy.md) — 同一 Email 可再次報名同一直播間；Email 是聯絡資料，不是單次報名唯一性限制。
 - [Pinned DNS lookup contract](pinned-dns-lookup-contract.md) — Node HTTPS 的 all-address lookup 需要陣列格式；格式不符會誤報 Invalid IP address: undefined。
+- [Build-time assets](build-time-assets.md) — small built-in brand assets must be tracked; uploaded attachments are globally ignored and may disappear during merges.

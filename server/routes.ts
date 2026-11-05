@@ -1258,11 +1258,21 @@ export async function registerRoutes(
           
           case "liveCta": {
             // Host pushes a CTA button to ALL viewers immediately (no timecode wait)
-            if (!isHost || !currentWebinarId) break;
+            const messageDataRequestId = message.data?.requestId;
+            const reply = (success: boolean, message?: string) => ws.send(JSON.stringify({
+              type: "hostActionResult",
+              data: {
+                action: "liveCta",
+                requestId: typeof messageDataRequestId === "string" ? messageDataRequestId.slice(0, 80) : undefined,
+                success, message,
+                ...(success ? { viewerCount: webinarSessions.get(currentWebinarId!)?.size || 0 } : {}),
+              },
+            }));
+            if (!isHost || !currentWebinarId) { reply(false, "尚未通過直播間主辦人驗證，請重新登入"); break; }
             const { text, url, offerId, salesPageId, style, durationSec } = message.data || {};
-            if (!text || [url, offerId, salesPageId].filter(Boolean).length !== 1) break;
+            if (!text || [url, offerId, salesPageId].filter(Boolean).length !== 1) { reply(false, "請填寫按鈕文字並選擇一個連結目標"); break; }
             const webinar = await storage.getWebinar(currentWebinarId);
-            if (!webinar?.userId) break;
+            if (!webinar?.userId) { reply(false, "直播間目前無法使用"); break; }
             let safeUrl: string | null = null;
             let linkedOfferId: string | null = null;
             let linkedSalesPageId: string | null = null;
@@ -1285,16 +1295,16 @@ export async function registerRoutes(
                   ) = ${webinar?.userId || ""}`,
                   eq(webinarOffers.active, true),
                 )).limit(1);
-              if (!target) break;
+              if (!target) { reply(false, "成交頁不可用，請重新選擇已發佈的成交頁"); break; }
               linkedSalesPageId = target.page.id;
             } else if (offerId) {
               const offer = await storage.getWebinarOffer(String(offerId));
-              if (!offer?.active || await resolveOfferOwnerId(offer) !== webinar.userId) break;
+              if (!offer?.active || await resolveOfferOwnerId(offer) !== webinar.userId) { reply(false, "商品不可用，請重新選擇已上架的商品"); break; }
               linkedOfferId = offer.id;
             } else {
               // Use the same server-side CTA URL policy as persisted CTAs.
               const parsedUrl = safeCtaUrlSchema.safeParse(String(url));
-              if (!parsedUrl.success) break;
+              if (!parsedUrl.success) { reply(false, "請填寫完整的 http:// 或 https:// 網址，不能使用 # 或相對路徑"); break; }
               safeUrl = parsedUrl.data;
             }
             const duration = Number.isFinite(Number(durationSec))
@@ -1311,8 +1321,14 @@ export async function registerRoutes(
               endTime: null,
               style: style || "primary",
             });
-            if (!parsed.success) break;
-            const liveCta = await storage.createLiveCtaButton(parsed.data, expiresAt);
+            if (!parsed.success) { reply(false, "CTA 設定不正確，請檢查按鈕文字與樣式"); break; }
+            let liveCta;
+            try {
+              liveCta = await storage.createLiveCtaButton(parsed.data, expiresAt);
+            } catch {
+              reply(false, "無法儲存推送，請稍後再試");
+              break;
+            }
             if (liveCta.salesPageId) {
               safeUrl = productSalesPageTargetUrl(currentWebinarId, liveCta.id);
             }
@@ -1328,6 +1344,7 @@ export async function registerRoutes(
             };
             broadcastToAllSessions(currentWebinarId, { type: "liveCta", data: payload });
             broadcastToHosts(currentWebinarId, { type: "liveCta", data: payload });
+            reply(true);
             break;
           }
 

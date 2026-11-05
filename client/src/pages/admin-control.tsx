@@ -227,6 +227,20 @@ export default function AdminControl() {
   const [viewerCount, setViewerCount] = useState(0);
   const [likeCount, setLikeCount] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
+  const [ctaPending, setCtaPending] = useState(false);
+  const pendingCtaId = useRef<string | null>(null);
+  const pendingCtaTimer = useRef<number | null>(null);
+  const clearPendingCta = () => {
+    if (pendingCtaTimer.current !== null) window.clearTimeout(pendingCtaTimer.current);
+    pendingCtaTimer.current = null;
+    pendingCtaId.current = null;
+    setCtaPending(false);
+  };
+  const studioReady = () => {
+    if (isConnected && wsRef.current?.readyState === WebSocket.OPEN) return true;
+    toast({ title: "控制台尚未連線或未完成主辦人驗證，請重新整理或重新登入", variant: "destructive" });
+    return false;
+  };
   
   useEffect(() => {
     if (!hostNameEdited) setHostName(s.defaultHostName);
@@ -267,7 +281,6 @@ export default function AdminControl() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      setIsConnected(true);
       ws.send(JSON.stringify({
         type: "joinAsHost",
         data: { webinarId: id }
@@ -278,6 +291,22 @@ export default function AdminControl() {
       const msg: WebSocketMessage = JSON.parse(event.data);
       
       switch (msg.type) {
+        case "hostActionResult":
+          if (msg.data?.action === "liveCta" && msg.data.requestId === pendingCtaId.current) {
+            clearPendingCta();
+            toast({
+              title: msg.data.success ? s.toastCtaPushed : "推送失敗",
+              description: msg.data.success
+                ? `已推送給目前連線的觀眾（${msg.data.viewerCount ?? 0} 人）；稍後進場的觀眾不會收到這次即時推送。`
+                : msg.data.message || "伺服器未接受這次推送",
+              variant: msg.data.success ? "default" : "destructive",
+            });
+          }
+          break;
+        case "error":
+          clearPendingCta();
+          toast({ title: "控制台連線或操作驗證失敗，請重新登入後再試", variant: "destructive" });
+          break;
         case "chat": {
           const chatMsg = msg.data as ChatMessage & { sessionId?: string };
           setAllMessages((prev) => {
@@ -322,6 +351,7 @@ export default function AdminControl() {
           break;
         }
         case "history": {
+          setIsConnected(true);
           const messages = msg.data.messages || [];
           setAllMessages(messages);
           setLikeCount(msg.data.likeCount || 0);
@@ -348,9 +378,17 @@ export default function AdminControl() {
 
     ws.onclose = () => {
       setIsConnected(false);
+      if (pendingCtaId.current) {
+        clearPendingCta();
+        toast({ title: "連線已中斷，無法確認推送結果；請先確認觀眾畫面", variant: "destructive" });
+      }
     };
+    ws.onerror = () => setIsConnected(false);
 
     return () => {
+      ws.onclose = null;
+      clearPendingCta();
+      setIsConnected(false);
       ws.close();
     };
   }, [id]);
@@ -457,7 +495,7 @@ export default function AdminControl() {
   };
 
   const triggerPoll = (poll: Poll) => {
-    if (!wsRef.current) return;
+    if (!studioReady() || !wsRef.current) return;
     
     wsRef.current.send(JSON.stringify({
       type: "triggerPoll",
@@ -474,13 +512,31 @@ export default function AdminControl() {
   };
 
   const pushLiveCta = () => {
+    if (!studioReady() || ctaPending) return;
     if (!wsRef.current || !ctaTextInput.trim() || (ctaTargetType === "external" ? !ctaUrlInput.trim() : !ctaTargetId)) {
       toast({ title: s.fillRequired, variant: "destructive" });
       return;
     }
+    if (ctaTargetType === "external") {
+      try {
+        const target = new URL(ctaUrlInput.trim());
+        if (!["http:", "https:"].includes(target.protocol)) throw new Error("Invalid URL scheme");
+      } catch {
+        toast({ title: "請填寫完整的 http:// 或 https:// 網址，不能使用 # 或相對路徑", variant: "destructive" });
+        return;
+      }
+    }
+    const requestId = crypto.randomUUID();
+    pendingCtaId.current = requestId;
+    setCtaPending(true);
+    pendingCtaTimer.current = window.setTimeout(() => {
+      clearPendingCta();
+      toast({ title: "未收到推送確認，請先確認觀眾畫面再重試", variant: "destructive" });
+    }, 10_000);
     wsRef.current.send(JSON.stringify({
       type: "liveCta",
       data: {
+        requestId,
         text: ctaTextInput.trim(),
         url: ctaTargetType === "external" ? ctaUrlInput.trim() : null,
         offerId: ctaTargetType === "offer" ? ctaTargetId : null,
@@ -489,10 +545,10 @@ export default function AdminControl() {
         durationSec: ctaDurInput ? Number(ctaDurInput) : undefined,
       },
     }));
-    toast({ title: s.toastCtaPushed });
   };
 
   const pushLiveTip = () => {
+    if (!studioReady()) return;
     if (!wsRef.current || (!tipTitleInput.trim() && !tipContentInput.trim())) {
       toast({ title: s.fillRequired, variant: "destructive" });
       return;
@@ -509,6 +565,7 @@ export default function AdminControl() {
   };
 
   const pushLiveChat = () => {
+    if (!studioReady()) return;
     if (!wsRef.current || !chatMsgInput.trim()) {
       toast({ title: s.fillRequired, variant: "destructive" });
       return;
@@ -933,6 +990,7 @@ export default function AdminControl() {
                     <p className="text-sm font-medium">{s.quickCta}</p>
                     <Input
                       placeholder={s.ctaText}
+                      aria-label={s.ctaText}
                       value={ctaTextInput}
                       onChange={(e) => setCtaTextInput(e.target.value)}
                       data-testid="input-studio-cta-text"
@@ -942,6 +1000,7 @@ export default function AdminControl() {
                     </select>
                     {ctaTargetType === "external" ? <Input
                       placeholder={s.ctaUrl}
+                      aria-label={s.ctaUrl}
                       value={ctaUrlInput}
                       onChange={(e) => setCtaUrlInput(e.target.value)}
                       data-testid="input-studio-cta-url"
@@ -969,9 +1028,10 @@ export default function AdminControl() {
                         data-testid="input-studio-cta-dur"
                       />
                     </div>
-                    <Button size="sm" className="w-full" onClick={pushLiveCta} data-testid="button-studio-push-cta">
+                    <p className="text-xs text-muted-foreground">外部網址請填完整 https:// 網址，不能使用 #。即時推送只對目前已進場連線的觀眾生效。</p>
+                    <Button size="sm" className="w-full" disabled={!isConnected || ctaPending} onClick={pushLiveCta} data-testid="button-studio-push-cta">
                       <Send className="h-4 w-4 mr-1" />
-                      {s.pushNow}
+                      {ctaPending ? "等待推送確認…" : s.pushNow}
                     </Button>
                   </TabsContent>
 
