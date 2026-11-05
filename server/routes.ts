@@ -298,16 +298,33 @@ function withSafeTrackingIds<T extends { metaPixelId?: string | null; gtmContain
   };
 }
 
-function publicWebinar<T extends { vimeoUrl?: string | null; videoAssetId?: string | null; aiSettings?: unknown }>(
-  webinar: T,
-): Omit<T, "vimeoUrl" | "videoAssetId" | "aiSettings"> {
-  const {
-    vimeoUrl: _vimeoUrl,
-    videoAssetId: _videoAssetId,
-    aiSettings: _aiSettings,
-    ...safe
-  } = withSafeTrackingIds(webinar as any);
-  return safe;
+function publicWebinar(webinar: Webinar) {
+  const safe = withSafeTrackingIds(webinar);
+  // Explicit public contract: new database fields stay private unless reviewed
+  // here. In particular, host notification/campaign settings are never public.
+  return {
+    id: safe.id,
+    title: safe.title,
+    description: safe.description,
+    videoProvider: safe.videoProvider,
+    coverImage: safe.coverImage,
+    startTime: safe.startTime,
+    status: safe.status,
+    publishStatus: safe.publishStatus,
+    videoDuration: safe.videoDuration,
+    scheduleMode: safe.scheduleMode,
+    recurringSchedule: safe.recurringSchedule,
+    timezone: safe.timezone,
+    brandSettings: safe.brandSettings,
+    customFields: safe.customFields,
+    scarcitySettings: safe.scarcitySettings,
+    thankYouSettings: safe.thankYouSettings,
+    replaySettings: safe.replaySettings,
+    replayEnabled: safe.replayEnabled,
+    replayAvailableHours: safe.replayAvailableHours,
+    metaPixelId: safe.metaPixelId,
+    gtmContainerId: safe.gtmContainerId,
+  };
 }
 
 async function verifiedWebinarVideo(
