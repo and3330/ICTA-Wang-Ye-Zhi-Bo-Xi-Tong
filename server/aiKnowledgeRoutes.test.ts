@@ -168,20 +168,26 @@ test("file extraction supports text formats and keeps subtitle start times", () 
     buffer: Buffer.from("1\n00:00:01,000 --> 00:00:03,000\n第一句\n1984\n\n2\n00:00:04,000 --> 00:00:06,000\n第二句\n"),
   });
   assert.equal(extracted.title, "lesson");
-  assert.equal(extracted.content, "[0:01] 第一句 1984\n[0:04] 第二句");
+  // Cues within 30 seconds share one time marker.
+  assert.equal(extracted.content, "[0:01] 第一句 1984 第二句");
+  assert.deepEqual(extracted.parts, [extracted.content]);
   assert.throws(
     () => extractKnowledgeFile({ originalname: "archive.zip", buffer: Buffer.from("x") }),
     /不支援/,
   );
 });
 
-test("file extraction fails explicitly instead of truncating", () => {
+test("file extraction splits long text into parts instead of truncating", () => {
+  const long = extractKnowledgeFile({
+    originalname: "large.txt",
+    buffer: Buffer.from(Array.from({ length: 30_000 }, (_, i) => `line ${i}`).join("\n")),
+  });
+  assert.ok(long.parts.length > 1);
+  assert.ok(long.parts.every(part => part.length <= 100_000));
+  assert.equal(long.parts.join("\n"), long.content);
   assert.throws(
-    () => extractKnowledgeFile({
-      originalname: "large.txt",
-      buffer: Buffer.from("x".repeat(100_001)),
-    }),
-    /100000 字元上限/,
+    () => extractKnowledgeFile({ originalname: "huge.txt", buffer: Buffer.from("x".repeat(2_000_001)) }),
+    /總上限/,
   );
   assert.throws(
     () => extractKnowledgeFile({ originalname: "binary.txt", buffer: Buffer.from([0xff, 0xfe]) }),

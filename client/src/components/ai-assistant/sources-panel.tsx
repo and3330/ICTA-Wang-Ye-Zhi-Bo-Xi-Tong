@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "@/lib/viewer-messages";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { FileText, Globe, Loader2, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
@@ -57,7 +58,7 @@ export function AiSourcesPanel({ webinarId }: { webinarId: string }) {
       return response.json();
     },
     onSuccess: () => { refresh(); close(); toast({ title: "知識資料已儲存" }); },
-    onError: (error: Error) => toast({ title: "儲存失敗", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "儲存失敗", description: apiErrorMessage(error), variant: "destructive" }),
   });
   const upload = useMutation({
     mutationFn: async () => {
@@ -67,18 +68,18 @@ export function AiSourcesPanel({ webinarId }: { webinarId: string }) {
       if (title.trim()) body.append("title", title.trim());
       return multipartRequest(`/api/webinars/${webinarId}/ai/sources/file`, body);
     },
-    onSuccess: () => { refresh(); setFile(null); setTitle(""); if (fileInput.current) fileInput.current.value = ""; toast({ title: "檔案已加入知識資料" }); },
-    onError: (error: Error) => toast({ title: "上傳失敗", description: error.message, variant: "destructive" }),
+    onSuccess: (result: { splitInto?: number }) => { refresh(); setFile(null); setTitle(""); if (fileInput.current) fileInput.current.value = ""; toast({ title: (result?.splitInto ?? 1) > 1 ? `檔案較長，已分成 ${result.splitInto} 筆加入知識資料` : "檔案已加入知識資料" }); },
+    onError: (error: Error) => toast({ title: "上傳失敗", description: apiErrorMessage(error), variant: "destructive" }),
   });
   const remove = useMutation({
     mutationFn: async (id: string) => apiRequest("DELETE", `${url}/${id}`),
     onSuccess: () => { refresh(); toast({ title: "知識資料已刪除" }); },
-    onError: (error: Error) => toast({ title: "刪除失敗", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "刪除失敗", description: apiErrorMessage(error), variant: "destructive" }),
   });
   const refreshWebsite = useMutation({
     mutationFn: async (id: string) => apiRequest("POST", `/api/webinars/${webinarId}/ai/sources/${id}/refresh`),
     onSuccess: () => { refresh(); toast({ title: "網頁內容已更新" }); },
-    onError: (error: Error) => toast({ title: "更新失敗", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "更新失敗", description: apiErrorMessage(error), variant: "destructive" }),
   });
 
   const openCreate = (next: Exclude<EditorMode, "edit" | null>) => { close(); setMode(next); };
