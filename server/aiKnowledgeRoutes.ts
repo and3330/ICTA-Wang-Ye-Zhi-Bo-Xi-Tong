@@ -6,6 +6,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { IncomingMessage } from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { pinnedLookup } from "./webhookDelivery";
 import {
   AI_SOURCE_MAX_CHARS,
   aiKnowledgeInputSchema,
@@ -134,11 +135,13 @@ export function readBoundedWebsiteBody(response: IncomingMessage): Promise<Buffe
   });
 }
 
-function requestPinned(url: URL, pinned: ResolvedAddress, timeoutMs: number, signal: AbortSignal): Promise<WebsiteResponse> {
+export function requestPinned(url: URL, pinned: ResolvedAddress, timeoutMs: number, signal: AbortSignal): Promise<WebsiteResponse> {
   return new Promise((resolve, reject) => {
     const agent = new https.Agent({
       keepAlive: false,
-      lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+      // Node's automatic family selection requests lookup({ all: true }).
+      // Return the appropriate shape while keeping the already-validated IP.
+      lookup: pinnedLookup(pinned.address, pinned.family),
     });
     let response: IncomingMessage | undefined;
     let settled = false;

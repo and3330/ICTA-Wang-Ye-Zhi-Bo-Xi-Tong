@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
+import net from "node:net";
+import { once } from "node:events";
+import { pinnedLookup } from "./webhookDelivery";
 import type { IncomingMessage } from "node:http";
 import {
   extractHtmlText,
@@ -8,9 +11,50 @@ import {
   fetchWebsiteSnapshotWith,
   isPublicIp,
   readBoundedWebsiteBody,
+  requestPinned,
   validateResolvedAddresses,
   validateWebsiteUrl,
 } from "./aiKnowledgeRoutes";
+
+test("pinned DNS supplies single and all-address formats without resolving again", () => {
+  for (const pinned of [
+    { address: "8.8.8.8", family: 4 as const },
+    { address: "2606:4700:4700::1111", family: 6 as const },
+  ]) {
+    const lookup = pinnedLookup(pinned.address, pinned.family);
+    lookup("must-not-resolve.invalid", { all: true }, (error, addresses) => {
+      assert.equal(error, null);
+      assert.deepEqual(addresses, [pinned]);
+    });
+    lookup("must-not-resolve.invalid", { all: false }, (error, address, family) => {
+      assert.equal(error, null);
+      assert.equal(address, pinned.address);
+      assert.equal(family, pinned.family);
+    });
+  }
+});
+
+test("website HTTPS transport reaches the pinned socket instead of failing on an undefined IP", async () => {
+  // A local socket accepts then closes before TLS; no certificates, Internet
+  // requests, or weakened production URL/DNS validation are needed.
+  const server = net.createServer(socket => socket.destroy());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address() as net.AddressInfo;
+  try {
+    await assert.rejects(requestPinned(
+      new URL(`https://must-not-resolve.invalid:${address.port}/`),
+      { address: "127.0.0.1", family: 4 },
+      2_000,
+      new AbortController().signal,
+    ), (error: NodeJS.ErrnoException) => {
+      assert.equal(error.code, "ECONNRESET");
+      return true;
+    });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
 
 test("SSRF guard rejects private, reserved, and mapped addresses", () => {
   for (const address of [
