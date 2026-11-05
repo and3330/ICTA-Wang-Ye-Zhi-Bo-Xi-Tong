@@ -3,6 +3,7 @@ import test from "node:test";
 import type { EmailReminder, EmailSequence, Registration, Webinar } from "@shared/schema";
 import {
   buildDeferredEmail,
+  renderEmail,
   createEmailRemindersForRegistration,
   EMAIL_CLAIM_BATCH_SIZE,
   EMAIL_LEASE_MS,
@@ -147,4 +148,22 @@ test("deferred sequence template receives a registration-scoped watch URL", () =
     if (previous === undefined) delete process.env.SESSION_SECRET;
     else process.env.SESSION_SECRET = previous;
   }
+});
+test("sales link variable uses the CTA page and falls back to the viewer's room", () => {
+  const webinar = { title: "課程說明會", timezone: "Asia/Taipei", emailSettings: {} } as any;
+  const base = {
+    kind: "sequence",
+    name: "王小明",
+    webinar,
+    startTime: new Date("2026-12-01T12:00:00Z"),
+    onDemand: false,
+    webinarUrl: "https://app.test/webinar/w1?watchToken=abc",
+    sequence: { subject: "{{name}} 的優惠", htmlBody: '<a href="{{cta_url}}">報名</a> <a href="{{url}}">回放</a>' },
+  };
+  const withCta = renderEmail({ ...base, ctaUrl: "https://shop.test/course" });
+  assert.equal(withCta.subject, "王小明 的優惠");
+  assert.match(withCta.html, /href="https:\/\/shop\.test\/course">報名/);
+  assert.match(withCta.html, /href="https:\/\/app\.test\/webinar\/w1\?watchToken=abc">回放/);
+  const withoutCta = renderEmail({ ...base, ctaUrl: null });
+  assert.match(withoutCta.html, /href="https:\/\/app\.test\/webinar\/w1\?watchToken=abc">報名/);
 });

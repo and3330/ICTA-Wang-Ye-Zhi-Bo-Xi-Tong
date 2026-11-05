@@ -10,7 +10,7 @@ import { z } from "zod";
 import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardTrial";
 import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
-import { createEmailRemindersForRegistration, startEmailScheduler } from "./email-scheduler";
+import { createEmailRemindersForRegistration, renderEmail, startEmailScheduler, webinarSalesUrl } from "./email-scheduler";
 import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
 import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, verifyWatchTokenFor, watchTokenExpiry, viewerChatSessionId } from "./watchTokens";
 import crypto from "crypto";
@@ -66,7 +66,7 @@ import {
 } from "./webinarLandingPages";
 import { db } from "./db";
 import { and, eq, inArray, isNull, sql, lte, or } from "drizzle-orm";
-import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
+import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getInteractionTranscript, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
 import { clerkClient, getAuth } from "@clerk/express";
@@ -5140,7 +5140,7 @@ export async function registerRoutes(
       const replace = req.body?.replace === true;
       // 逐字稿來源：優先用請求帶的 transcript（含時間軸），否則用已存知識文檔
       let transcript = typeof req.body?.transcript === "string" ? req.body.transcript : "";
-      if (!transcript.trim()) transcript = await getWebinarKnowledge(webinarId);
+      if (!transcript.trim()) transcript = await getInteractionTranscript(webinarId);
 
       const result = await generateInteractions(webinar.title, transcript, webinar.videoDuration || 0, goal);
       if (!result) {
@@ -5275,6 +5275,61 @@ export async function registerRoutes(
   app.delete("/api/webinars/:id/email-sequences/:seqId", requireWebinarOwner, async (req, res) => {
     await storage.deleteEmailSequence(req.params.id as string, req.params.seqId as string);
     res.json({ success: true });
+  });
+
+  // Shows an email exactly as a viewer would get it, with a sample name and
+  // a placeholder for the per-viewer link. Unsaved custom text can be passed in.
+  const emailPreviewSchema = z.object({
+    kind: z.enum(["confirmation", "reminder_24h", "reminder_1h", "followup", "sequence"]),
+    sequenceId: z.string().max(100).optional(),
+    customSubject: z.string().max(500).optional(),
+    customTemplate: z.string().max(50_000).optional(),
+  });
+  app.post("/api/webinars/:id/email-preview", requireWebinarOwner, async (req, res) => {
+    try {
+      const input = emailPreviewSchema.parse(req.body ?? {});
+      const webinarId = req.params.id as string;
+      const webinar = await storage.getWebinar(webinarId);
+      if (!webinar) return res.status(404).json({ message: "找不到直播間" });
+      let sequence;
+      if (input.kind === "sequence") {
+        sequence = input.sequenceId ? await storage.getEmailSequence(input.sequenceId) : undefined;
+        if (!sequence || sequence.webinarId !== webinarId) return res.status(404).json({ message: "找不到郵件" });
+      }
+      let baseUrl: string;
+      try {
+        baseUrl = appBaseUrl();
+      } catch {
+        baseUrl = `${req.protocol}://${req.get("host")}`;
+      }
+      const upcoming = (await storage.getWebinarSessions(webinarId))
+        .map((session) => new Date(session.scheduledStart))
+        .filter((date) => date.getTime() > Date.now())
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      const onDemand = Boolean((webinar.scheduleMode as any)?.onDemand);
+      const ctaUrl = await webinarSalesUrl(webinarId);
+      const roomUrl = `${baseUrl}/webinar/${webinarId}?watchToken=PREVIEW`;
+      const saved = (webinar.emailSettings as any) ?? {};
+      const email = renderEmail({
+        kind: input.kind,
+        name: "王小明",
+        webinar,
+        startTime: upcoming ?? new Date(webinar.startTime ?? Date.now()),
+        onDemand,
+        webinarUrl: roomUrl,
+        ctaUrl,
+        sequence,
+        emailSettings: {
+          customSubject: input.customSubject ?? saved.customSubject,
+          customTemplate: input.customTemplate ?? saved.customTemplate,
+        },
+      });
+      const links = Array.from(new Set(Array.from(email.html.matchAll(/href\s*=\s*"([^"]*)"/gi), (match) => match[1])))
+        .map((url) => ({ url, kind: url === roomUrl ? "room" : ctaUrl && url === ctaUrl ? "cta" : "other" }));
+      res.json({ ...email, links, ctaUrl, sampleName: "王小明" });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   // ============ Social Posts CRUD ============

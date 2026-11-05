@@ -1,3 +1,4 @@
+import { subtitleToTimedText } from "./timedTranscript";
 import type { Express, RequestHandler } from "express";
 import multer from "multer";
 import dns from "node:dns/promises";
@@ -313,23 +314,9 @@ export function extractKnowledgeFile(file: { originalname: string; buffer: Buffe
     throw new Error("檔案不是有效的 UTF-8 文字");
   }
   if (extension === "srt" || extension === "vtt") {
-    const subtitleLines = content
-      .replace(/^WEBVTT.*$/gim, "")
-      .replace(/^NOTE(?:[ \t].*)?(?:\r?\n(?!\r?\n)[\s\S]*?)?(?=\r?\n\r?\n|$)/gim, "")
-      .replace(/\r/g, "")
-      .split("\n");
-    const isTimingLine = (line: string) =>
-      /^\s*.*\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}.*$/.test(line);
-    content = subtitleLines
-      .filter((line, index) => {
-        if (isTimingLine(line)) return false;
-        // SRT sequence numbers are metadata only when directly followed by a
-        // timestamp. A spoken standalone number such as "1984" is retained.
-        if (/^\s*\d+\s*$/.test(line) && isTimingLine(subtitleLines[index + 1] ?? "")) return false;
-        return line.trim().length > 0;
-      })
-      .map(line => line.replace(/<[^>]+>/g, ""))
-      .join("\n");
+    // Keep each cue's start time ("[12:34] words") so interaction generation
+    // can place items where the speaker actually says them.
+    content = subtitleToTimedText(content);
   }
   content = content.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (!content) throw new Error("檔案沒有可擷取的文字內容");
