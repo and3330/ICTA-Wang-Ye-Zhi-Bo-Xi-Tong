@@ -92,6 +92,10 @@ test("viewer question heuristic keeps Chinese and English question detection", (
   }
   assert.equal(looksLikeQuestion("可以分期付款"), true);
   assert.equal(looksLikeQuestion("有沒有回放"), true);
+  // Doubts, spoken questions and "anyone there?" get an answer even when short.
+  for (const doubt of ["詐騙", "你這麼厲害了 幹嘛還出來開課", "人ㄋ", "這是真的假的", "太貴了吧", "會不會很難學"]) {
+    assert.equal(looksLikeQuestion(doubt), true, doubt);
+  }
 });
 
 test("AI settings patch rejects whole-object replacement mistakes and unknown fields", () => {
