@@ -6,7 +6,7 @@ import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like, inA
 import {
   webinars, type InsertWebinar, type Webinar,
   entitlementOverrides, noCardTrials,
-  registrations, registrationIdentityKeys, type InsertRegistration, type Registration,
+  registrations, type InsertRegistration, type Registration,
   fakeUsers, type InsertFakeUser, type FakeUser,
   scheduledMessages, type InsertScheduledMessage, type ScheduledMessage,
   ctaButtons, type InsertCtaButton, type CtaButton,
@@ -1698,16 +1698,9 @@ export class DatabaseStorage implements IStorage {
   // Registrations
   async createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration> {
     return db.transaction(async (tx) => {
-      const identity = await tx.insert(registrationIdentityKeys).values({
-        webinarId: data.webinarId,
-        normalizedEmail: data.email.trim().toLowerCase(),
-      }).onConflictDoNothing().returning();
-      if (!identity[0]) throw Object.assign(new Error("此 Email 已報名"), { code: "REGISTRATION_CONFLICT" });
+      // Email is contact information, not a registration identity. Each signup
+      // gets its own ID, watch access, email jobs, and attribution event.
       const result = await tx.insert(registrations).values(data).returning();
-      await tx.update(registrationIdentityKeys).set({ registrationId: result[0].id }).where(and(
-        eq(registrationIdentityKeys.webinarId, data.webinarId),
-        eq(registrationIdentityKeys.normalizedEmail, data.email.trim().toLowerCase()),
-      ));
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
         authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
@@ -1740,16 +1733,7 @@ export class DatabaseStorage implements IStorage {
         ));
       if (Number(totals[0]?.value || 0) >= monthlyLimit) return null;
 
-      const identity = await tx.insert(registrationIdentityKeys).values({
-        webinarId: data.webinarId,
-        normalizedEmail: data.email.trim().toLowerCase(),
-      }).onConflictDoNothing().returning();
-      if (!identity[0]) throw Object.assign(new Error("此 Email 已報名"), { code: "REGISTRATION_CONFLICT" });
       const result = await tx.insert(registrations).values(data).returning();
-      await tx.update(registrationIdentityKeys).set({ registrationId: result[0].id }).where(and(
-        eq(registrationIdentityKeys.webinarId, data.webinarId),
-        eq(registrationIdentityKeys.normalizedEmail, data.email.trim().toLowerCase()),
-      ));
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
         authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),

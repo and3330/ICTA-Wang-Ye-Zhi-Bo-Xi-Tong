@@ -2893,11 +2893,6 @@ export async function registerRoutes(
         : normalizeSelectedSession(requestedSession, availability, eligibilityNow);
       data = { ...data, selectedSession };
       
-      const existing = await storage.getRegistrationByEmail(data.webinarId, data.email);
-      if (existing) {
-        return res.status(400).json({ message: "此 Email 已報名" });
-      }
-      
       if (!webinarCheck.userId) {
         return res.status(503).json({ message: "此 Webinar 的帳號設定不完整，暫時無法報名" });
       }
@@ -2969,7 +2964,7 @@ export async function registerRoutes(
          ...(!enrichment.available ? { externalThankYouUnavailable: true } : {}),
        });
     } catch (error: any) {
-      res.status(error?.code === "REGISTRATION_CONFLICT" ? 409 : 400).json({ message: error.message });
+      res.status(400).json({ message: error.message });
     }
   });
 

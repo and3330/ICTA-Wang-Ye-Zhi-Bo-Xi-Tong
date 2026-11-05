@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 import { eq } from "drizzle-orm";
 import { db, pool } from "../server/db";
 import * as schema from "../shared/schema";
+import { storage } from "../server/storage";
 
 const ownerId = randomUUID();
 const webinarId = randomUUID();
@@ -48,6 +49,45 @@ test.afterAll(async () => {
     await db.delete(schema.webinars).where(eq(schema.webinars.id, webinarId));
     await db.delete(schema.users).where(eq(schema.users.id, ownerId));
   } finally { await pool.end(); }
+});
+
+test("repeat email signups create independent registrations across viewing modes and concurrent requests", async ({ request }) => {
+  const email = `repeat-${randomUUID()}@example.test`;
+  const payload = { webinarId, name: "Repeat signup test", phone: "0912345678", email };
+  const results: any[] = [];
+  for (const data of [payload, { ...payload, email: ` ${email.toUpperCase()} `, selectedSession: future }]) {
+    const response = await request.post("/api/registrations", { data });
+    expect(response.status()).toBe(200);
+    results.push(await response.json());
+  }
+  const concurrent = await Promise.all([0, 1].map(() => request.post("/api/registrations", { data: payload })));
+  for (const response of concurrent) {
+    expect(response.status()).toBe(200);
+    results.push(await response.json());
+  }
+  expect(new Set(results.map(r => r.id)).size).toBe(4);
+  expect(new Set(results.map(r => r.watchToken)).size).toBe(4);
+  expect(results[0].selectedSession).toBeNull();
+  expect(new Date(results[1].selectedSession).toISOString()).toBe(future);
+  const saved = await db.select().from(schema.registrations).where(eq(schema.registrations.webinarId, webinarId));
+  expect(saved.filter(r => r.email === email)).toHaveLength(4);
+  const events = await db.select().from(schema.webinarFunnelEvents).where(eq(schema.webinarFunnelEvents.webinarId, webinarId));
+  for (const result of results) {
+    expect(events.filter(e => e.registrationId === result.id && e.eventType === "registration")).toHaveLength(1);
+  }
+});
+
+test("repeat email signups still respect the atomic monthly registration limit", async () => {
+  const existing = await db.select({ id: schema.registrations.id }).from(schema.registrations)
+    .where(eq(schema.registrations.webinarId, webinarId));
+  const payload = { webinarId, name: "Quota repeat test", email: `quota-${randomUUID()}@example.test` };
+  const results = await Promise.all([0, 1, 2].map(() =>
+    storage.createRegistrationWithinMonthlyLimit(ownerId, payload, existing.length + 2),
+  ));
+  const admitted = results.filter(Boolean);
+  expect(admitted).toHaveLength(2);
+  expect(results.filter(r => r === null)).toHaveLength(1);
+  expect(new Set(admitted.map(r => r!.id)).size).toBe(2);
 });
 
 test("verified viewers cannot reuse another person's chat identity or inherit historical host broadcasts", async ({ request }) => {

@@ -32,3 +32,4 @@
 - [Clerk legacy-session bridge](clerk-legacy-session-bridge.md) — Clerk identities link once to local members; Google logout must terminate both Clerk and legacy sessions.
 - [MCP authorization scope](mcp-access-boundary.md) — each grant connects only one owner-selected webinar; keep external AI read access separate from commerce integration secrets.
 - [Embed framing boundary](embed-framing-boundary.md) — external framing is limited to the two embed namespaces; registration must work without third-party cookies.
+- [Repeat registration policy](repeat-registration-policy.md) — 同一 Email 可再次報名同一直播間；Email 是聯絡資料，不是單次報名唯一性限制。
