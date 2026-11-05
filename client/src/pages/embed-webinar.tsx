@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,8 @@ export default function EmbedWebinar() {
   const [checkoutError, setCheckoutError] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
+  const [chatConnected, setChatConnected] = useState(true);
+  const [chatNotice, setChatNotice] = useState("");
   const [viewerCount, setViewerCount] = useState(1);
   const shownMessagesRef = useRef<Set<string>>(new Set());
 
@@ -103,23 +105,52 @@ export default function EmbedWebinar() {
     enabled: !!id,
   });
 
-  const connectWebSocket = useCallback(() => {
-    if (!id || !nickname || !sessionId) return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "join", data: { webinarId: id, nickname, sessionId, watchToken: watchToken || undefined } }));
-    };
-    ws.onmessage = (event) => {
+  useEffect(() => {
+    if (!isJoined || !id || !nickname || !sessionId) return;
+    let disposed = false;
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const handleMessage = (event: MessageEvent) => {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
         case "history":
-          setMessages(msg.data?.messages || []);
+          // Sent on every (re)join: keep the timed audience messages that only
+          // exist in this frame and drop optimistic copies the server confirmed.
+          setMessages(prev => {
+            const history: ChatMessage[] = msg.data?.messages || [];
+            const historyIds = new Set(history.map(m => m.id));
+            const localOnly = prev.filter(m => {
+              const localId = String(m.id);
+              if (historyIds.has(m.id)) return false;
+              if (localId.startsWith("sm_")) return true;
+              if (localId.startsWith("local-")) {
+                return !history.some(h => h.senderType === "viewer" && h.message === m.message);
+              }
+              return false;
+            });
+            return [...history, ...localOnly].sort(
+              (a, b) => new Date(a.sentAt ?? 0).getTime() - new Date(b.sentAt ?? 0).getTime(),
+            );
+          });
           if (msg.data?.likeCount) setLikeCount(msg.data.likeCount);
           break;
         case "chat":
-          setMessages(prev => [...prev, msg.data]);
+          setMessages(prev => (msg.data?.id && prev.some(m => m.id === msg.data.id) ? prev : [...prev, msg.data]));
           break;
+        case "error": {
+          const code = msg.data?.code;
+          if (code === "chat_rejected") {
+            setMessages(prev => {
+              const index = prev.map(m => String(m.id).startsWith("local-")).lastIndexOf(true);
+              return index === -1 ? prev : [...prev.slice(0, index), ...prev.slice(index + 1)];
+            });
+          }
+          setChatNotice(code === "join_failed"
+            ? "無法加入聊天室，請重新整理頁面。"
+            : msg.data?.message || "訊息沒有送出，請稍後再試。");
+          break;
+        }
         case "like":
           setLikeCount(msg.data.count);
           break;
@@ -137,20 +168,54 @@ export default function EmbedWebinar() {
         }
       }
     };
-    ws.onclose = (event) => {
-      if (event.code === 1008 || event.code === 1011) {
-        setIsJoined(false);
-        return;
-      }
-      setTimeout(() => connectWebSocket(), 3000);
-    };
-    wsRef.current = ws;
-  }, [id, nickname, sessionId, watchToken]);
 
-  useEffect(() => {
-    if (isJoined) connectWebSocket();
-    return () => { wsRef.current?.close(); };
-  }, [isJoined, connectWebSocket]);
+    const connect = () => {
+      if (disposed) return;
+      retryTimer = null;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      wsRef.current = socket;
+      socket.onopen = () => {
+        attempt = 0;
+        setChatConnected(true);
+        socket.send(JSON.stringify({ type: "join", data: { webinarId: id, nickname, sessionId, watchToken: watchToken || undefined } }));
+      };
+      socket.onmessage = handleMessage;
+      socket.onclose = (event) => {
+        if (wsRef.current === socket) wsRef.current = null;
+        // Closing on unmount must not schedule a reconnect, or every
+        // re-render leaves another socket behind.
+        if (disposed) return;
+        if (event.code === 1008 || event.code === 1011) {
+          setIsJoined(false);
+          return;
+        }
+        setChatConnected(false);
+        const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+        attempt += 1;
+        retryTimer = setTimeout(connect, delay);
+      };
+    };
+
+    const reconnectNow = () => {
+      if (disposed || !retryTimer || document.visibilityState !== "visible") return;
+      clearTimeout(retryTimer);
+      connect();
+    };
+    document.addEventListener("visibilitychange", reconnectNow);
+    window.addEventListener("online", reconnectNow);
+    connect();
+
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      document.removeEventListener("visibilitychange", reconnectNow);
+      window.removeEventListener("online", reconnectNow);
+      const socket = wsRef.current;
+      wsRef.current = null;
+      socket?.close();
+    };
+  }, [isJoined, id, nickname, sessionId, watchToken]);
 
   useEffect(() => {
     if (canWatch) return;
@@ -225,11 +290,30 @@ export default function EmbedWebinar() {
   }, [messages]);
 
   const sendMessage = () => {
-    if (!messageInput.trim() || !wsRef.current) return;
+    const text = messageInput.trim();
+    if (!text) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      // Keep the typed text so it can be resent once chat is back.
+      setChatNotice("聊天室重新連線中，連上後再送出一次。");
+      return;
+    }
     wsRef.current.send(JSON.stringify({
       type: "chat",
-      data: { webinarId: id, message: messageInput.trim(), senderName: nickname, sessionId, senderType: "viewer" },
+      data: { webinarId: id, message: text, senderName: nickname, sessionId, senderType: "viewer" },
     }));
+    // The server does not echo a viewer's own message back to the sender, so
+    // show it locally; a later history or rejection reconciles it.
+    setMessages(prev => [...prev, {
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      webinarId: id || "",
+      sessionId,
+      senderName: nickname,
+      senderType: "viewer",
+      message: text,
+      sentAt: new Date(),
+      isPrivate: false,
+    } as ChatMessage]);
+    setChatNotice("");
     setMessageInput("");
   };
 
@@ -428,6 +512,16 @@ export default function EmbedWebinar() {
           </div>
         </ScrollArea>
 
+        {(!chatConnected || chatNotice) && (
+          <div
+            className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 border-t"
+            role="status"
+            data-testid="chat-notice"
+          >
+            {!chatConnected && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />}
+            <span>{!chatConnected ? "聊天室連線中斷，正在重新連線…" : chatNotice}</span>
+          </div>
+        )}
         <div className="flex gap-2 p-2 border-t">
           <Input
             placeholder="輸入訊息..."
