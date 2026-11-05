@@ -154,6 +154,36 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     })).status, 400, "a hostname resolving to loopback must be rejected");
   });
 
+  await t.test("mapped private destinations cannot be saved, published, or redirected from legacy snapshots", async () => {
+    try {
+      for (const landingUrl of [
+        "https://[::ffff:127.0.0.1]/register",
+        "https://[::ffff:a9fe:a9fe]/register",
+      ]) {
+        const unsafeSettings = { ...publishedSettings, landingUrl };
+        assert.equal((await request(`/api/webinars/${webinarId}/external-journey`, {
+          method: "PUT", actor: ownerId, body: { version: 1, settings: unsafeSettings },
+        })).status, 400);
+        // Simulate drafts and snapshots stored before the validation fix.
+        await db.update(externalJourneySettings).set({
+          settings: unsafeSettings, publishedSettings: unsafeSettings,
+        }).where(eq(externalJourneySettings.webinarId, webinarId));
+        assert.equal((await request(`/api/webinars/${webinarId}/external-journey/publish`, {
+          method: "POST", actor: ownerId, body: { version: 1 },
+        })).status, 400);
+        for (const path of ["/join", "/register"]) {
+          const response = await request(`${path}/${webinarId}`, { redirect: "manual" });
+          assert.equal(response.status, 500);
+          assert.equal(response.headers.get("location"), null);
+        }
+      }
+    } finally {
+      await db.update(externalJourneySettings).set({
+        settings: publishedSettings, publishedSettings,
+      }).where(eq(externalJourneySettings.webinarId, webinarId));
+    }
+  });
+
   let firstSecret = "";
   let currentSecret = "";
   await t.test("ephemeral connection keys rotate and status never reveals them", async () => {

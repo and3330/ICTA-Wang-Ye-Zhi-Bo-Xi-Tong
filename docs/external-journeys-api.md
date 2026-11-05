@@ -19,7 +19,7 @@ published snapshot: `GET /api/webinars/:id/external-journey/public`.
 
 `settings` is defined by `shared/externalJourneys.ts`. Origins are exact HTTPS
 origins; URLs are credential-free HTTPS URLs. The server additionally rejects
-localhost, private/reserved addresses (including A/AAAA DNS resolution), and
+localhost, private/reserved addresses (including IPv4-mapped IPv6 literals and A/AAAA DNS resolution), and
 internal platform journey routes. DNS validation is bounded and an
 unresolvable host is rejected rather than silently accepted.
 `/form/:id` and `/embed/register/:id` always remain built-in registration

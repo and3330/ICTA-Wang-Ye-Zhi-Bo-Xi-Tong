@@ -53,7 +53,7 @@ function safeEqual(a: string, b: string) {
   const aa = Buffer.from(a), bb = Buffer.from(b);
   return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
 }
-function isUnsafeHost(host: string) {
+function isUnsafeHost(host: string): boolean {
   const h = host.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
   if (!net.isIP(h)) return false;
@@ -62,7 +62,15 @@ function isUnsafeHost(host: string) {
     return p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224 || (p[0] === 169 && p[1] === 254)
       || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) || (p[0] === 192 && p[1] === 168) || (p[0] === 100 && p[1] >= 64 && p[1] <= 127);
   }
-  return h === "::" || h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb");
+  // Normalize both URL literals and DNS answers (which may use expanded or
+  // dotted IPv6 notation) before applying the embedded IPv4 network policy.
+  const ipv6 = new URL(`https://[${h}]/`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(ipv6);
+  if (mapped) {
+    const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+    return isUnsafeHost(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  }
+  return ipv6 === "::" || ipv6 === "::1" || ipv6.startsWith("fc") || ipv6.startsWith("fd") || ipv6.startsWith("fe8") || ipv6.startsWith("fe9") || ipv6.startsWith("fea") || ipv6.startsWith("feb");
 }
 function configuredPlatformHost() {
   try { return process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host.toLowerCase() : undefined; } catch { return undefined; }
