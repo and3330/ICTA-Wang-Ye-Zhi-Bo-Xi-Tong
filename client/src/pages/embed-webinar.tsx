@@ -28,6 +28,7 @@ import { useChatPolls } from "@/hooks/use-chat-polls";
 import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
+import { pickResumePosition, resumeStorageKey } from "@/lib/resume-position";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -108,6 +109,62 @@ export default function EmbedWebinar() {
     enabled: isJoined && canWatch,
     currentPosition: currentTime,
   });
+
+  // Same as the room: pick up where this registration stopped watching.
+  const resumeKey = watchState?.registrationId && id ? resumeStorageKey(id, watchState.registrationId) : null;
+  const [progressSessionId] = useState(() => {
+    const key = `webinar_session_${id}`;
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) return stored;
+      const created = `session_${Date.now()}_${Math.random().toString(36).slice(2, 15)}`;
+      localStorage.setItem(key, created);
+      return created;
+    } catch {
+      return `session_${Date.now()}_${Math.random().toString(36).slice(2, 15)}`;
+    }
+  });
+  const embedPositionRef = useRef(0);
+  embedPositionRef.current = currentTime;
+  const saveEmbedProgress = (keepalive = false) => {
+    const position = Math.floor(embedPositionRef.current);
+    if (!watchToken || position <= 0) return;
+    void fetch(`/api/webinars/${id}/progress`, {
+      method: "POST",
+      keepalive,
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ viewerSessionId: progressSessionId, lastPosition: position, totalWatched: position, watchToken }),
+    }).catch(() => {});
+  };
+  useEffect(() => {
+    if (!resumeKey || currentTime <= 0) return;
+    try { localStorage.setItem(resumeKey, String(Math.floor(currentTime))); } catch {}
+  }, [resumeKey, currentTime]);
+  useEffect(() => {
+    if (!isPlaying || !watchToken) return;
+    const timer = setInterval(() => saveEmbedProgress(), 10_000);
+    const onHide = () => saveEmbedProgress(true);
+    window.addEventListener("pagehide", onHide);
+    return () => { clearInterval(timer); window.removeEventListener("pagehide", onHide); };
+  }, [isPlaying, watchToken, id, progressSessionId]);
+  const resumeEmbedPlayer = (player: any) => {
+    if (!resumeKey) return;
+    let local = 0;
+    try { local = Number(localStorage.getItem(resumeKey) || 0); } catch {}
+    const serverPosition = watchToken
+      ? fetch(`/api/webinars/${id}/progress`, { headers: { "X-Watch-Token": watchToken }, credentials: "include" })
+          .then((response) => (response.ok ? response.json() : null))
+          .then((body) => Number(body?.lastPosition || 0))
+          .catch(() => 0)
+      : Promise.resolve(0);
+    Promise.all([serverPosition, Promise.resolve(player.getDuration()).catch(() => 0)])
+      .then(([server, duration]) => {
+        const position = pickResumePosition({ local, server, duration: Number(duration) || 0 });
+        if (position > 0) return player.setCurrentTime(position);
+      })
+      .catch(() => {});
+  };
 
   const { data: ctas } = useQuery<CtaButton[]>({
     queryKey: ["/api/webinars", id, "ctas"],
@@ -466,7 +523,7 @@ export default function EmbedWebinar() {
               } : undefined}
               className="absolute inset-0 w-full h-full"
               testId="embed-video-player"
-              onReady={(player) => { playerRef.current = player; setPlayerReady(true); }}
+              onReady={(player) => { playerRef.current = player; setPlayerReady(true); resumeEmbedPlayer(player); }}
               onTimeUpdate={(seconds, duration) => { setCurrentTime(seconds); if (duration) setVideoDuration(duration); }}
               onPlay={() => { setIsPlaying(true); setPlayError(""); }}
               onPause={() => setIsPlaying(false)}
