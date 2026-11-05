@@ -6,7 +6,7 @@ import { eq, and, lt, lte, gt, gte, desc, asc, count, isNull, or, sql, like, inA
 import {
   webinars, type InsertWebinar, type Webinar,
   entitlementOverrides, noCardTrials,
-  registrations, type InsertRegistration, type Registration,
+  registrations, registrationIdentityKeys, type InsertRegistration, type Registration,
   fakeUsers, type InsertFakeUser, type FakeUser,
   scheduledMessages, type InsertScheduledMessage, type ScheduledMessage,
   ctaButtons, type InsertCtaButton, type CtaButton,
@@ -1696,10 +1696,26 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Registrations
+  /**
+   * Older databases still carry a trigger (migration 0014/0015) that allows one
+   * registration per email per webinar, backed by registration_identity_keys.
+   * Production schema is applied by publishing, which does not drop triggers,
+   * so 0036 may never have run there. Clearing the key for this email first
+   * lets the trigger record the new signup instead of rejecting it, and is a
+   * no-op where the trigger is already gone.
+   */
+  private async releaseLegacyEmailLock(tx: any, webinarId: string, email: string) {
+    await tx.delete(registrationIdentityKeys).where(and(
+      eq(registrationIdentityKeys.webinarId, webinarId),
+      eq(registrationIdentityKeys.normalizedEmail, email.trim().toLowerCase()),
+    ));
+  }
+
   async createRegistration(data: InsertRegistration, analyticsVisitorToken?: string): Promise<Registration> {
     return db.transaction(async (tx) => {
       // Email is contact information, not a registration identity. Each signup
       // gets its own ID, watch access, email jobs, and attribution event.
+      await this.releaseLegacyEmailLock(tx, data.webinarId, data.email);
       const result = await tx.insert(registrations).values(data).returning();
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
@@ -1733,6 +1749,7 @@ export class DatabaseStorage implements IStorage {
         ));
       if (Number(totals[0]?.value || 0) >= monthlyLimit) return null;
 
+      await this.releaseLegacyEmailLock(tx, data.webinarId, data.email);
       const result = await tx.insert(registrations).values(data).returning();
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
