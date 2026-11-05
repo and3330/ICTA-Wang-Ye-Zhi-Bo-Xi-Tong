@@ -147,15 +147,12 @@ export default function WebinarRoom() {
     enabled: !!id && isJoined,
   });
 
-  const { data: savedProgress } = useQuery<{ lastPosition: number; totalWatched: number }>({
-    queryKey: ["/api/webinars", id, "progress", sessionId],
-    enabled: !!id && isJoined,
-  });
-
 
   const saveProgressMutation = useMutation({
     mutationFn: async (data: { viewerSessionId: string; lastPosition: number; totalWatched: number }) => {
-      return apiRequest("POST", `/api/webinars/${id}/progress`, data);
+      // Only registered viewers have progress; without a token there is nothing to save.
+      if (!watchToken) return null;
+      return apiRequest("POST", `/api/webinars/${id}/progress`, { ...data, watchToken });
     },
   });
   currentTimeRef.current = currentTime;

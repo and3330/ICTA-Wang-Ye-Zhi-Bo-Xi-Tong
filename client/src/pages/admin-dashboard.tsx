@@ -67,6 +67,7 @@ const t: Record<LangAdmin, {
   toastCreateFail: string;
   toastDuplicateSuccess: string;
   toastDuplicateSuccessDesc: string;
+  toastDuplicateSkipped: string;
   toastDuplicateFail: string;
   toastDeleteSuccess: string;
   toastDeleteSuccessDesc: string;
@@ -164,7 +165,8 @@ const t: Record<LangAdmin, {
     toastCreateSuccessDesc: "直播間已建立",
     toastCreateFail: "建立失敗",
     toastDuplicateSuccess: "複製成功",
-    toastDuplicateSuccessDesc: "直播間已複製",
+    toastDuplicateSuccessDesc: "直播間已複製，包含互動、Email 序列、問卷、Webhook 和報名頁（報名頁為草稿，請確認日期後再發佈）",
+    toastDuplicateSkipped: "部分項目沒有複製，請到新直播間檢查：",
     toastDuplicateFail: "複製失敗",
     toastDeleteSuccess: "已刪除",
     toastDeleteSuccessDesc: "直播間已成功刪除",
@@ -262,7 +264,8 @@ const t: Record<LangAdmin, {
     toastCreateSuccessDesc: "直播间已创建",
     toastCreateFail: "创建失败",
     toastDuplicateSuccess: "复制成功",
-    toastDuplicateSuccessDesc: "直播间已复制",
+    toastDuplicateSuccessDesc: "直播间已复制，包含互动、Email 序列、问卷、Webhook 和报名页（报名页为草稿，请确认日期后再发布）",
+    toastDuplicateSkipped: "部分项目没有复制，请到新直播间检查：",
     toastDuplicateFail: "复制失败",
     toastDeleteSuccess: "已删除",
     toastDeleteSuccessDesc: "直播间已成功删除",
@@ -754,11 +757,18 @@ export default function AdminDashboard() {
 
   const duplicateMutation = useMutation({
     mutationFn: async (webinarId: string) => {
-      return apiRequest("POST", `/api/webinars/${webinarId}/duplicate`, {});
+      const res = await apiRequest("POST", `/api/webinars/${webinarId}/duplicate`, {});
+      return res.json() as Promise<{ duplicateSkipped?: string[] }>;
     },
-    onSuccess: () => {
+    onSuccess: (copy) => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars"] });
-      toast({ title: s.toastDuplicateSuccess, description: s.toastDuplicateSuccessDesc });
+      const skipped = (copy?.duplicateSkipped ?? []).map((item) => item === "landingPage" ? "報名頁" : "Webhook");
+      toast({
+        title: s.toastDuplicateSuccess,
+        description: skipped.length
+          ? `${s.toastDuplicateSkipped}${Array.from(new Set(skipped)).join("、")}`
+          : s.toastDuplicateSuccessDesc,
+      });
     },
     onError: (error: any) => {
       toast({ title: s.toastDuplicateFail, description: error.message, variant: "destructive" });

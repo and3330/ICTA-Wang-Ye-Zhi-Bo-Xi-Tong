@@ -16,3 +16,16 @@ export function viewerCheckoutError(error: unknown): string {
   }
   return /[一-鿿]/.test(text) ? text : CHECKOUT_FALLBACK;
 }
+
+/** The server's own message from an apiRequest error ("409: {json}"), without the status code. */
+export function apiErrorMessage(error: unknown): string {
+  let text = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  text = text.replace(/^\d{3}:\s*/, "");
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed.message === "string") return parsed.message;
+  } catch {
+    // Not JSON: keep the text as it is.
+  }
+  return text;
+}

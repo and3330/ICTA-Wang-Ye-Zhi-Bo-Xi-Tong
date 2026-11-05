@@ -3991,6 +3991,17 @@ export async function registerRoutes(
   app.patch("/api/webinars/:id/polls/:pollId", requireWebinarOwner, async (req, res) => {
     try {
       const patch = pollPatchSchema.parse(req.body);
+      if (patch.options) {
+        // Votes are stored by option position, so changing the options after
+        // people voted would move their votes onto different answers.
+        const current = (await storage.getPollsByWebinar(req.params.id as string))
+          .find(item => item.id === req.params.pollId);
+        if (!current) return res.status(404).json({ message: "Poll not found" });
+        const changed = JSON.stringify(current.options) !== JSON.stringify(patch.options);
+        if (changed && (await storage.getPollVotes(current.id)).length > 0) {
+          return res.status(409).json({ message: "這個投票已經有人投票，不能再改選項。可以改題目和時間，或另外新增一個投票。" });
+        }
+      }
       const poll = await storage.updatePoll(req.params.id as string, req.params.pollId as string, patch);
       if (!poll) return res.status(404).json({ message: "Poll not found" });
       res.json(poll);
@@ -4256,16 +4267,44 @@ export async function registerRoutes(
   });
 
   // ============ Viewer Progress Routes ============
+  // Progress belongs to a registered viewer: both routes need that viewer's
+  // watch token, and the registration always comes from the token, never the body.
+  const progressViewer = async (req: Request) => {
+    const supplied = req.get("Authorization")?.replace(/^Bearer\s+/i, "") ||
+      req.get("X-Watch-Token") || req.body?.watchToken || req.query.watchToken;
+    const token = verifyWatchToken(supplied);
+    if (!token || token.webinarId !== req.params.id) return undefined;
+    const registration = await storage.getRegistration(token.registrationId);
+    return registration?.webinarId === req.params.id ? registration : undefined;
+  };
+  const progressReportSchema = z.object({
+    viewerSessionId: z.string().trim().min(1).max(200),
+    lastPosition: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
+    totalWatched: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
+  });
+
   app.get("/api/webinars/:id/progress/:sessionId", requirePublishedOrOwner, async (req, res) => {
+    const registration = await progressViewer(req);
+    if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
     const progress = await storage.getViewerProgress(req.params.id as string, req.params.sessionId as string);
-    res.json(progress || { lastPosition: 0, totalWatched: 0 });
+    res.json(progress && progress.registrationId === registration.id
+      ? progress
+      : { lastPosition: 0, totalWatched: 0 });
   });
 
   app.post("/api/webinars/:id/progress", requirePublishedOrOwner, async (req, res) => {
     try {
+      const registration = await progressViewer(req);
+      if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
+      const report = progressReportSchema.parse(req.body);
+      const existing = await storage.getViewerProgress(req.params.id as string, report.viewerSessionId);
+      if (existing && existing.registrationId && existing.registrationId !== registration.id) {
+        return res.status(409).json({ message: "Progress session belongs to another viewer" });
+      }
       const data = insertViewerProgressSchema.parse({
-        ...req.body,
-        webinarId: req.params.id
+        ...report,
+        webinarId: req.params.id,
+        registrationId: registration.id,
       });
       const progress = await storage.upsertViewerProgress(data);
       res.json(progress);
@@ -4605,7 +4644,69 @@ export async function registerRoutes(
         });
       }
 
-      res.json(newWebinar);
+      const [sourceSequences, sourceSurvey, sourceWebhooks, sourceLandingPage] = await Promise.all([
+        storage.getEmailSequences(sourceWebinar.id),
+        storage.getFeedbackSurveyByWebinar(sourceWebinar.id),
+        storage.getWebhooksByWebinar(sourceWebinar.id),
+        storage.getWebinarLandingPage(sourceWebinar.id),
+      ]);
+
+      for (const sequence of sourceSequences) {
+        await storage.createEmailSequence({
+          webinarId: newWebinar.id,
+          name: sequence.name,
+          segment: sequence.segment,
+          delayMinutes: sequence.delayMinutes,
+          subject: sequence.subject,
+          htmlBody: sequence.htmlBody,
+          enabled: sequence.enabled,
+          sortOrder: sequence.sortOrder,
+        });
+      }
+
+      if (sourceSurvey) {
+        await storage.createFeedbackSurvey({
+          webinarId: newWebinar.id,
+          title: sourceSurvey.title,
+          questions: sourceSurvey.questions ?? [],
+          isActive: sourceSurvey.isActive ?? true,
+        });
+      }
+
+      // Each copied piece below is checked the same way as when it is created by
+      // hand; one that no longer passes is left out instead of failing the copy.
+      const skipped: string[] = [];
+      for (const hook of sourceWebhooks) {
+        try {
+          await assertSafeWebhookUrl(hook.targetUrl);
+          await storage.createWebhook({
+            webinarId: newWebinar.id,
+            eventType: hook.eventType as "registration" | "attendance" | "completion",
+            targetUrl: hook.targetUrl,
+            secret: hook.secret,
+            enabled: hook.enabled,
+          });
+        } catch {
+          skipped.push("webhook");
+        }
+      }
+
+      if (sourceLandingPage) {
+        try {
+          await verifyOwnedLandingBunnyVideos(newWebinar.userId!, sourceLandingPage.blocks);
+          // The copy starts as a draft: the owner checks dates and wording before publishing.
+          await storage.createWebinarLandingPage({
+            webinarId: newWebinar.id,
+            title: sourceLandingPage.title,
+            blocks: sourceLandingPage.blocks,
+            brandSettings: sourceLandingPage.brandSettings,
+          });
+        } catch {
+          skipped.push("landingPage");
+        }
+      }
+
+      res.json(skipped.length ? { ...newWebinar, duplicateSkipped: skipped } : newWebinar);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }

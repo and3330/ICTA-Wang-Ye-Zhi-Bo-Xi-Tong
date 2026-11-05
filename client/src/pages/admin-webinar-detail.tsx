@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { parseClock } from "@/lib/clock-time";
+import { apiErrorMessage } from "@/lib/viewer-messages";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, LineChart, Line } from "recharts";
 import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost, ChatMessage } from "@shared/schema";
@@ -1881,7 +1882,7 @@ export default function AdminWebinarDetail() {
       setEditingPoll(null);
       pollForm.reset();
     },
-    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: apiErrorMessage(error), variant: "destructive" }),
   });
 
   const createTip = useMutation({
