@@ -88,7 +88,7 @@ test("rolling session rate rejects the seventh accepted attempt without work", a
 });
 
 test("webinar and owner concurrency caps apply to paid and unlimited work alike", async () => {
-  const webinarController = new AiReplyAdmissionController();
+  const webinarController = new AiReplyAdmissionController({ webinar: 3, owner: 6 });
   const webinarPending = deferred<void>();
   let webinarWork = 0;
   const webinarJobs = Array.from({ length: 3 }, (_, index) =>
@@ -108,7 +108,7 @@ test("webinar and owner concurrency caps apply to paid and unlimited work alike"
   webinarPending.resolve();
   await Promise.all(webinarJobs);
 
-  const ownerController = new AiReplyAdmissionController();
+  const ownerController = new AiReplyAdmissionController({ webinar: 3, owner: 6 });
   const ownerPending = deferred<void>();
   let ownerWork = 0;
   const ownerJobs = Array.from({ length: 6 }, (_, index) =>
@@ -131,4 +131,54 @@ test("webinar and owner concurrency caps apply to paid and unlimited work alike"
   assert.equal(ownerWork, 6);
   ownerPending.resolve();
   await Promise.all(ownerJobs);
+});
+test("a full room queues the next question instead of refusing it", async () => {
+  const controller = new AiReplyAdmissionController({ webinar: 1, owner: 10 });
+  const first = deferred<void>();
+  const order: string[] = [];
+  const running = executeAdmittedAiReply(
+    controller,
+    input({ viewerId: "viewer-1", question: "第一題？", now: undefined }),
+    async () => { order.push("first"); await first.promise; },
+  );
+  let queued = false;
+  const waiting = executeAdmittedAiReply(
+    controller,
+    input({ viewerId: "viewer-2", question: "第二題？", now: undefined }),
+    async () => { order.push("second"); return "answered"; },
+    { queueMs: 5_000, onQueued: () => { queued = true; } },
+  );
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(queued, true);
+  // The waiting viewer asking again is told the first question is still being handled.
+  const again = await executeAdmittedAiReply(
+    controller,
+    input({ viewerId: "viewer-2", question: "另一題？", now: undefined }),
+    async () => "never",
+    { queueMs: 5_000 },
+  );
+  assert.equal(again.accepted, false);
+  if (!again.accepted) assert.equal(again.reason, "viewer_busy");
+  first.resolve();
+  await running;
+  const result = await waiting;
+  assert.equal(result.accepted, true);
+  if (result.accepted) assert.equal(result.value, "answered");
+  assert.deepEqual(order, ["first", "second"]);
+});
+
+test("a queued question gives up after the wait limit", async () => {
+  const controller = new AiReplyAdmissionController({ webinar: 1, owner: 10 });
+  const hold = deferred<void>();
+  const running = executeAdmittedAiReply(controller, input({ viewerId: "v1", now: undefined }), () => hold.promise);
+  const late = await executeAdmittedAiReply(
+    controller,
+    input({ viewerId: "v2", question: "等不到？", now: undefined }),
+    async () => "never",
+    { queueMs: 300 },
+  );
+  assert.equal(late.accepted, false);
+  if (!late.accepted) assert.equal(late.reason, "webinar_busy");
+  hold.resolve();
+  await running;
 });

@@ -12,7 +12,13 @@ export function formatCueTime(totalSeconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
-/** Turns SRT/VTT text into one "[m:ss] words" line per cue. */
+/** Cues starting within this many seconds share one "[m:ss]" line. */
+export const SUBTITLE_BLOCK_SECONDS = 30;
+
+/**
+ * Turns SRT/VTT text into "[m:ss] words" lines, one per ~30 seconds of
+ * speech: precise enough to place interactions, with little overhead.
+ */
 export function subtitleToTimedText(raw: string): string {
   const lines = raw
     .replace(/^﻿/, "")
@@ -31,8 +37,11 @@ export function subtitleToTimedText(raw: string): string {
   lines.forEach((line, index) => {
     const timing = line.match(TIMING_LINE);
     if (timing) {
-      flush();
-      start = Number(timing[1] ? timing[1].slice(0, -1) : 0) * 3600 + Number(timing[2]) * 60 + Number(timing[3]);
+      const cueStart = Number(timing[1] ? timing[1].slice(0, -1) : 0) * 3600 + Number(timing[2]) * 60 + Number(timing[3]);
+      if (start === null || cueStart - start >= SUBTITLE_BLOCK_SECONDS || cueStart < start) {
+        flush();
+        start = cueStart;
+      }
       return;
     }
     // SRT sequence numbers are metadata only when directly followed by a
@@ -81,4 +90,31 @@ export function sampleTranscript(text: string, maxChars: number): string {
   }
   // Text with very long lines (e.g. one pasted paragraph) cannot be spread out.
   return kept.length ? kept.join("\n") : text.slice(0, maxChars);
+}
+
+/**
+ * Splits text into pieces of at most `maxChars`, cutting only between lines
+ * (or, for a single huge line, at the limit) so nothing is dropped.
+ */
+export function splitText(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+  const parts: string[] = [];
+  let current = "";
+  for (const line of text.split("\n")) {
+    let rest = line;
+    while (rest.length > maxChars) {
+      if (current) { parts.push(current); current = ""; }
+      parts.push(rest.slice(0, maxChars));
+      rest = rest.slice(maxChars);
+    }
+    const next = current ? `${current}\n${rest}` : rest;
+    if (next.length > maxChars) {
+      parts.push(current);
+      current = rest;
+    } else {
+      current = next;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
 }

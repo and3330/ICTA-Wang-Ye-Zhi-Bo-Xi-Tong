@@ -43,11 +43,29 @@ function progressPercent(event: WebinarFunnelEvent, videoDuration: number): numb
 
 /** Pure, deterministic scoring. Events are expected to belong to one registration. */
 export function scoreLeadInsight(
-  registration: Pick<Registration, "id" | "registeredAt">,
+  registration: Pick<Registration, "id" | "registeredAt"> & Partial<Pick<Registration, "attended" | "attendedAt" | "watchDuration">>,
   events: WebinarFunnelEvent[],
   videoDuration = 0,
 ): LeadInsight {
-  const ordered = [...events].sort((a, b) => eventTime(a) - eventTime(b) || a.id.localeCompare(b.id));
+  // The registration row also records attendance (from the viewer's watch
+  // link), even when room events were sent without the registration attached.
+  const attendedAt = registration.attendedAt ? new Date(registration.attendedAt) : null;
+  const attendanceEvents: WebinarFunnelEvent[] = [];
+  const hasEventType = (type: string) => events.some(e => e.eventType === type);
+  if (registration.attended && !hasEventType("webinar_enter")) {
+    attendanceEvents.push({
+      id: `attendance-enter-${registration.id}`, eventType: "webinar_enter", registrationId: registration.id,
+      occurredAt: attendedAt ?? new Date(registration.registeredAt ?? 0),
+    } as WebinarFunnelEvent);
+  }
+  if ((registration.watchDuration ?? 0) > 0 && videoDuration > 0) {
+    attendanceEvents.push({
+      id: `attendance-progress-${registration.id}`, eventType: "video_progress", registrationId: registration.id,
+      positionSeconds: Math.min(videoDuration, registration.watchDuration!), metadata: {},
+      occurredAt: attendedAt ?? new Date(registration.registeredAt ?? 0),
+    } as unknown as WebinarFunnelEvent);
+  }
+  const ordered = [...events, ...attendanceEvents].sort((a, b) => eventTime(a) - eventTime(b) || a.id.localeCompare(b.id));
   const has = (type: string) => ordered.some(e => e.eventType === type);
   const progressEvents = ordered.filter(e => e.eventType === "video_progress");
   const progress = progressEvents.reduce<number | null>((max, e) => {
@@ -121,6 +139,7 @@ export function buildLeadInsights(
   registrations: Registration[],
   events: WebinarFunnelEvent[],
   webinar: Pick<Webinar, "videoDuration">,
+  videoDuration = webinar.videoDuration ?? 0,
 ) {
   const eventsByRegistration = new Map<string, WebinarFunnelEvent[]>();
   for (const event of events) {
@@ -130,6 +149,6 @@ export function buildLeadInsights(
     else eventsByRegistration.set(event.registrationId, [event]);
   }
   const insights = registrations.map(registration =>
-    scoreLeadInsight(registration, eventsByRegistration.get(registration.id) || [], webinar.videoDuration ?? 0));
+    scoreLeadInsight(registration, eventsByRegistration.get(registration.id) || [], videoDuration));
   return { summary: { total: insights.length, cold: insights.filter(i => i.temperature === "cold" && i.stage !== "refunded").length, warm: insights.filter(i => i.temperature === "warm").length, hot: insights.filter(i => i.temperature === "hot").length, customers: insights.filter(i => i.temperature === "customer").length, refunded: insights.filter(i => i.stage === "refunded").length }, insights };
 }

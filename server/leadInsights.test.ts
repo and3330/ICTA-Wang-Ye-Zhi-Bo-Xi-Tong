@@ -71,3 +71,19 @@ test("summary and response fields are stable", () => {
   assert.deepEqual(Object.keys(result.summary), ["total", "cold", "warm", "hot", "customers", "refunded"]);
   assert.deepEqual(Object.keys(result.insights[0]), ["registrationId", "score", "stage", "temperature", "lastActivityAt", "recommendation", "suppressSalesFollowUp", "evidenceCount", "evidence", "timeline"]);
 });
+test("attendance on the registration counts even without room events", () => {
+  const attendee = {
+    id: "reg-attended",
+    registeredAt: new Date("2025-01-01T00:00:00Z"),
+    attended: true,
+    attendedAt: new Date("2025-01-01T01:00:00Z"),
+    watchDuration: 1800,
+  } as Registration;
+  const insight = scoreLeadInsight(attendee, [], 3600);
+  assert.equal(insight.stage, "engaged");
+  // 10 registration + 10 entered + 50% watched x 0.2 = 30
+  assert.equal(insight.score, 30);
+  const absent = scoreLeadInsight({ id: "reg-absent", registeredAt: new Date("2025-01-01T00:00:00Z") } as Registration, [], 3600);
+  assert.equal(absent.score, 10);
+  assert.equal(absent.stage, "registered");
+});

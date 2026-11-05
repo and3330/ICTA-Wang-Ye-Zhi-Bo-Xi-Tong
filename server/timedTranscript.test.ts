@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCueTime, hasTimedLines, lastTimedSecond, sampleTranscript, subtitleToTimedText } from "./timedTranscript";
+import { formatCueTime, hasTimedLines, lastTimedSecond, sampleTranscript, splitText, subtitleToTimedText } from "./timedTranscript";
 
 test("SRT cues keep their start time, numbers inside speech stay", () => {
   const srt = "1\r\n00:12:34,500 --> 00:12:37,000\r\n<i>大家好</i>\r\n今天講三件事\r\n\r\n2\r\n01:02:03,000 --> 01:02:05,000\r\n1984\r\n";
@@ -30,4 +30,20 @@ test("sampling keeps the start and the end of a long transcript", () => {
   assert.ok(lastTimedSecond(sampled) > 5400, "the last part of the video is still represented");
   assert.equal(sampleTranscript("短", 5000), "短");
   assert.equal(sampleTranscript("x".repeat(9000), 5000).length, 5000);
+});
+
+test("nearby cues share a line; a new line starts every 30 seconds", () => {
+  const cue = (n: number, start: string) => `${n}\n${start},000 --> ${start},900\n句${n}\n`;
+  const srt = [
+    cue(0, "00:00:00"), cue(1, "00:00:10"), cue(2, "00:00:25"), cue(3, "00:00:31"), cue(4, "00:01:10"),
+  ].join("\n");
+  assert.equal(subtitleToTimedText(srt), "[0:00] 句0 句1 句2\n[0:31] 句3\n[1:10] 句4");
+});
+
+test("splitting keeps every character and respects the limit", () => {
+  const text = ["a".repeat(40), "b".repeat(40), "c".repeat(130), "d"].join("\n");
+  const parts = splitText(text, 100);
+  assert.ok(parts.every(part => part.length <= 100));
+  assert.equal(parts.join("").replace(/\n/g, ""), text.replace(/\n/g, ""));
+  assert.deepEqual(splitText("short", 100), ["short"]);
 });

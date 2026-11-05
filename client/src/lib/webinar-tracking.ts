@@ -1,3 +1,4 @@
+import { getWatchToken } from "./watch-access";
 export const WEBINAR_EVENT_TYPES = [
   "landing_view",
   "webinar_enter",
@@ -109,10 +110,17 @@ export function trackWebinarEvent(
   sentEvents.add(memoryKey);
 
   const metadata = boundedMetadata(data.metadata);
+  let watchToken: string | null = null;
+  try {
+    watchToken = getWatchToken(webinarId);
+  } catch {
+    // Storage can be blocked; the event is still counted anonymously.
+  }
   const payload = {
     eventType,
     dedupeKey,
     visitorToken,
+    ...(watchToken ? { watchToken } : {}),
     ...(isUuid(data.ctaId) ? { ctaId: data.ctaId } : {}),
     ...(!isUuid(data.ctaId) && isCtaKey(data.ctaKey) ? { ctaKey: data.ctaKey } : {}),
     ...(data.positionSeconds === undefined

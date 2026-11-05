@@ -22,6 +22,8 @@ const metadataSchema = z.object({
 export const funnelEventInputSchema = z.object({
   eventType: z.enum(webinarFunnelEventTypes),
   registrationId: z.string().uuid().optional(),
+  /** The viewer's watch link token: ties room events to their registration. */
+  watchToken: z.string().trim().min(16).max(1_000).optional(),
   sessionId: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
   ctaId: z.string().uuid().optional(),
   ctaKey: z.string().min(8).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
@@ -32,7 +34,7 @@ export const funnelEventInputSchema = z.object({
   dedupeKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9_.:-]+$/),
   metadata: metadataSchema,
 }).strict().superRefine((value, context) => {
-  if (!value.registrationId && !value.sessionId && !value.visitorToken) {
+  if (!value.registrationId && !value.sessionId && !value.visitorToken && !value.watchToken) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "An anonymous visitor token or safe identifier is required" });
   }
   if ((value.eventType === "video_progress" || value.eventType === "dropoff") && value.positionSeconds === undefined) {
@@ -91,7 +93,27 @@ const stages: WebinarFunnelEventType[] = [
   "cta_click", "checkout_start", "purchase",
 ];
 
+/**
+ * One person often shows up under two ids: the browser token from the
+ * landing page and the registration id from the email link (maybe on another
+ * device). Events that carry both link them, so the person counts once.
+ */
+function personKeyResolver(events: WebinarFunnelEvent[]) {
+  const registrationByToken = new Map<string, string>();
+  for (const event of events) {
+    if (event.visitorTokenHash && event.registrationId && !registrationByToken.has(event.visitorTokenHash)) {
+      registrationByToken.set(event.visitorTokenHash, event.registrationId);
+    }
+  }
+  return (event: WebinarFunnelEvent) => {
+    const registrationId = event.registrationId
+      || (event.visitorTokenHash ? registrationByToken.get(event.visitorTokenHash) : undefined);
+    return registrationId ? `r:${registrationId}` : viewerKey(event);
+  };
+}
+
 export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuration: number) {
+  const personKey = personKeyResolver(events);
   const counts = Object.fromEntries(webinarFunnelEventTypes.map(type => [type, 0])) as Record<WebinarFunnelEventType, number>;
   const uniqueByType = Object.fromEntries(webinarFunnelEventTypes.map(type => [type, new Set<string>()])) as Record<WebinarFunnelEventType, Set<string>>;
   const allViewers = new Set<string>();
@@ -106,7 +128,7 @@ export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuratio
 
   for (const event of events) {
     counts[event.eventType]++;
-    const key = viewerKey(event);
+    const key = personKey(event);
     uniqueByType[event.eventType].add(key);
     allViewers.add(key);
     if (event.ctaKey && (event.eventType === "cta_view" || event.eventType === "cta_click")) {
@@ -131,13 +153,17 @@ export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuratio
   }
 
   const uniqueCounts = Object.fromEntries(webinarFunnelEventTypes.map(type => [type, uniqueByType[type].size])) as Record<WebinarFunnelEventType, number>;
+  // A step's rate counts only people who also reached the previous step, so it
+  // can never pass 100% (e.g. someone who registered before the date range).
   const stageConversionRates = stages.slice(1).map((stage, index) => {
     const from = stages[index];
     const denominator = uniqueCounts[from];
+    let reached = 0;
+    uniqueByType[stage].forEach((person) => { if (uniqueByType[from].has(person)) reached++; });
     return {
       from,
       to: stage,
-      rate: denominator ? Math.round((uniqueCounts[stage] / denominator) * 10000) / 100 : 0,
+      rate: denominator ? Math.round((reached / denominator) * 10000) / 100 : 0,
     };
   });
   return {

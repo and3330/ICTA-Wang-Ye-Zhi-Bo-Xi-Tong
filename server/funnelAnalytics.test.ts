@@ -113,3 +113,25 @@ test("funnel aggregation deduplicates viewers and computes CTA/dropoff metrics",
   assert.equal(result.counts.purchase, 1);
   assert.equal(result.counts.refund, 1);
 });
+test("one person across devices counts once and step rates never pass 100%", () => {
+  const base = {
+    webinarId: "webinar", sessionId: null, ctaId: null, ctaKey: null, positionSeconds: null,
+    value: null, currency: null, metadata: {}, occurredAt: new Date(),
+  };
+  const make = (id: string, eventType: WebinarFunnelEvent["eventType"], visitorTokenHash: string | null, registrationId: string | null) =>
+    ({ ...base, id, eventType, visitorTokenHash, registrationId, dedupeKey: id }) as unknown as WebinarFunnelEvent;
+  const result = aggregateFunnelEvents([
+    // A: landing + registration on a laptop, joins from the email on a phone.
+    make("1", "landing_view", "laptop-a", null),
+    make("2", "registration", "laptop-a", "reg-a"),
+    make("3", "webinar_enter", "phone-a", "reg-a"),
+    // B registered before the date range; only the join is inside it.
+    make("4", "webinar_enter", "phone-b", "reg-b"),
+  ], 100);
+  assert.equal(result.uniqueViewers, 2);
+  assert.equal(result.uniqueByStage.registration, 1);
+  assert.equal(result.uniqueByStage.webinar_enter, 2);
+  const joinRate = result.stageConversionRates.find(rate => rate.from === "registration" && rate.to === "webinar_enter");
+  assert.equal(joinRate?.rate, 100);
+  assert.ok(result.stageConversionRates.every(rate => rate.rate <= 100));
+});

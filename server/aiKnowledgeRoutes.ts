@@ -1,4 +1,4 @@
-import { subtitleToTimedText } from "./timedTranscript";
+import { splitText, subtitleToTimedText } from "./timedTranscript";
 import type { Express, RequestHandler } from "express";
 import multer from "multer";
 import dns from "node:dns/promises";
@@ -9,6 +9,7 @@ import net from "node:net";
 import path from "node:path";
 import { pinnedLookup } from "./webhookDelivery";
 import {
+  AI_KNOWLEDGE_MAX_CHARS,
   AI_SOURCE_MAX_CHARS,
   aiKnowledgeInputSchema,
   aiKnowledgeUpdateSchema,
@@ -302,7 +303,7 @@ export function fetchWebsiteSnapshot(rawUrl: string): Promise<{ url: string; con
   });
 }
 
-export function extractKnowledgeFile(file: { originalname: string; buffer: Buffer }): { title: string; content: string } {
+export function extractKnowledgeFile(file: { originalname: string; buffer: Buffer }): { title: string; content: string; parts: string[] } {
   const extension = path.extname(file.originalname).toLowerCase().slice(1);
   if (!AI_KNOWLEDGE_FILE_FORMATS.includes(extension as typeof AI_KNOWLEDGE_FILE_FORMATS[number])) {
     throw new Error(`不支援的檔案格式；請使用 ${AI_KNOWLEDGE_FILE_FORMATS.join(", ").toUpperCase()}`);
@@ -320,9 +321,13 @@ export function extractKnowledgeFile(file: { originalname: string; buffer: Buffe
   }
   content = content.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (!content) throw new Error("檔案沒有可擷取的文字內容");
-  if (content.length > AI_SOURCE_MAX_CHARS) throw new Error(`檔案文字超過 ${AI_SOURCE_MAX_CHARS} 字元上限`);
+  if (content.length > AI_KNOWLEDGE_MAX_CHARS) {
+    throw new Error(`檔案文字超過知識庫總上限 ${AI_KNOWLEDGE_MAX_CHARS} 字元`);
+  }
+  // A long transcript is stored as several numbered entries instead of being refused.
+  const parts = splitText(content, AI_SOURCE_MAX_CHARS);
   const base = path.basename(file.originalname, path.extname(file.originalname)).trim();
-  return { title: (base || "上傳檔案").slice(0, 200), content };
+  return { title: (base || "上傳檔案").slice(0, 200), content, parts };
 }
 
 const upload = multer({
@@ -399,14 +404,27 @@ export function registerAiKnowledgeRoutes(app: Express, requireWebinarOwner: Req
       if (!req.file) throw new Error("請上傳 file 欄位");
       const extracted = extractKnowledgeFile(req.file);
       const suppliedTitle = typeof req.body.title === "string" ? req.body.title.trim() : "";
-      if (suppliedTitle.length > 200) throw new Error("標題不得超過 200 字元");
-      res.status(201).json(await createKnowledgeSource({
-        webinarId: req.params.id as string,
-        title: suppliedTitle || extracted.title,
-        content: extracted.content,
-        sourceType: "file",
-        sourceUrl: null,
-      }));
+      if (suppliedTitle.length > 190) throw new Error("標題不得超過 190 字元");
+      const baseTitle = suppliedTitle || extracted.title.slice(0, 190);
+      const webinarId = req.params.id as string;
+      const created = [];
+      try {
+        for (let index = 0; index < extracted.parts.length; index += 1) {
+          const content = extracted.parts[index];
+          created.push(await createKnowledgeSource({
+            webinarId,
+            title: extracted.parts.length > 1 ? `${baseTitle}（${index + 1}/${extracted.parts.length}）` : baseTitle,
+            content,
+            sourceType: "file",
+            sourceUrl: null,
+          }));
+        }
+      } catch (error) {
+        // All parts or none: a half-stored transcript would mislead the assistant.
+        for (const source of created) await deleteKnowledgeSource(webinarId, source.id).catch(() => {});
+        throw error;
+      }
+      res.status(201).json({ ...created[0], splitInto: created.length });
     } catch (error) {
       res.status(status(error)).json({ message: message(error) });
     }
