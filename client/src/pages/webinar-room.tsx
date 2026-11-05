@@ -315,13 +315,17 @@ export default function WebinarRoom() {
     
     tips.forEach((tip) => {
       const tipKey = `tip_${tip.id}`;
-      if (currentTime >= tip.triggerTime && !shownTipsRef.current.has(tipKey)) {
-        shownTipsRef.current.add(tipKey);
-        setVisibleTip(tip);
-        setTimeout(() => {
-          setVisibleTip((current) => current?.id === tip.id ? null : current);
-        }, (tip.duration || 10) * 1000);
-      }
+      if (currentTime < tip.triggerTime || shownTipsRef.current.has(tipKey)) return;
+      shownTipsRef.current.add(tipKey);
+      // A viewer who joins late or seeks forward must not see every past tip at
+      // once: only a tip whose display window is still open is shown, and only
+      // for the part of the window that is left.
+      const remainingSeconds = tip.triggerTime + (tip.duration || 10) - currentTime;
+      if (remainingSeconds <= 0) return;
+      setVisibleTip(tip);
+      setTimeout(() => {
+        setVisibleTip((current) => current?.id === tip.id ? null : current);
+      }, remainingSeconds * 1000);
     });
   }, [currentTime, tips, isPlaying]);
 

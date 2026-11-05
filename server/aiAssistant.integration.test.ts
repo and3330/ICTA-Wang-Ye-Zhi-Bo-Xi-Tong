@@ -175,6 +175,28 @@ test("AI reply runtime and correction management persist atomically in the devel
   const [paidLotAfterFailure] = await db.select().from(aiCreditLots)
     .where(eq(aiCreditLots.userId, paidOwnerId));
   assert.equal(paidLotAfterFailure.remainingPoints, 4);
+  assert.equal(failed.chatMessage, null, "an admin test failure sends no viewer chat");
+
+  const liveFailed = await runAiReply({
+    webinarId: paidWebinarId,
+    sessionId: `viewer-failed-${suffix}`,
+    question: "課程有提供發票嗎？",
+    kind: "live",
+    provider: async () => {
+      throw new Error("provider details must not be persisted");
+    },
+  });
+  assert.equal(liveFailed.status, "error");
+  assert.equal(liveFailed.answer, null);
+  assert.equal(liveFailed.pointsCharged, 0);
+  assert.ok(liveFailed.chatMessage, "a live viewer still gets a reply when the provider fails");
+  assert.doesNotMatch(liveFailed.chatMessage!.message, /provider details/);
+  const [liveFailedLog] = await db.select().from(aiReplyLogs).where(eq(aiReplyLogs.id, liveFailed.logId));
+  assert.equal(liveFailedLog.answer, null);
+  assert.equal(liveFailedLog.chatMessageId, liveFailed.chatMessage!.id);
+  const [paidLotAfterLiveFailure] = await db.select().from(aiCreditLots)
+    .where(eq(aiCreditLots.userId, paidOwnerId));
+  assert.equal(paidLotAfterLiveFailure.remainingPoints, 4);
 
   let strictProviderCalls = 0;
   const strict = await runAiReply({

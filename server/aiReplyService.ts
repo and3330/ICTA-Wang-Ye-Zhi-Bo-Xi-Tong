@@ -67,6 +67,8 @@ async function persistUnchargedReply(input: {
   teacherName: string;
   question: string;
   answer: string | null;
+  /** Chat text sent to the viewer when it differs from the logged answer. */
+  viewerMessage?: string | null;
   status: "fallback" | "error" | "no_credits";
   sources?: AiSourceReference[];
   reservationId?: string | null;
@@ -74,13 +76,14 @@ async function persistUnchargedReply(input: {
   durationMs: number;
   errorMessage?: string | null;
 }): Promise<{ logId: string; chatMessage: ChatMessage | null }> {
+  const chatText = input.viewerMessage ?? input.answer;
   return db.transaction(async tx => {
-    const [message] = input.sessionId && input.answer
+    const [message] = input.sessionId && chatText
       ? await tx.insert(chatMessages).values({
         webinarId: input.webinarId,
         sessionId: input.sessionId,
         senderName: input.teacherName,
-        message: input.answer,
+        message: chatText,
         senderType: "host",
         isPrivate: true,
       }).returning()
@@ -297,6 +300,9 @@ export async function runAiReply(input: {
       teacherName,
       question: input.question,
       answer: null,
+      // The log keeps answer = null so a provider failure stays visible, but a
+      // live viewer still gets the fallback reply instead of silence.
+      viewerMessage: input.kind === "live" ? fallback : null,
       status: "error",
       sources: retrieved.sources,
       reservationId,

@@ -4373,16 +4373,18 @@ export async function registerRoutes(
         replayEnabled: sourceWebinar.replayEnabled ?? undefined,
         replayAvailableHours: sourceWebinar.replayAvailableHours ?? undefined,
         emailSettings: sourceWebinar.emailSettings as any,
+        aiSettings: sourceWebinar.aiSettings as any,
         userId: sourceWebinar.userId || req.session.userId,
       });
 
-      const [sourceFakeUsers, sourceMessages, sourceCtas, sourcePolls, sourceTips, sourceOffers] = await Promise.all([
+      const [sourceFakeUsers, sourceMessages, sourceCtas, sourcePolls, sourceTips, sourceOffers, sourceDocuments] = await Promise.all([
         storage.getFakeUsersByWebinar(sourceWebinar.id),
         storage.getScheduledMessagesByWebinar(sourceWebinar.id),
         storage.getCtaButtonsByWebinar(sourceWebinar.id),
         storage.getPollsByWebinar(sourceWebinar.id),
         storage.getTipsByWebinar(sourceWebinar.id),
         storage.getWebinarOffers(sourceWebinar.id),
+        storage.getWebinarDocuments(sourceWebinar.id),
       ]);
 
       const fakeUserIdMap = new Map<string, string>();
@@ -4448,6 +4450,19 @@ export async function registerRoutes(
           content: tip.content,
           triggerTime: tip.triggerTime,
           duration: tip.duration ?? undefined,
+          icon: tip.icon ?? undefined,
+        });
+      }
+
+      // The AI assistant answers from these documents; without them a copied
+      // webinar's assistant would only ever give the fallback reply.
+      for (const document of sourceDocuments) {
+        await storage.createWebinarDocument({
+          webinarId: newWebinar.id,
+          title: document.title,
+          content: document.content,
+          sourceType: document.sourceType,
+          sourceUrl: document.sourceUrl ?? undefined,
         });
       }
 
