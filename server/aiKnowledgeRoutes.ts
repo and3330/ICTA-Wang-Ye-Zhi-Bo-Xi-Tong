@@ -1,4 +1,5 @@
 import { splitText, subtitleToTimedText } from "./timedTranscript";
+import { repairUtf8Name } from "@shared/uploadName";
 import type { Express, RequestHandler } from "express";
 import multer from "multer";
 import dns from "node:dns/promises";
@@ -326,7 +327,8 @@ export function extractKnowledgeFile(file: { originalname: string; buffer: Buffe
   }
   // A long transcript is stored as several numbered entries instead of being refused.
   const parts = splitText(content, AI_SOURCE_MAX_CHARS);
-  const base = path.basename(file.originalname, path.extname(file.originalname)).trim();
+  const original = repairUtf8Name(file.originalname);
+  const base = path.basename(original, path.extname(original)).trim();
   return { title: (base || "上傳檔案").slice(0, 200), content, parts };
 }
 

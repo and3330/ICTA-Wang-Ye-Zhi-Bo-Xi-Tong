@@ -4811,7 +4811,7 @@ export default function AdminWebinarDetail() {
                               </div>
                               <p className="whitespace-pre-wrap break-words text-sm">{message.message}</p>
                               <div className="mt-1 flex gap-1">
-                                <Badge variant="outline" className="text-[10px]">{message.senderType}</Badge>
+                                <Badge variant="outline" className="text-[10px]">{({ viewer: "觀眾", host: "主持人", bot: "AI 助理", scheduled: "排程訊息" } as Record<string, string>)[message.senderType] || message.senderType}</Badge>
                                 {message.isPrivate && <Badge variant="secondary" className="text-[10px]">私密</Badge>}
                               </div>
                             </div>

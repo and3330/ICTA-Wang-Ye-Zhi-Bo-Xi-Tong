@@ -43,6 +43,8 @@ type WebinarStats = Record<string, {
   registered: number;
   attended: number;
   engaged: number;
+  attendanceRate?: number;
+  interactions?: number;
   onlineCount: number;
   sessionRegistrationCounts?: SessionRegistrationCountsDto | null;
 }>;
@@ -194,7 +196,7 @@ const t: Record<LangAdmin, {
     create: "建立",
     statRegistered: "報名數",
     statAttended: "出席數",
-    statEngagement: "互動率",
+    statEngagement: "觀眾互動",
     statOnline: "在線觀眾",
     onlineCount: (n: number) => `${n} 人在線`,
     actionEdit: "編輯管理",
@@ -293,7 +295,7 @@ const t: Record<LangAdmin, {
     create: "创建",
     statRegistered: "报名数",
     statAttended: "出席数",
-    statEngagement: "互动率",
+    statEngagement: "观众互动",
     statOnline: "在线观众",
     onlineCount: (n: number) => `${n} 人在线`,
     actionEdit: "编辑管理",
@@ -1923,11 +1925,16 @@ export default function AdminDashboard() {
                             <div className="text-xs text-muted-foreground">{s.statRegistered}</div>
                           </div>
                           <div className="text-center" data-testid={`stat-attended-${webinar.id}`}>
-                            <div className="text-xl font-bold">{webinarStats?.attended ?? "—"}</div>
+                            <div className="text-xl font-bold">
+                              {webinarStats?.attended ?? "—"}
+                              {webinarStats?.attendanceRate !== undefined && webinarStats.registered > 0 && (
+                                <span className="ml-1 text-xs font-medium text-muted-foreground">{webinarStats.attendanceRate}%</span>
+                              )}
+                            </div>
                             <div className="text-xs text-muted-foreground">{s.statAttended}</div>
                           </div>
                           <div className="text-center" data-testid={`stat-engaged-${webinar.id}`}>
-                            <div className="text-xl font-bold">{webinarStats?.engaged !== undefined ? `${webinarStats.engaged}%` : "—"}</div>
+                            <div className="text-xl font-bold">{webinarStats?.interactions ?? "—"}</div>
                             <div className="text-xs text-muted-foreground">{s.statEngagement}</div>
                           </div>
                         </div>
