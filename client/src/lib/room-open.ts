@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 /** The room button appears this many minutes before the start. */
-export const ROOM_OPENS_MINUTES_BEFORE = 15;
+export const ROOM_OPENS_MINUTES_BEFORE = 30;
 
 /**
  * Whether a registrant should be offered "enter the room" right now: always

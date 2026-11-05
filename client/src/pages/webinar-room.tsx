@@ -1,3 +1,5 @@
+import { WaitingLobby } from "@/components/waiting-lobby";
+import { useRoomOpenSoon } from "@/lib/room-open";
 import { ctaButtonAppearance } from "@/lib/cta-style";
 import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
 import { useState, useEffect, useRef } from "react";
@@ -117,6 +119,10 @@ export default function WebinarRoom() {
     scheduledStart: webinar?.startTime,
   });
   const canWatch = isPlaybackPermitted(accessKind);
+  // The room opens 30 minutes early as a countdown lobby.
+  const lobbyStartsAt = watchState?.waitUntil || watchState?.selectedSession || webinar?.startTime || null;
+  const lobbyOpen = useRoomOpenSoon(lobbyStartsAt, false);
+  const showLobby = accessKind === "upcoming" && !!lobbyStartsAt && lobbyOpen;
   const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
   const effectivePlayback = canWatch && watchToken ? watchState?.playback : undefined;
   const hasPlayback = !!(effectivePlayback?.url || effectivePlayback?.embedUrl || effectiveVimeoUrl);
@@ -643,6 +649,20 @@ export default function WebinarRoom() {
   );
 
   if (!isJoined) {
+    if (showLobby) {
+      return (
+        <>
+          {trackingProvider}
+          <WaitingLobby
+            title={webinar.title}
+            startsAt={lobbyStartsAt!}
+            timezone={webinar.timezone}
+            logo={brandSettings?.logo}
+            style={brandGradient || undefined}
+          />
+        </>
+      );
+    }
     if (!canWatch || !hasPlayback) {
       return (
         <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient || {}}>
@@ -703,6 +723,21 @@ export default function WebinarRoom() {
           </CardContent>
         </Card>
       </div>
+    );
+  }
+
+  if (showLobby || (waitingForStart && lobbyOpen && lobbyStartsAt && new Date(lobbyStartsAt).getTime() > Date.now())) {
+    return (
+      <>
+        {trackingProvider}
+        <WaitingLobby
+          title={webinar.title}
+          startsAt={lobbyStartsAt!}
+          timezone={webinar.timezone}
+          logo={brandSettings?.logo}
+          style={brandGradient || undefined}
+        />
+      </>
     );
   }
 

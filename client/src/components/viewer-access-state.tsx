@@ -14,7 +14,7 @@ type ViewerAccessStateProps = {
 
 const content: Record<Exclude<ViewerAccessKind, "verified">, { label: string; heading: string; body: string; icon: typeof CalendarClock; tone: "default" | "warning" | "danger" }> = {
   verifying: { label: "正在確認觀看資格", heading: "請稍候，正在確認存取資格", body: "為了保護本場內容，確認完成前不會載入影片。", icon: RefreshCw, tone: "default" },
-  upcoming: { label: "尚未開放", heading: "這一場還沒開始", body: "請在指定時間回到此頁面；開放後會自動更新觀看資格。", icon: CalendarClock, tone: "warning" },
+  upcoming: { label: "尚未開放", heading: "這一場還沒開始", body: "直播間會在開播前 30 分鐘開放入場並開始倒數，屆時這個頁面會自動更新。", icon: CalendarClock, tone: "warning" },
   expired: { label: "觀看期限已結束", heading: "本場次目前已無法觀看", body: "您的觀看時段可能已結束。若您認為這是誤判，請重新確認資格。", icon: CircleOff, tone: "warning" },
   unavailable: { label: "內容暫時無法使用", heading: "此直播目前未開放觀看", body: "可能尚未發布、已下架，或需要先完成報名與場次選擇。", icon: VideoOff, tone: "warning" },
   revoked: { label: "觀看資格已失效", heading: "您已無法觀看這場直播", body: "此連結的觀看資格已失效或被撤銷。為保護內容，播放已停止。", icon: ShieldX, tone: "danger" },

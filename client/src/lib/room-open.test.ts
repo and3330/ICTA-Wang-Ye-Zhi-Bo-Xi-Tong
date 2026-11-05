@@ -5,10 +5,10 @@ import { isRoomOpenSoon } from "./room-open";
 const start = "2026-11-06T12:00:00.000Z";
 const at = (iso: string) => new Date(iso).getTime();
 
-test("the room opens 15 minutes before the start", () => {
+test("the room opens 30 minutes before the start", () => {
   assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T10:00:00Z")), false);
-  assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T11:44:00Z")), false);
-  assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T11:45:00Z")), true);
+  assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T11:29:00Z")), false);
+  assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T11:30:00Z")), true);
   assert.equal(isRoomOpenSoon(start, false, at("2026-11-06T13:00:00Z")), true);
 });
 
