@@ -97,6 +97,7 @@ import {
   type SubscriptionPlanKey,
 } from "./subscriptionEntitlements";
 import { PLAN_PRICING } from "@shared/pricing";
+import { repairUtf8Name } from "@shared/uploadName";
 import { isPaidBillableSubscriptionInvoice, reconcileCurrentSubscriptionCredit } from "./subscriptionCreditGrants";
 import { canRetainViewerWsAccess, canViewWebinar, webinarWatchEligibility } from "./webinarAccess";
 import { appBaseUrl, emailVerificationMail, sendTransactionalMail } from "./mail";
@@ -627,7 +628,7 @@ export async function registerRoutes(
         kind: "image",
         provider: "bunny_storage",
         storageKey,
-        name: req.file.originalname.slice(0, 200) || verified.filename,
+        name: repairUtf8Name(req.file.originalname).slice(0, 200) || verified.filename,
         status: "uploading",
         sizeBytes: req.file.buffer.byteLength,
         contentType: verified.mime,
@@ -1920,6 +1921,8 @@ export async function registerRoutes(
         registered: number;
         attended: number;
         engaged: number;
+        attendanceRate: number;
+        interactions: number;
         onlineCount: number;
         sessionRegistrationCounts: SessionRegistrationCountsDto;
       }> = {};
@@ -1934,7 +1937,10 @@ export async function registerRoutes(
         const likeData = await storage.getLikes(webinar.id);
         const likeCount = likeData?.count || 0;
         const interactionCount = viewerChatCount + likeCount;
-        const engaged = attended > 0 ? Math.round((interactionCount / attended) * 100) : (registered > 0 ? Math.round((attended / registered) * 100) : 0);
+        // Attendance as a share of signups; interactions as a plain count.
+        // (Interactions per attendee is not a percentage and showed e.g. 850%.)
+        const attendanceRate = registered > 0 ? Math.round((attended / registered) * 100) : 0;
+        const engaged = attendanceRate;
         
         const onlineCount = webinarSessions.get(webinar.id)?.size || 0;
         
@@ -1942,6 +1948,8 @@ export async function registerRoutes(
           registered,
           attended,
           engaged,
+          attendanceRate,
+          interactions: interactionCount,
           onlineCount,
           sessionRegistrationCounts: sessionRegistrationCounts[webinar.id] || { counts: [], totalRegistered: 0 },
         };

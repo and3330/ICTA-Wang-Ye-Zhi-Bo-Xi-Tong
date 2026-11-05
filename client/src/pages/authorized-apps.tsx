@@ -153,7 +153,7 @@ export default function AuthorizedAppsPage() {
                         <div className="mt-4">
                           <p className="text-xs font-medium text-muted-foreground">唯讀資料範圍</p>
                           <div className="mt-2 flex flex-wrap gap-2">
-                            {grant.scopes.map(scope => <span key={scope} className="rounded-full border bg-muted/50 px-2.5 py-1 text-xs">{scope}</span>)}
+                            {grant.scopes.map(scope => <span key={scope} title={scope} className="rounded-full border bg-muted/50 px-2.5 py-1 text-xs">{({ "webinars:read": "說明會資訊", "sessions:read": "場次時間", "registrations:read": "報名名單" } as Record<string, string>)[scope] || scope}</span>)}
                             {grant.scopes.length === 0 && <span className="text-xs text-muted-foreground">沒有列出資料範圍</span>}
                           </div>
                         </div>
