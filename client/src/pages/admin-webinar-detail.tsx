@@ -1199,6 +1199,30 @@ function htmlToPlainText(html: string): string {
   return html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Numbers that change while the page is open (registrations, viewers, leads,
+ * funnel): refresh every 30 s while the tab is visible and on return to it.
+ */
+const LIVE_REFRESH = {
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: true,
+  staleTime: 0,
+} as const;
+
+/** "2026-11-06" for the admin's local calendar day. */
+function localDateInput(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** Start or end of a local calendar day as an exact moment for the server. */
+function localDayBoundary(day: string, end: boolean): string {
+  const [year, month, date] = day.split("-").map(Number);
+  if (!year || !month || !date) return day;
+  return (end ? new Date(year, month - 1, date, 23, 59, 59, 999) : new Date(year, month - 1, date)).toISOString();
+}
+
 type SurveyDraftQuestion = {
   id: string;
   type: "rating" | "text" | "multiChoice";
@@ -1252,12 +1276,14 @@ export default function AdminWebinarDetail() {
   const [surveyDraft, setSurveyDraft] = useState<SurveyDraft | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; run: () => void } | null>(null);
   const confirmDelete = (run: () => void) => setPendingConfirm({ title: s.confirmDeleteTitle, description: s.confirmDeleteDesc, run });
+  // Dates are the admin's own calendar days (toISOString would give the UTC
+  // day, which in Taiwan is still "yesterday" until 8 a.m.).
   const [funnelFrom, setFunnelFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 30);
-    return date.toISOString().slice(0, 10);
+    return localDateInput(date);
   });
-  const [funnelTo, setFunnelTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [funnelTo, setFunnelTo] = useState(() => localDateInput(new Date()));
   const [answeringQuestionId, setAnsweringQuestionId] = useState<string | null>(null);
   const [answerInput, setAnswerInput] = useState("");
 
@@ -1447,15 +1473,18 @@ export default function AdminWebinarDetail() {
   const { data: registrations, isLoading: registrationsLoading, isError: registrationsError } = useQuery<Registration[]>({
     queryKey: ["/api/webinars", id, "registrations"],
     enabled: !!id,
+    ...LIVE_REFRESH,
   });
 
   const leadInsightsQuery = useQuery<LeadInsightsResponse>({
     queryKey: [`/api/webinars/${id}/lead-insights?limit=50&offset=${leadPage * 50}`],
     enabled: !!id,
+    ...LIVE_REFRESH,
   });
   const leadDetailQuery = useQuery<LeadInsightDetail>({
     queryKey: ["/api/webinars", id, "registrations", selectedLead?.registrationId, "insights"],
     enabled: !!id && !!selectedLead?.registrationId,
+    ...LIVE_REFRESH,
   });
 
   const { data: tips } = useQuery<Tip[]>({
@@ -1471,6 +1500,7 @@ export default function AdminWebinarDetail() {
   const { data: analytics } = useQuery<AnalyticsResponse>({
     queryKey: ["/api/webinars", id, "analytics"],
     enabled: !!id,
+    ...LIVE_REFRESH,
   });
 
   const sessionRegistrationCountsQuery = useQuery<SessionRegistrationCountsDto>({
@@ -1483,8 +1513,9 @@ export default function AdminWebinarDetail() {
   });
 
   const funnelQuery = useQuery<FunnelAnalyticsResponse>({
-    queryKey: [`/api/webinars/${id}/funnel-analytics?from=${encodeURIComponent(funnelFrom)}&to=${encodeURIComponent(funnelTo)}`],
+    queryKey: [`/api/webinars/${id}/funnel-analytics?from=${encodeURIComponent(localDayBoundary(funnelFrom, false))}&to=${encodeURIComponent(localDayBoundary(funnelTo, true))}`],
     enabled: !!id && !!funnelFrom && !!funnelTo,
+    ...LIVE_REFRESH,
   });
 
   const { data: webinarSessions } = useQuery<Array<{ id: string; scheduledStart: string; status: string }>>({

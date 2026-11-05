@@ -146,7 +146,7 @@ import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCo
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
 import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
 import { optionalRegistrationEnrichment } from "./externalJourneySafety";
-import { externalJourneySettings } from "@shared/schema";
+import { externalJourneySettings, type Webinar } from "@shared/schema";
 import { externalJourneySettingsSchema } from "@shared/externalJourneys";
 import {
   isAcceptingWork,
@@ -344,6 +344,36 @@ async function verifiedWebinarVideo(
     vimeoUrl: parsedUrl.data,
     videoDuration: Number.isInteger(input.videoDuration) ? Number(input.videoDuration) : 0,
   };
+}
+
+// Many webinars were saved with length 0 (a Bunny video still processing, or a
+// Vimeo link without minutes). Analytics read the real length from the source
+// instead. It is not written back: saving it would relist the course.
+const videoDurationCache = new Map<string, { seconds: number; at: number }>();
+async function effectiveVideoDuration(
+  webinar: Pick<Webinar, "id" | "userId" | "videoDuration" | "videoProvider" | "videoAssetId" | "vimeoUrl">,
+): Promise<number> {
+  if ((webinar.videoDuration ?? 0) > 0) return webinar.videoDuration!;
+  const cached = videoDurationCache.get(webinar.id);
+  if (cached && Date.now() - cached.at < (cached.seconds > 0 ? 60 * 60_000 : 10 * 60_000)) return cached.seconds;
+  let seconds = 0;
+  try {
+    if (webinar.videoProvider === "bunny" && webinar.videoAssetId && webinar.userId) {
+      seconds = (await resolveReadyOwnedVideoAsset(webinar.userId, webinar.videoAssetId))?.durationSeconds ?? 0;
+    } else if (webinar.vimeoUrl && /^https:\/\/(?:www\.|player\.)?vimeo\.com\//i.test(webinar.vimeoUrl)) {
+      const response = await fetch(`https://vimeo.com/api/oembed.json?url=${encodeURIComponent(webinar.vimeoUrl)}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.ok) {
+        const body = await response.json() as { duration?: unknown };
+        if (typeof body.duration === "number" && body.duration > 0) seconds = Math.round(body.duration);
+      }
+    }
+  } catch {
+    seconds = 0;
+  }
+  videoDurationCache.set(webinar.id, { seconds, at: Date.now() });
+  return seconds;
 }
 
 async function verifyOwnedLandingBunnyVideos(userId: string, blocks: unknown) {
@@ -3035,7 +3065,7 @@ export async function registerRoutes(
       req.params.id as string,
       page.registrations.map(registration => registration.id),
     );
-    const result = buildLeadInsights(page.registrations, events, webinar);
+    const result = buildLeadInsights(page.registrations, events, webinar, await effectiveVideoDuration(webinar));
     res.json({
       webinarId: req.params.id,
       summary: result.summary,
@@ -3057,7 +3087,7 @@ export async function registerRoutes(
     const insight = scoreLeadInsight(
       registration,
       events,
-      webinar.videoDuration ?? 0,
+      await effectiveVideoDuration(webinar),
     );
     res.json({
       registrationId: insight.registrationId,
@@ -4331,6 +4361,12 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Webinar not found" });
       }
       const input = funnelEventInputSchema.parse(req.body);
+      // A valid watch token names the registration; it wins over anything else sent.
+      if (input.watchToken) {
+        const token = verifyWatchToken(input.watchToken);
+        if (token && token.webinarId === webinarId) input.registrationId = token.registrationId;
+        delete input.watchToken;
+      }
       if (input.eventType === "purchase" || input.eventType === "refund") {
         return res.status(403).json({ message: "Payment events must be recorded by a verified server-side payment integration" });
       }
@@ -4426,7 +4462,7 @@ export async function registerRoutes(
       res.json({
         webinarId,
         range: { from: from?.toISOString() ?? null, to: to?.toISOString() ?? null },
-        ...aggregateFunnelEvents(events, webinar.videoDuration || 0),
+        ...aggregateFunnelEvents(events, await effectiveVideoDuration(webinar)),
       });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -4458,7 +4494,7 @@ export async function registerRoutes(
         attended,
         attendanceRate: Math.round(attendanceRate * 10) / 10,
         avgWatchTime,
-        videoDuration: webinar.videoDuration || 0,
+        videoDuration: await effectiveVideoDuration(webinar),
       },
       analytics,
       registrations,
