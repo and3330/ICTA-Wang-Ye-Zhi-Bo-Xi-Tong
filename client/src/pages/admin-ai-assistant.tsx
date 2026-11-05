@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Bot, Database, MessageSquareWarning } from "lucide-react";
+import { ArrowLeft, Bot, Clock3, Database, MessageSquareWarning } from "lucide-react";
 import { AiLogsPanel } from "@/components/ai-assistant/logs-panel";
 import { AiSettingsPanel } from "@/components/ai-assistant/settings-panel";
 import { AiSourcesPanel } from "@/components/ai-assistant/sources-panel";
 import { AiTestQuestionPanel } from "@/components/ai-assistant/test-question-panel";
+import { TimedMessagesPanel } from "@/components/ai-assistant/timed-messages-panel";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { queryClient } from "@/lib/queryClient";
@@ -38,18 +39,20 @@ export default function AdminAiAssistant() {
           <p className="mt-2 text-sm leading-6 text-muted-foreground">設定符合品牌的助理、整理教學與產品知識，並從實際回覆紀錄修正不理想的答案。</p>
         </div>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="mb-6 grid h-auto w-full grid-cols-3 sm:w-auto">
+          <TabsList className="mb-6 grid h-auto w-full grid-cols-2 sm:w-auto sm:grid-cols-4">
             <TabsTrigger className="gap-2 py-2.5" value="settings"><Bot className="hidden h-4 w-4 sm:block" />人設與回覆</TabsTrigger>
             <TabsTrigger className="gap-2 py-2.5" value="sources"><Database className="hidden h-4 w-4 sm:block" />知識資料</TabsTrigger>
             <TabsTrigger className="gap-2 py-2.5" value="logs"><MessageSquareWarning className="hidden h-4 w-4 sm:block" />回覆紀錄</TabsTrigger>
+            <TabsTrigger className="gap-2 py-2.5" value="timed-materials"><Clock3 className="hidden h-4 w-4 sm:block" />定時素材</TabsTrigger>
           </TabsList>
-          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className={`grid items-start gap-6 ${tab === "timed-materials" ? "" : "lg:grid-cols-[minmax(0,1fr)_340px]"}`}>
             <div className="min-w-0">
               <TabsContent value="settings" className="mt-0"><AiSettingsPanel webinarId={id} /></TabsContent>
               <TabsContent value="sources" className="mt-0"><AiSourcesPanel webinarId={id} /></TabsContent>
               <TabsContent value="logs" className="mt-0"><AiLogsPanel webinarId={id} onKnowledgeChanged={refreshKnowledge} /></TabsContent>
+              <TabsContent value="timed-materials" className="mt-0"><TimedMessagesPanel webinarId={id} /></TabsContent>
             </div>
-            <AiTestQuestionPanel webinarId={id} />
+            {tab !== "timed-materials" && <AiTestQuestionPanel webinarId={id} />}
           </div>
         </Tabs>
       </main>

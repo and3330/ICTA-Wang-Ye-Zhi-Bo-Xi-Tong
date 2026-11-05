@@ -1398,6 +1398,7 @@ export default function AdminWebinarDetail() {
 
   const { data: scheduledMessages } = useQuery<ScheduledMessage[]>({
     queryKey: ["/api/webinars", id, "scheduled-messages"],
+    select: messages => messages.filter(message => message.messageType !== "assistant"),
     enabled: !!id,
   });
 

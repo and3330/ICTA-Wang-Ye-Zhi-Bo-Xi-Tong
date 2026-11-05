@@ -328,10 +328,18 @@ export const scheduledMessages = pgTable("scheduled_messages", {
   fakeUserId: varchar("fake_user_id").references(() => fakeUsers.id),
   message: text("message").notNull(),
   triggerTime: integer("trigger_time").notNull(), // seconds from video start
-  messageType: text("message_type").notNull().default("chat"), // chat, like, reaction
+  messageType: text("message_type").notNull().default("chat"), // chat, like, reaction, assistant (official timed materials)
 });
 
-export const insertScheduledMessageSchema = createInsertSchema(scheduledMessages).omit({ id: true });
+export const insertScheduledMessageSchema = createInsertSchema(scheduledMessages).omit({ id: true }).extend({
+  message: z.string().trim().min(1).max(2000),
+  triggerTime: z.number().int().min(0),
+  messageType: z.enum(["chat", "like", "reaction", "assistant"]).default("chat"),
+}).superRefine((value, context) => {
+  if (value.messageType !== "assistant") return;
+  if (value.fakeUserId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["fakeUserId"], message: "小幫手資料不能使用模擬觀眾身分" });
+  if (value.triggerTime > 86400) context.addIssue({ code: z.ZodIssueCode.custom, path: ["triggerTime"], message: "發送時間不能超過 24 小時" });
+});
 export type InsertScheduledMessage = z.infer<typeof insertScheduledMessageSchema>;
 export type ScheduledMessage = typeof scheduledMessages.$inferSelect;
 

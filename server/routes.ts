@@ -3136,6 +3136,12 @@ export async function registerRoutes(
         message: z.string().trim().min(1).max(2000).optional(),
         triggerTime: z.number().int().min(0).optional(),
       }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required").parse(req.body);
+      const existing = (await storage.getScheduledMessagesByWebinar(req.params.id as string))
+        .find(message => message.id === req.params.msgId);
+      if (!existing) return res.status(404).json({ message: "Scheduled message not found" });
+      if (existing.messageType === "assistant" && (patch.fakeUserId || (patch.triggerTime ?? 0) > 86400)) {
+        return res.status(400).json({ message: "小幫手資料不可使用模擬觀眾身分，發送時間不能超過 24 小時" });
+      }
       if (patch.fakeUserId) {
         const belongs = (await storage.getFakeUsersByWebinar(req.params.id as string))
           .some((fakeUser) => fakeUser.id === patch.fakeUserId);
@@ -4574,6 +4580,7 @@ export async function registerRoutes(
       for (const msg of sourceMessages) {
         await storage.createScheduledMessage({
           webinarId: newWebinar.id,
+          messageType: msg.messageType === "assistant" ? "assistant" : "chat",
           fakeUserId: fakeUserIdMap.get(msg.fakeUserId || "") || msg.fakeUserId || "",
           message: msg.message,
           triggerTime: msg.triggerTime,

@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { collectScheduledChat } from "@/lib/scheduled-chat";
+import { ChatMaterialText } from "@/components/chat-material-text";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -163,7 +165,7 @@ export default function EmbedWebinar() {
             const localOnly = prev.filter(m => {
               const localId = String(m.id);
               if (historyIds.has(m.id)) return false;
-              if (localId.startsWith("sm_")) return true;
+              if (localId.startsWith("sm_") || localId.startsWith("scheduled_")) return true;
               if (localId.startsWith("local-")) {
                 return !history.some(h => h.senderType === "viewer" && h.message === m.message);
               }
@@ -300,23 +302,9 @@ export default function EmbedWebinar() {
   }, [id, isJoined, currentTime]);
 
   useEffect(() => {
-    if (!isPlaying || !scheduledMessages || !fakeUsers) return;
-    scheduledMessages.forEach(sm => {
-      if (currentTime >= sm.triggerTime && !shownMessagesRef.current.has(sm.id)) {
-        shownMessagesRef.current.add(sm.id);
-        const fu = fakeUsers.find(f => f.id === sm.fakeUserId);
-        setMessages(prev => [...prev, {
-          id: `sm_${sm.id}`,
-          webinarId: id!,
-          sessionId: "system",
-          senderName: fu?.name || "觀眾",
-          senderType: "scheduled",
-          message: sm.message,
-          sentAt: new Date(),
-          isPrivate: false,
-        } as ChatMessage]);
-      }
-    });
+    if (!scheduledMessages || !id) return;
+    const due = collectScheduledChat(scheduledMessages, currentTime, isPlaying, shownMessagesRef.current, id, fakeUsers);
+    if (due.length) setMessages(prev => [...prev, ...due]);
   }, [currentTime, isPlaying, scheduledMessages, fakeUsers, id]);
 
   // Same rule as the main room: a CTA without an end time stays to the end.
@@ -598,7 +586,7 @@ export default function EmbedWebinar() {
             {messages.map((msg, i) => (
               <div key={msg.id || i} className="text-sm">
                 <span className="font-medium text-primary mr-1">{msg.senderName}</span>
-                <span className="text-foreground">{msg.message}</span>
+                <span className="text-foreground">{msg.senderType === "assistant" ? <ChatMaterialText text={msg.message} /> : msg.message}</span>
               </div>
             ))}
             <div ref={chatEndRef} />

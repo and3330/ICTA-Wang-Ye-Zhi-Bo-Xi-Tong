@@ -44,6 +44,7 @@ test.afterAll(async () => {
     await db.delete(schema.registrationIdentityKeys).where(eq(schema.registrationIdentityKeys.webinarId, webinarId));
     await db.delete(schema.registrations).where(eq(schema.registrations.webinarId, webinarId));
     await db.delete(schema.chatMessages).where(eq(schema.chatMessages.webinarId, webinarId));
+    await db.delete(schema.scheduledMessages).where(eq(schema.scheduledMessages.webinarId, webinarId));
     await db.delete(schema.webinarSessions).where(eq(schema.webinarSessions.webinarId, webinarId));
     await db.delete(schema.webinarLandingPages).where(eq(schema.webinarLandingPages.webinarId, webinarId));
     await db.delete(schema.webinars).where(eq(schema.webinars.id, webinarId));
@@ -88,6 +89,56 @@ test("repeat email signups still respect the atomic monthly registration limit",
   expect(admitted).toHaveLength(2);
   expect(results.filter(r => r === null)).toHaveLength(1);
   expect(new Set(admitted.map(r => r!.id)).size).toBe(2);
+});
+
+test("owner can create, persist, edit and delete timed assistant materials in the UI", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("h1").first().waitFor();
+  const login = await page.request.post("/api/admin/login", { data: { username, password } });
+  expect(login.status()).toBe(200);
+  // Use normal SPA navigation after legacy test sign-in. A direct protected
+  // document request invokes the unrelated Clerk handshake in development.
+  await page.evaluate(path => {
+    history.pushState({}, "", path);
+    dispatchEvent(new PopStateEvent("popstate"));
+  }, `/admin/webinar/${webinarId}/ai`);
+  await page.getByRole("tab", { name: "定時素材" }).click();
+  await page.getByRole("button", { name: "新增素材" }).click();
+  await page.getByLabel("影片播放時間", { exact: true }).fill("1:30");
+  await page.getByLabel("聊天室文字", { exact: true }).fill("這是本場講義");
+  await page.getByLabel("素材連結（選填）", { exact: true }).fill("https://example.com/handout");
+  const saved = page.waitForResponse(r => r.url().endsWith("/scheduled-messages") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "建立定時素材", exact: true }).click();
+  const created = await saved;
+  expect(created.status()).toBe(200);
+  const material = await created.json();
+  expect(material.messageType).toBe("assistant");
+  expect(material.triggerTime).toBe(90);
+  expect(material.fakeUserId).toBeNull();
+  await page.getByRole("tab", { name: "人設與回覆" }).click();
+  await page.getByRole("tab", { name: "定時素材" }).click();
+  const persisted = await page.request.get(`/api/webinars/${webinarId}/scheduled-messages`);
+  expect((await persisted.json()).some((m: any) => m.id === material.id && m.message === material.message)).toBe(true);
+  await expect(page.getByText("這是本場講義", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "編輯 1:30 定時素材", exact: true }).click();
+  await expect(page.getByLabel("完整聊天室訊息", { exact: true })).toHaveValue("這是本場講義\nhttps://example.com/handout");
+  await page.getByLabel("影片播放時間", { exact: true }).fill("2:00");
+  const patched = page.waitForResponse(r => r.url().endsWith(material.id) && r.request().method() === "PATCH");
+  await page.getByRole("button", { name: "儲存修改", exact: true }).click();
+  expect((await patched).status()).toBe(200);
+  // Public API sees only this webinar's configuration; updates cannot turn a
+  // material into a simulated viewer or move it to another webinar.
+  const impersonation = await page.request.patch(`/api/webinars/${webinarId}/scheduled-messages/${material.id}`, { data: { fakeUserId: randomUUID() } });
+  expect(impersonation.status()).toBe(400);
+  const move = await page.request.patch(`/api/webinars/${webinarId}/scheduled-messages/${material.id}`, { data: { webinarId: randomUUID() } });
+  expect(move.status()).toBe(400);
+  await page.getByRole("button", { name: "刪除 2:00 定時素材", exact: true }).click();
+  const removed = page.waitForResponse(r => r.url().endsWith(material.id) && r.request().method() === "DELETE");
+  await page.getByRole("button", { name: "確認刪除", exact: true }).click();
+  expect((await removed).status()).toBe(200);
+  await expect(page.getByRole("button", { name: "刪除 2:00 定時素材", exact: true })).toHaveCount(0);
+  const rows = await db.select().from(schema.scheduledMessages).where(eq(schema.scheduledMessages.id, material.id));
+  expect(rows).toHaveLength(0);
 });
 
 for (const width of [390, 900]) {

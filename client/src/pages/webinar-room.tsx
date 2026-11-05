@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { collectScheduledChat } from "@/lib/scheduled-chat";
+import { ChatMaterialText } from "@/components/chat-material-text";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -283,27 +285,9 @@ export default function WebinarRoom() {
   }, [id, visibleCtas, liveCtas]);
   
   useEffect(() => {
-    if (!scheduledMessages || !fakeUsers || !isPlaying) return;
-    
-    scheduledMessages.forEach((msg) => {
-      const msgKey = `msg_${msg.id}`;
-      if (currentTime >= msg.triggerTime && !shownMessagesRef.current.has(msgKey)) {
-        shownMessagesRef.current.add(msgKey);
-        const fakeUser = fakeUsers.find(u => u.id === msg.fakeUserId);
-        const senderName = fakeUser?.name || "觀眾";
-        const chatMsg: ChatMessage = {
-          id: `scheduled_${msg.id}_${Date.now()}`,
-          webinarId: id!,
-          sessionId: null,
-          senderName,
-          message: msg.message,
-          senderType: "scheduled",
-          sentAt: new Date(),
-          isPrivate: false
-        };
-        setMessages((prev) => [...prev, chatMsg]);
-      }
-    });
+    if (!scheduledMessages || !id) return;
+    const due = collectScheduledChat(scheduledMessages, currentTime, isPlaying, shownMessagesRef.current, id, fakeUsers);
+    if (due.length) setMessages(prev => [...prev, ...due]);
   }, [currentTime, scheduledMessages, fakeUsers, isPlaying, id]);
   
   // A viewer who joins late or seeks forward sees only a tip or poll whose
@@ -998,7 +982,8 @@ export default function WebinarRoom() {
               )}
               {messages.map((msg, index) => {
                 const isMe = msg.senderName === nickname && msg.senderType === "viewer";
-                const isHost = msg.senderType === "host";
+                const isAssistant = msg.senderType === "assistant";
+                const isHost = msg.senderType === "host" || isAssistant;
                 const isScheduled = msg.senderType === "scheduled";
                 const initial = msg.senderName?.charAt(0)?.toUpperCase() || "?";
 
@@ -1025,7 +1010,7 @@ export default function WebinarRoom() {
                           isHost ? "text-red-500" : isScheduled ? "text-blue-500" : "text-muted-foreground"
                         }`}>
                           {msg.senderName}
-                          {isHost && " ・主辦"}
+                          {isAssistant ? " ・定時資料" : isHost ? " ・主辦" : ""}
                         </span>
                       )}
                       <div className={`inline-block px-3 py-2 text-[13px] leading-relaxed break-words ${
@@ -1035,7 +1020,7 @@ export default function WebinarRoom() {
                           ? "bg-red-500/10 dark:bg-red-500/20 text-foreground rounded-2xl rounded-bl-sm"
                           : "bg-muted text-foreground rounded-2xl rounded-bl-sm"
                       }`}>
-                        {msg.message}
+                        {isAssistant ? <ChatMaterialText text={msg.message} /> : msg.message}
                       </div>
                     </div>
                   </div>
