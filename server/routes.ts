@@ -66,7 +66,7 @@ import {
 } from "./webinarLandingPages";
 import { db } from "./db";
 import { and, eq, inArray, isNull, sql, lte, or } from "drizzle-orm";
-import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getWebinarKnowledge } from "./aiGenerator";
+import { generateInteractions, generateEmailSequence, generateSocialPosts, generateWebinarPlan, getInteractionTranscript, getWebinarKnowledge } from "./aiGenerator";
 
 import bcrypt from "bcryptjs";
 import { clerkClient, getAuth } from "@clerk/express";
@@ -5145,7 +5145,7 @@ export async function registerRoutes(
       const replace = req.body?.replace === true;
       // 逐字稿來源：優先用請求帶的 transcript（含時間軸），否則用已存知識文檔
       let transcript = typeof req.body?.transcript === "string" ? req.body.transcript : "";
-      if (!transcript.trim()) transcript = await getWebinarKnowledge(webinarId);
+      if (!transcript.trim()) transcript = await getInteractionTranscript(webinarId);
 
       const result = await generateInteractions(webinar.title, transcript, webinar.videoDuration || 0, goal);
       if (!result) {

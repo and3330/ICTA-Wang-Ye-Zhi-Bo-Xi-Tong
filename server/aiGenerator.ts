@@ -1,3 +1,4 @@
+import { hasTimedLines, lastTimedSecond, sampleTranscript } from "./timedTranscript";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { storage } from "./storage";
@@ -199,18 +200,31 @@ export async function generateInteractions(
   goal: string,
 ): Promise<GeneratedInteractions | null> {
   try {
-    let context = (transcript || "").trim();
-    if (context.length > MAX_CONTEXT_CHARS) context = context.slice(0, MAX_CONTEXT_CHARS);
+    const fullContext = (transcript || "").trim();
+    const timed = hasTimedLines(fullContext);
+    // Without a set video length, the last subtitle time is the best estimate.
+    if (!(durationSec > 0) && timed) durationSec = lastTimedSecond(fullContext) + 30;
+    const context = sampleTranscript(fullContext, MAX_CONTEXT_CHARS);
 
     const durHint = durationSec > 0
       ? `影片總長度約 ${durationSec} 秒（${Math.round(durationSec / 60)} 分鐘）。所有 triggerTime / startTime 必須介於 0 到 ${durationSec} 之間。`
       : `若無法判斷影片長度，triggerTime 請以逐字稿時間軸（秒）為準。`;
+    const timingRule = timed
+      ? [
+        `逐字稿每行開頭的 [分:秒] 或 [時:分:秒] 是講師講到那句話的影片時間。所有 triggerTime / startTime 一律以秒為單位，並且必須對準相關內容那一行的時間（例如 [12:34] = 754 秒，[1:02:03] = 3723 秒），不可自行平均分配。`,
+        `messages：放在對應那句話之後 5-40 秒，內容要回應當下講的東西。`,
+        `polls、tips：放在講師講到該主題之後 10-60 秒。`,
+        `ctas：放在講師開始介紹課程、方案、優惠或報名方式的那一行時間。`,
+        `逐字稿可能經過抽樣，行與行之間有省略；仍以每行標示的時間為準。`,
+      ].join("\n")
+      : ``;
 
     const system = [
       `你是線上研討會「模擬直播」的互動設計專家。根據逐字稿，自動生成讓直播間感覺真實、熱絡並促進銷售轉換的互動內容。`,
       `研討會主題：「${webinarTitle}」。`,
       goal && goal.trim() ? `主辦方目標 / 補充：${goal.trim()}` : ``,
       durHint,
+      timingRule,
       `請生成：`,
       `1. fakeUsers：8-12 個自然的觀眾暱稱（繁體中文為主，可少量英文名），像真實台灣觀眾。`,
       `2. messages：15-30 則假觀眾聊天訊息，分散在整段影片時間軸，name 必須出自 fakeUsers，內容口語、簡短、有溫度（含提問、附和、稱讚、分享心得），對應當下逐字稿內容。`,
@@ -222,7 +236,7 @@ export async function generateInteractions(
     ].filter(Boolean).join("\n");
 
     const userMsg = context
-      ? `以下是研討會逐字稿（可能含時間軸）：\n\n${context}`
+      ? `以下是研討會逐字稿${timed ? "（每行開頭為影片時間）" : "（可能含時間軸）"}：\n\n${context}`
       : `（沒有逐字稿，請依研討會主題與目標合理推估時間軸生成互動內容。）`;
 
     const raw = await requestAnthropicJson(system, userMsg, 8192);
@@ -387,6 +401,17 @@ export async function generateSocialPosts(
 }
 
 // 取得研討會知識內容（逐字稿 / 文件）供 email & social 生成參考
+/**
+ * The transcript for placing interactions: subtitle documents (which carry
+ * times) when there are any, otherwise all knowledge documents.
+ */
+export async function getInteractionTranscript(webinarId: string): Promise<string> {
+  const docs = await storage.getWebinarDocuments(webinarId);
+  const timedDocs = docs.filter((d) => hasTimedLines(d.content || ""));
+  if (timedDocs.length) return timedDocs.map((d) => d.content).join("\n");
+  return docs.map((d) => `【${d.title}】\n${d.content}`).join("\n\n---\n\n");
+}
+
 export async function getWebinarKnowledge(webinarId: string): Promise<string> {
   const docs = await storage.getWebinarDocuments(webinarId);
   return docs.map((d) => `【${d.title}】\n${d.content}`).join("\n\n---\n\n");

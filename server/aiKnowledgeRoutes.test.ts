@@ -118,13 +118,13 @@ test("HTML extraction excludes active and navigational content", () => {
   assert.doesNotMatch(text, /alert|menu|bad/);
 });
 
-test("file extraction supports text formats and strips subtitle timing", () => {
+test("file extraction supports text formats and keeps subtitle start times", () => {
   const extracted = extractKnowledgeFile({
     originalname: "lesson.srt",
     buffer: Buffer.from("1\n00:00:01,000 --> 00:00:03,000\n第一句\n1984\n\n2\n00:00:04,000 --> 00:00:06,000\n第二句\n"),
   });
   assert.equal(extracted.title, "lesson");
-  assert.equal(extracted.content, "第一句\n1984\n第二句");
+  assert.equal(extracted.content, "[0:01] 第一句 1984\n[0:04] 第二句");
   assert.throws(
     () => extractKnowledgeFile({ originalname: "archive.zip", buffer: Buffer.from("x") }),
     /不支援/,
