@@ -3039,6 +3039,22 @@ export async function registerRoutes(
     }
   });
 
+  // Bulk archive / restore / delete from the registrations list.
+  app.post("/api/webinars/:id/registrations/bulk", requireWebinarOwner, async (req, res) => {
+    const parsed = z.object({
+      action: z.enum(["archive", "unarchive", "delete"]),
+      ids: z.array(z.string().min(1).max(64)).min(1).max(1000),
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "請選擇要處理的報名資料" });
+    try {
+      const ids = Array.from(new Set(parsed.data.ids));
+      const updated = await storage.bulkUpdateRegistrations(req.params.id as string, ids, parsed.data.action);
+      res.json({ updated });
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || "批次處理失敗" });
+    }
+  });
+
   app.get("/api/webinars/:id/registrations", requireWebinarOwner, async (req, res) => {
     const registrations = await storage.getRegistrationsByWebinar(req.params.id as string);
     res.json(registrations);
@@ -4335,6 +4351,14 @@ export async function registerRoutes(
     totalWatched: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
   });
 
+  // Where this registration stopped watching, from whichever device saved last.
+  app.get("/api/webinars/:id/progress", requirePublishedOrOwner, async (req, res) => {
+    const registration = await progressViewer(req);
+    if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
+    const progress = await storage.getLatestViewerProgressForRegistration(req.params.id as string, registration.id);
+    res.json({ lastPosition: progress?.lastPosition || 0, updatedAt: progress?.updatedAt || null });
+  });
+
   app.get("/api/webinars/:id/progress/:sessionId", requirePublishedOrOwner, async (req, res) => {
     const registration = await progressViewer(req);
     if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
@@ -4550,7 +4574,7 @@ export async function registerRoutes(
       // time (reminders and watch window). Only unclaimed sessions can move.
       const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
         .from(registrations)
-        .where(and(eq(registrations.webinarId, webinarId), eq(registrations.selectedSession, existing.scheduledStart)));
+        .where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt), eq(registrations.selectedSession, existing.scheduledStart)));
       if (count > 0) {
         return res.status(409).json({ message: `已有 ${count} 人報名這個場次，不能改時間。請新增一個場次，再通知已報名的觀眾。` });
       }
@@ -4576,7 +4600,7 @@ export async function registerRoutes(
       if (req.query.force !== "1") {
         const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
           .from(registrations)
-          .where(and(eq(registrations.webinarId, webinarId), eq(registrations.selectedSession, existing.scheduledStart)));
+          .where(and(eq(registrations.webinarId, webinarId), isNull(registrations.deletedAt), eq(registrations.selectedSession, existing.scheduledStart)));
         if (count > 0) {
           return res.status(409).json({ message: `已有 ${count} 人報名這個場次`, registrations: count });
         }

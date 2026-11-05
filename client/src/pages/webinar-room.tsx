@@ -1,4 +1,5 @@
 import { WaitingLobby } from "@/components/waiting-lobby";
+import { pickResumePosition, resumeStorageKey } from "@/lib/resume-position";
 import { useRoomOpenSoon } from "@/lib/room-open";
 import { ctaButtonAppearance } from "@/lib/cta-style";
 import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
@@ -254,10 +255,21 @@ export default function WebinarRoom() {
         { positionSeconds: currentTime, metadata: { reason: "navigate" } },
         { beacon: true },
       );
+      if (watchToken && currentTime > 0) {
+        try {
+          void fetch(`/api/webinars/${id}/progress`, {
+            method: "POST",
+            keepalive: true,
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ viewerSessionId: sessionId, lastPosition: currentTime, totalWatched: currentTime, watchToken }),
+          }).catch(() => {});
+        } catch {}
+      }
     };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
-  }, [id, isJoined, currentTime]);
+  }, [id, isJoined, currentTime, watchToken, sessionId]);
 
   useEffect(() => {
     if (!isJoined || !isPlaying) return;
@@ -269,7 +281,7 @@ export default function WebinarRoom() {
         lastPosition: latestPosition,
         totalWatched: latestPosition,
       });
-    }, 30000);
+    }, 10000);
 
     return () => {
       if (progressSaveRef.current) clearInterval(progressSaveRef.current);
@@ -573,40 +585,44 @@ export default function WebinarRoom() {
     url: `https://player.vimeo.com/video/${extractVimeoId(effectiveVimeoUrl)}?${extractVimeoHash(effectiveVimeoUrl) ? `h=${extractVimeoHash(effectiveVimeoUrl)}&` : ""}autoplay=0&title=0&byline=0&portrait=0&controls=0`,
   } : undefined);
 
-  // The "live" position is the time since this viewer started watching this
-  // session. The key is scoped to the selected session so a viewer coming back
-  // for a later session (or a replay days later) starts again instead of being
-  // thrown to the last seconds of the video.
-  const liveStartKey = `liveStart_${id}_${sessionId}_${watchState?.selectedSession || watchState?.waitUntil || "on-demand"}`;
+  // A dropped connection, reload or switch of device picks the video up where
+  // this registration stopped. Signing up again is a new registration and
+  // starts from the beginning.
+  const resumeKey = watchState?.registrationId && id ? resumeStorageKey(id, watchState.registrationId) : null;
 
   const handlePlayerReady = (player: any) => {
     playerRef.current = player;
     setPlayerReady(true);
+    if (!resumeKey) return;
+    let local = 0;
     try {
-      localStorage.removeItem(`liveStart_${id}_${sessionId}`); // pre-fix key, never expired
-      const startedAt = Number(localStorage.getItem(liveStartKey) || 0);
-      if (!startedAt) return; // first visit: the clock starts on first play
-      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      if (elapsed <= 1) return;
-      Promise.resolve(player.getDuration()).then((duration: number) => {
-        if (duration > 0 && elapsed >= duration - 2) {
-          // The earlier viewing already finished; watch again from the start.
-          localStorage.removeItem(liveStartKey);
-          return;
-        }
-        return player.setCurrentTime(elapsed);
-      }).catch(() => {});
+      Object.keys(localStorage).filter((key) => key.startsWith(`liveStart_${id}_`)).forEach((key) => localStorage.removeItem(key)); // old wall-clock model
+      local = Number(localStorage.getItem(resumeKey) || 0);
     } catch {}
+    const serverPosition = watchToken
+      ? fetch(`/api/webinars/${id}/progress`, { headers: { "X-Watch-Token": watchToken }, credentials: "include" })
+          .then((response) => (response.ok ? response.json() : null))
+          .then((body) => Number(body?.lastPosition || 0))
+          .catch(() => 0)
+      : Promise.resolve(0);
+    Promise.all([serverPosition, Promise.resolve(player.getDuration()).catch(() => 0)])
+      .then(([server, duration]) => {
+        const position = pickResumePosition({ local, server, duration: Number(duration) || 0 });
+        if (position > 0) return player.setCurrentTime(position);
+      })
+      .catch(() => {});
   };
 
   const handlePlayerPlay = () => {
     setIsPlaying(true);
-    try {
-      if (!localStorage.getItem(liveStartKey)) {
-        localStorage.setItem(liveStartKey, String(Date.now() - currentTimeRef.current * 1000));
-      }
-    } catch {}
   };
+
+  // Remember the place every second on this device, so even a sudden drop
+  // between server saves resumes at the right spot.
+  useEffect(() => {
+    if (!resumeKey || currentTime <= 0) return;
+    try { localStorage.setItem(resumeKey, String(currentTime)); } catch {}
+  }, [resumeKey, currentTime]);
 
   const formatStartTime = (date: Date | string) => {
     return new Date(date).toLocaleString("zh-TW", {
