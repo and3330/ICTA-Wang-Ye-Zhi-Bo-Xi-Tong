@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
-import { Heart, Send, ExternalLink, Loader2, Play } from "lucide-react";
-import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser } from "@shared/schema";
+import { Heart, Send, ExternalLink, Loader2, Play, Info, X, Star, MessageCircleQuestion } from "lucide-react";
+import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser, Tip, Poll, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
 import { isPlaybackPermitted, resolveViewerAccessState } from "@/lib/watch-access-state";
@@ -18,6 +18,8 @@ import { ProviderPlayer } from "@/components/provider-player";
 import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
+import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
+import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -58,6 +60,14 @@ export default function EmbedWebinar() {
   const [chatNotice, setChatNotice] = useState("");
   const [viewerCount, setViewerCount] = useState(1);
   const shownMessagesRef = useRef<Set<string>>(new Set());
+
+  const [visibleTip, setVisibleTip] = useState<Tip | null>(null);
+  const [activePoll, setActivePoll] = useState<ActivePoll | null>(null);
+  const [pollResults, setPollResults] = useState<Record<number, number> | null>(null);
+  const [videoEnded, setVideoEnded] = useState(false);
+  const [showSurvey, setShowSurvey] = useState(false);
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
+  const [showQa, setShowQa] = useState(false);
 
   const { data: webinar, isLoading } = useQuery<Webinar>({
     queryKey: ["/api/webinars", id],
@@ -103,6 +113,31 @@ export default function EmbedWebinar() {
   const { data: fakeUsers } = useQuery<FakeUser[]>({
     queryKey: ["/api/webinars", id, "fake-users"],
     enabled: !!id,
+  });
+
+  const { data: tips } = useQuery<Tip[]>({
+    queryKey: ["/api/webinars", id, "tips"],
+    enabled: !!id && isJoined,
+  });
+
+  const { data: polls } = useQuery<Poll[]>({
+    queryKey: ["/api/webinars", id, "polls"],
+    enabled: !!id && isJoined,
+  });
+
+  const { data: feedbackSurvey } = useQuery<FeedbackSurvey | null>({
+    queryKey: ["/api/webinars", id, "feedback-survey"],
+    enabled: !!id && isJoined,
+  });
+
+  const showTip = (tip: Tip, seconds: number) => {
+    setVisibleTip(tip);
+    setTimeout(() => setVisibleTip(current => (current?.id === tip.id ? null : current)), seconds * 1000);
+  };
+  useTimedItems(tips, currentTime, isPlaying, DEFAULT_TIP_SECONDS, showTip);
+  useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, seconds) => {
+    setActivePoll({ poll, seconds });
+    setPollResults(null);
   });
 
   useEffect(() => {
@@ -166,6 +201,16 @@ export default function EmbedWebinar() {
           }
           break;
         }
+        case "liveTip":
+          showTip(msg.data as Tip, msg.data.duration || DEFAULT_TIP_SECONDS);
+          break;
+        case "poll":
+          setActivePoll({ poll: msg.data, seconds: msg.data.duration || DEFAULT_POLL_SECONDS });
+          setPollResults(null);
+          break;
+        case "pollResults":
+          setPollResults(msg.data.results);
+          break;
       }
     };
 
@@ -269,15 +314,11 @@ export default function EmbedWebinar() {
     });
   }, [currentTime, isPlaying, scheduledMessages, fakeUsers, id]);
 
+  // Same rule as the main room: a CTA without an end time stays to the end.
   useEffect(() => {
-    if (!ctas || !isPlaying) return;
-    const visible = ctas.filter(cta => {
-      const start = cta.startTime || 0;
-      const end = cta.endTime || start + 300;
-      return currentTime >= start && currentTime <= end;
-    });
-    setVisibleCtas(visible);
-  }, [currentTime, ctas, isPlaying]);
+    if (!ctas) return;
+    setVisibleCtas(ctas.filter(cta => currentTime >= (cta.startTime || 0) && (!cta.endTime || currentTime <= cta.endTime)));
+  }, [currentTime, ctas]);
 
   useEffect(() => {
     if (!id) return;
@@ -319,6 +360,13 @@ export default function EmbedWebinar() {
 
   const sendLike = () => {
     wsRef.current?.send(JSON.stringify({ type: "like", data: { webinarId: id, sessionId } }));
+  };
+
+  const submitVote = (optionIndex: number) => {
+    const socket = wsRef.current;
+    if (!activePoll || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: "vote", data: { pollId: activePoll.poll.id, optionIndex, sessionId } }));
+    return true;
   };
 
   const getVimeoEmbedUrl = (url: string) => {
@@ -422,7 +470,12 @@ export default function EmbedWebinar() {
               onTimeUpdate={(seconds, duration) => { setCurrentTime(seconds); if (duration) setVideoDuration(duration); }}
               onPlay={() => { setIsPlaying(true); setPlayError(""); }}
               onPause={() => setIsPlaying(false)}
-              onEnded={() => { setIsPlaying(false); trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } }); }}
+              onEnded={() => {
+                setIsPlaying(false);
+                setVideoEnded(true);
+                trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } });
+                if (feedbackSurvey?.isActive && !surveySubmitted) setShowSurvey(true);
+              }}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center bg-muted p-4">
@@ -459,10 +512,28 @@ export default function EmbedWebinar() {
             </button>
           )}
         </div>
+        {visibleTip && (
+          <div className="absolute top-2 right-2 z-20 max-w-[70%] rounded-md bg-background/95 p-2 shadow-lg" data-testid="embed-tip-card">
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 flex-shrink-0 text-primary mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium">{visibleTip.title}</p>
+                {visibleTip.content && <p className="text-[11px] text-muted-foreground mt-0.5 break-words">{visibleTip.content}</p>}
+              </div>
+              <button type="button" aria-label="關閉提示" onClick={() => setVisibleTip(null)} className="text-muted-foreground">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        )}
+        {(visibleCtas.length > 0 || liveCtas.length > 0) && (
+        <div className="absolute bottom-2 left-2 right-2 z-10 flex flex-col items-center gap-1.5">
         {[...visibleCtas, ...liveCtas].map(cta => (
-          <div key={cta.id} className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-10">
             <Button
+              key={cta.id}
               size="sm"
+              variant={cta.style === "danger" ? "destructive" : cta.style === "secondary" ? "secondary" : "default"}
+              data-testid={`embed-cta-${cta.id}`}
               onClick={() => {
                 if (cta.offerId && id) {
                   if (!watchState?.registrationId) {
@@ -485,8 +556,9 @@ export default function EmbedWebinar() {
                 <ExternalLink className="h-3 w-3 mr-1" />
                 {cta.text}
             </Button>
-          </div>
         ))}
+        </div>
+        )}
       </FullscreenVideo>
 
       <div className="flex-1 flex flex-col min-h-0 border-t">
@@ -494,10 +566,24 @@ export default function EmbedWebinar() {
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className="text-xs">{viewerCount} 人觀看</Badge>
           </div>
-          <Button variant="ghost" size="sm" onClick={sendLike} data-testid="button-embed-like">
-            <Heart className="h-3 w-3 mr-1 text-red-500" />
-            {likeCount}
-          </Button>
+          <div className="flex items-center gap-1">
+            {videoEnded && feedbackSurvey?.isActive && !surveySubmitted && (
+              <Button variant="ghost" size="sm" onClick={() => setShowSurvey(true)} data-testid="button-embed-open-survey">
+                <Star className="h-3 w-3 mr-1" />
+                問卷
+              </Button>
+            )}
+            {watchToken && (
+              <Button variant="ghost" size="sm" onClick={() => setShowQa(true)} data-testid="button-embed-open-qa">
+                <MessageCircleQuestion className="h-3 w-3 mr-1" />
+                提問
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={sendLike} data-testid="button-embed-like">
+              <Heart className="h-3 w-3 mr-1 text-red-500" />
+              {likeCount}
+            </Button>
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
@@ -545,6 +631,20 @@ export default function EmbedWebinar() {
         }}
       />
       {checkoutError && <p className="border-t p-3 text-sm text-destructive" role="alert">{checkoutError}</p>}
+      <ViewerPollDialog
+        active={activePoll}
+        results={pollResults}
+        onVote={submitVote}
+        onClose={() => { setActivePoll(null); setPollResults(null); }}
+      />
+      <ViewerSurveyDialog
+        survey={feedbackSurvey}
+        open={showSurvey && !surveySubmitted}
+        onOpenChange={setShowSurvey}
+        watchToken={watchToken}
+        onSubmitted={() => setSurveySubmitted(true)}
+      />
+      {id && <ViewerQaDialog webinarId={id} watchToken={watchToken} open={showQa} onOpenChange={setShowQa} />}
     </div>
   );
 }

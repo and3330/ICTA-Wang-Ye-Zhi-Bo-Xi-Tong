@@ -1196,14 +1196,23 @@ export async function registerRoutes(
             const votePoll = await storage.getPoll(pollId);
             if (!votePoll || votePoll.webinarId !== currentWebinarId) break;
             
-            await storage.createPollVote({
-              pollId,
-              participantId: currentSessionId,
-              optionIndex
-            });
-            
+            const optionCount = Array.isArray(votePoll.options) ? votePoll.options.length : 0;
+            if (!Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= optionCount) break;
+
+            // Polls open on their own at the trigger time and can also be
+            // pushed by the host, so a viewer may see one twice: count one
+            // vote per viewer session.
+            let votes = await storage.getPollVotes(pollId);
+            if (!votes.some(v => v.participantId === currentSessionId)) {
+              await storage.createPollVote({
+                pollId,
+                participantId: currentSessionId,
+                optionIndex
+              });
+              votes = await storage.getPollVotes(pollId);
+            }
+
             // Calculate and send results to this voter only
-            const votes = await storage.getPollVotes(pollId);
             const results: Record<number, number> = {};
             votes.forEach(v => {
               results[v.optionIndex] = (results[v.optionIndex] || 0) + 1;
@@ -3969,13 +3978,28 @@ export async function registerRoutes(
   });
 
   // ============ Questions (Q&A) Routes ============
+  const VIEWER_QUESTION_MAX_LENGTH = 500;
+  const VIEWER_QUESTION_WINDOW_MS = 10 * 60 * 1000;
+  const VIEWER_QUESTION_LIMIT = 5;
+  // In memory is enough on the single Reserved VM; a restart only resets the window.
+  const viewerQuestionTimes = new Map<string, number[]>();
+  const admitViewerQuestion = (registrationId: string) => {
+    const now = Date.now();
+    const recent = (viewerQuestionTimes.get(registrationId) || []).filter(t => now - t < VIEWER_QUESTION_WINDOW_MS);
+    const admitted = recent.length < VIEWER_QUESTION_LIMIT;
+    if (admitted) recent.push(now);
+    viewerQuestionTimes.set(registrationId, recent);
+    return admitted;
+  };
+
   app.get("/api/webinars/:id/questions", requirePublishedOrOwner, async (req, res) => {
     const questionsList = await storage.getQuestionsByWebinar(req.params.id as string);
     const webinar = await storage.getWebinar(req.params.id as string);
     const isAdministrator = webinar ? await isWebinarAdministrator(webinar.userId, req.session?.userId) : false;
+    // Viewers see only answered public questions, without who asked them.
     res.json(isAdministrator ? questionsList : questionsList
-      .filter(question => question.isPublic)
-      .map(({ askerEmail: _email, registrationId: _registrationId, answeredBy: _answeredBy, ...safe }) => safe));
+      .filter(question => question.isPublic && question.answer)
+      .map(({ askerEmail: _email, askerName: _name, registrationId: _registrationId, answeredBy: _answeredBy, ...safe }) => safe));
   });
 
   app.get("/api/webinars/:id/questions/preset", requirePublishedOrOwner, async (req, res) => {
@@ -4002,6 +4026,14 @@ export async function registerRoutes(
         if (!viewerRegistration || viewerRegistration.webinarId !== req.params.id) {
           return res.status(401).json({ message: "Invalid or expired watch token" });
         }
+        const text = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+        if (!text || text.length > VIEWER_QUESTION_MAX_LENGTH) {
+          return res.status(400).json({ message: `問題需為 1 到 ${VIEWER_QUESTION_MAX_LENGTH} 個字` });
+        }
+        if (!admitViewerQuestion(viewerRegistration.id)) {
+          return res.status(429).json({ message: "發問太頻繁了，請稍後再試" });
+        }
+        req.body.question = text;
       }
       const input = { ...req.body };
       delete input.watchToken;

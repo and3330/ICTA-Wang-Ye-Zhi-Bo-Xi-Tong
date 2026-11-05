@@ -6,14 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Play } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Play, MessageCircleQuestion } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
@@ -25,6 +21,8 @@ import { ProviderPlayer } from "@/components/provider-player";
 import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
+import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
+import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
 
 interface WebSocketMessage {
   type: string;
@@ -67,10 +65,9 @@ export default function WebinarRoom() {
   const [liveCtas, setLiveCtas] = useState<CtaButton[]>([]);
   const [checkoutCtaId, setCheckoutCtaId] = useState<string | null>(null);
   
-  const [activePoll, setActivePoll] = useState<Poll | null>(null);
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
-  const [hasVoted, setHasVoted] = useState(false);
-  const [pollResults, setPollResults] = useState<Record<number, number>>({});
+  const [activePoll, setActivePoll] = useState<ActivePoll | null>(null);
+  const [pollResults, setPollResults] = useState<Record<number, number> | null>(null);
+  const [showQa, setShowQa] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
   const [chatConnected, setChatConnected] = useState(true);
@@ -79,13 +76,11 @@ export default function WebinarRoom() {
   const shownMessagesRef = useRef<Set<string>>(new Set());
   
   const [visibleTip, setVisibleTip] = useState<Tip | null>(null);
-  const shownTipsRef = useRef<Set<string>>(new Set());
 
   const [floatingHearts, setFloatingHearts] = useState<{ id: number; x: number }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   
   const [showSurvey, setShowSurvey] = useState(false);
-  const [surveyResponses, setSurveyResponses] = useState<Record<string, any>>({});
   const [surveySubmitted, setSurveySubmitted] = useState(false);
 
   const [waitingForStart, setWaitingForStart] = useState(false);
@@ -140,6 +135,11 @@ export default function WebinarRoom() {
     enabled: !!id && isJoined,
   });
 
+  const { data: polls } = useQuery<Poll[]>({
+    queryKey: ["/api/webinars", id, "polls"],
+    enabled: !!id && isJoined,
+  });
+
   const { data: feedbackSurvey } = useQuery<FeedbackSurvey>({
     queryKey: ["/api/webinars", id, "feedback-survey"],
     enabled: !!id && isJoined,
@@ -150,15 +150,6 @@ export default function WebinarRoom() {
     enabled: !!id && isJoined,
   });
 
-  const submitSurveyMutation = useMutation({
-    mutationFn: async (data: { surveyId: string; responses: Record<string, any> }) => {
-      return apiRequest("POST", "/api/feedback-responses", { ...data, watchToken });
-    },
-    onSuccess: () => {
-      setSurveySubmitted(true);
-      toast({ title: "感謝您的回饋！" });
-    },
-  });
 
   const saveProgressMutation = useMutation({
     mutationFn: async (data: { viewerSessionId: string; lastPosition: number; totalWatched: number }) => {
@@ -311,24 +302,18 @@ export default function WebinarRoom() {
     });
   }, [currentTime, scheduledMessages, fakeUsers, isPlaying, id]);
   
-  useEffect(() => {
-    if (!tips || !isPlaying) return;
-    
-    tips.forEach((tip) => {
-      const tipKey = `tip_${tip.id}`;
-      if (currentTime < tip.triggerTime || shownTipsRef.current.has(tipKey)) return;
-      shownTipsRef.current.add(tipKey);
-      // A viewer who joins late or seeks forward must not see every past tip at
-      // once: only a tip whose display window is still open is shown, and only
-      // for the part of the window that is left.
-      const remainingSeconds = tip.triggerTime + (tip.duration || 10) - currentTime;
-      if (remainingSeconds <= 0) return;
-      setVisibleTip(tip);
-      setTimeout(() => {
-        setVisibleTip((current) => current?.id === tip.id ? null : current);
-      }, remainingSeconds * 1000);
-    });
-  }, [currentTime, tips, isPlaying]);
+  // A viewer who joins late or seeks forward sees only a tip or poll whose
+  // display window is still open, for the part of the window that is left.
+  useTimedItems(tips, currentTime, isPlaying, DEFAULT_TIP_SECONDS, (tip, remainingSeconds) => {
+    setVisibleTip(tip);
+    setTimeout(() => {
+      setVisibleTip((current) => current?.id === tip.id ? null : current);
+    }, remainingSeconds * 1000);
+  });
+  useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, remainingSeconds) => {
+    setActivePoll({ poll, seconds: remainingSeconds });
+    setPollResults(null);
+  });
 
   useEffect(() => {
     if (!isJoined || !id || !sessionId) return;
@@ -357,10 +342,9 @@ export default function WebinarRoom() {
           setViewerCount(msg.data.count);
           break;
         case "poll":
-          setActivePoll(msg.data);
-          setHasVoted(false);
-          setSelectedOption(null);
-          setPollResults({});
+          // Pushed by the host from the control room.
+          setActivePoll({ poll: msg.data, seconds: msg.data.duration || DEFAULT_POLL_SECONDS });
+          setPollResults(null);
           break;
         case "pollResults":
           setPollResults(msg.data.results);
@@ -558,32 +542,19 @@ export default function WebinarRoom() {
     }, 1500);
   };
 
-  const submitVote = () => {
-    if (selectedOption === null || !wsRef.current || !activePoll) return;
-    wsRef.current.send(JSON.stringify({
+  const submitVote = (optionIndex: number) => {
+    const socket = wsRef.current;
+    if (!activePoll || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({
       type: "vote",
-      data: {
-        pollId: activePoll.id,
-        optionIndex: selectedOption,
-        sessionId
-      }
+      data: { pollId: activePoll.poll.id, optionIndex, sessionId },
     }));
-    setHasVoted(true);
+    return true;
   };
 
   const dismissPoll = () => {
     setActivePoll(null);
-    setHasVoted(false);
-    setPollResults({});
-    setSelectedOption(null);
-  };
-
-  const handleSurveySubmit = () => {
-    if (!feedbackSurvey) return;
-    submitSurveyMutation.mutate({
-      surveyId: feedbackSurvey.id,
-      responses: surveyResponses,
-    });
+    setPollResults(null);
   };
 
   const extractVimeoId = (url: string) => {
@@ -767,8 +738,6 @@ export default function WebinarRoom() {
       </div>
     );
   }
-
-  const surveyQuestions = feedbackSurvey?.questions as { id: string; type: string; question: string; options?: string[]; required: boolean }[] || [];
 
   const brandAccentStyle = brandSettings?.primaryColor ? { borderColor: brandSettings.primaryColor } : {};
   return (
@@ -969,6 +938,18 @@ export default function WebinarRoom() {
               </Badge>
             </div>
             <div className="flex items-center gap-1">
+              {watchToken && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowQa(true)}
+                  className="gap-1.5"
+                  data-testid="button-open-qa"
+                >
+                  <MessageCircleQuestion className="w-4 h-4" />
+                  <span className="text-xs">提問</span>
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -1109,140 +1090,20 @@ export default function WebinarRoom() {
         }}
       />
 
-      <Dialog open={!!activePoll && !hasVoted} onOpenChange={() => {}}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>投票</DialogTitle>
-            <DialogDescription>{activePoll?.question}</DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            <RadioGroup
-              value={selectedOption?.toString()}
-              onValueChange={(v) => setSelectedOption(parseInt(v))}
-            >
-              {(activePoll?.options as string[] || []).map((option, index) => (
-                <div key={index} className="flex items-center space-x-2">
-                  <RadioGroupItem value={index.toString()} id={`option-${index}`} />
-                  <Label htmlFor={`option-${index}`}>{option}</Label>
-                </div>
-              ))}
-            </RadioGroup>
-          </div>
-          <Button
-            onClick={submitVote}
-            disabled={selectedOption === null}
-            className="w-full"
-            data-testid="button-submit-vote"
-          >
-            提交投票
-          </Button>
-        </DialogContent>
-      </Dialog>
+      <ViewerPollDialog active={activePoll} results={pollResults} onVote={submitVote} onClose={dismissPoll} />
 
-      <Dialog open={hasVoted && Object.keys(pollResults).length > 0} onOpenChange={(o) => { if (!o) dismissPoll(); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>投票結果</DialogTitle>
-          </DialogHeader>
-          <div className="py-4 space-y-3">
-            {(activePoll?.options as string[] || []).map((option, index) => {
-              const votes = pollResults[index] || 0;
-              const total = Object.values(pollResults).reduce((a, b) => a + b, 0);
-              const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
-              
-              return (
-                <div key={index}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>{option}</span>
-                    <span>{percentage}%</span>
-                  </div>
-                  <div className="h-2 bg-muted rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary transition-all"
-                      style={{ width: `${percentage}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <Button onClick={dismissPoll} variant="outline" className="w-full">
-            關閉
-          </Button>
-        </DialogContent>
-      </Dialog>
+      <ViewerSurveyDialog
+        survey={feedbackSurvey}
+        open={showSurvey && !surveySubmitted}
+        onOpenChange={setShowSurvey}
+        watchToken={watchToken}
+        onSubmitted={() => {
+          setSurveySubmitted(true);
+          toast({ title: "感謝您的回饋！" });
+        }}
+      />
 
-      <Dialog open={showSurvey && !surveySubmitted} onOpenChange={setShowSurvey}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{feedbackSurvey?.title || "回饋問卷"}</DialogTitle>
-            <DialogDescription>請花一點時間分享您的想法</DialogDescription>
-          </DialogHeader>
-          <div className="py-4 space-y-4 max-h-[60vh] overflow-y-auto">
-            {surveyQuestions.map((q) => (
-              <div key={q.id} className="space-y-2">
-                <Label className="text-sm font-medium">
-                  {q.question}
-                  {q.required && <span className="text-destructive ml-1">*</span>}
-                </Label>
-                
-                {q.type === "rating" && (
-                  <div className="flex gap-1">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <Button
-                        key={star}
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setSurveyResponses(prev => ({ ...prev, [q.id]: star }))}
-                        data-testid={`survey-rating-${q.id}-${star}`}
-                      >
-                        <Star className={`w-6 h-6 ${(surveyResponses[q.id] || 0) >= star ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`} />
-                      </Button>
-                    ))}
-                  </div>
-                )}
-                
-                {q.type === "text" && (
-                  <Textarea
-                    placeholder="請輸入您的回答..."
-                    value={surveyResponses[q.id] || ""}
-                    onChange={(e) => setSurveyResponses(prev => ({ ...prev, [q.id]: e.target.value }))}
-                    data-testid={`survey-text-${q.id}`}
-                  />
-                )}
-                
-                {q.type === "multiChoice" && q.options && (
-                  <RadioGroup
-                    value={surveyResponses[q.id] || ""}
-                    onValueChange={(v) => setSurveyResponses(prev => ({ ...prev, [q.id]: v }))}
-                  >
-                    {q.options.map((opt, i) => (
-                      <div key={i} className="flex items-center space-x-2">
-                        <RadioGroupItem value={opt} id={`survey-${q.id}-${i}`} />
-                        <Label htmlFor={`survey-${q.id}-${i}`}>{opt}</Label>
-                      </div>
-                    ))}
-                  </RadioGroup>
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setShowSurvey(false)} className="flex-1">
-              稍後再說
-            </Button>
-            <Button
-              onClick={handleSurveySubmit}
-              disabled={submitSurveyMutation.isPending}
-              className="flex-1"
-              data-testid="button-submit-survey"
-            >
-              {submitSurveyMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              提交回饋
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {id && <ViewerQaDialog webinarId={id} watchToken={watchToken} open={showQa} onOpenChange={setShowQa} />}
     </div>
   );
 }
