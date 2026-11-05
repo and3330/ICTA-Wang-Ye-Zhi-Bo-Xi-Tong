@@ -17,6 +17,7 @@ description: Product boundaries for webinar-specific instructions, knowledge, an
 
 小幫手正式提供資料的階段，由主辦方設定「影片播放到指定時間」，內容顯示在對話框中，不是彈窗。
 原有「小提示卡」在特定時間點顯示的提示訊息，也都要丟到聊天室。
+投票也要放在聊天室，避免遮擋影片；不是跳出式對話框。
 
 **Why:** 使用者要求可設定小幫手丟資料的階段，並明確選擇依影片時間觸發。
 

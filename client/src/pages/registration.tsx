@@ -17,7 +17,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Calendar, CheckCircle, Loader2, Play, Zap, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent, trackCompletedWebinarRegistration } from "@/lib/webinar-tracking";
 import { getWatchToken, saveWatchAccess, watchUrl } from "@/lib/watch-access";
 import { LandingCountdown as Countdown, WebinarLanding } from "@/components/webinar-landing";
 import type { PlaybackSource } from "@/lib/media";
@@ -132,12 +132,16 @@ export default function Registration() {
       if (typeof redirectUrl === "string" && redirectUrl) {
         try {
           const destination = new URL(redirectUrl);
-          if (destination.protocol === "https:") window.location.assign(destination.toString());
+          if (destination.protocol === "https:") {
+            window.location.assign(destination.toString());
+            return; // The external handoff consumer owns its verified conversion.
+          }
         } catch {
           // Keep the internal success/watch flow if the supplied destination
           // cannot be used by this browser.
         }
       }
+      trackCompletedWebinarRegistration(id, response?.id);
     },
     onError: (error: any) => {
       toast({

@@ -474,7 +474,7 @@ const t: Record<LangAdmin, Record<string, string>> = {
     interCtaEnd: "結束",
     interNoCtaButtons: "尚無 CTA 按鈕",
     interPollTitle: "投票管理",
-    interPollDesc: "設定在特定時間彈出的投票問題",
+    interPollDesc: "影片到點後在聊天室顯示投票小卡，不遮擋影片；觀眾可直接作答或略過。",
     interAddPoll: "新增投票",
     interPollDialogTitle: "新增投票",
     interPollQuestion: "問題",
@@ -2145,10 +2145,10 @@ export default function AdminWebinarDetail() {
       const pixel = metaPixelId.trim();
       const gtm = gtmContainerId.trim().toUpperCase();
       if (pixel && !isValidMetaPixelId(pixel)) {
-        throw new Error("Meta Pixel ID 只能包含數字");
+        throw new Error("Meta Pixel ID 必須為 5–32 位數字");
       }
       if (gtm && !isValidGtmContainerId(gtm)) {
-        throw new Error("GTM Container ID 必須為 GTM- 開頭，且只能包含大寫英數字");
+        throw new Error("GTM Container ID 必須為 GTM- 開頭的大寫英數字，總長 8–24 字元");
       }
       return apiRequest("PATCH", `/api/webinars/${id}`, {
         metaPixelId: pixel || null,
@@ -5744,7 +5744,7 @@ export default function AdminWebinarDetail() {
                     />
                     {metaPixelId && !isValidMetaPixelId(metaPixelId) && (
                       <p className="text-sm text-destructive" data-testid="error-meta-pixel-id">
-                        Meta Pixel ID 只能包含數字
+                        Meta Pixel ID 必須為 5–32 位數字
                       </p>
                     )}
                   </div>
@@ -5760,7 +5760,7 @@ export default function AdminWebinarDetail() {
                     />
                     {gtmContainerId && !isValidGtmContainerId(gtmContainerId) && (
                       <p className="text-sm text-destructive" data-testid="error-gtm-container-id">
-                        必須為 GTM- 開頭，且只能包含大寫英數字
+                        必須為 GTM- 開頭的大寫英數字，總長 8–24 字元
                       </p>
                     )}
                   </div>

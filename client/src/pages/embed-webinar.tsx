@@ -20,7 +20,9 @@ import { ProviderPlayer } from "@/components/provider-player";
 import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
-import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
+import { ViewerQaDialog, ViewerSurveyDialog } from "@/components/viewer-interactions";
+import { ChatPollCard } from "@/components/chat-poll-card";
+import { useChatPolls } from "@/hooks/use-chat-polls";
 import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
@@ -65,8 +67,6 @@ export default function EmbedWebinar() {
   const [viewerCount, setViewerCount] = useState(1);
   const shownMessagesRef = useRef<Set<string>>(new Set());
 
-  const [activePoll, setActivePoll] = useState<ActivePoll | null>(null);
-  const [pollResults, setPollResults] = useState<Record<number, number> | null>(null);
   const [videoEnded, setVideoEnded] = useState(false);
   const [showSurvey, setShowSurvey] = useState(false);
   const [surveySubmitted, setSurveySubmitted] = useState(false);
@@ -146,10 +146,7 @@ export default function EmbedWebinar() {
     const due = collectTipChat(tips, currentTime, isPlaying, shownMessagesRef.current, id);
     if (due.length) setMessages(prev => [...prev, ...due]);
   }, [tips, currentTime, isPlaying, id]);
-  useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, seconds) => {
-    setActivePoll({ poll, seconds });
-    setPollResults(null);
-  });
+  const { chatPolls, showPoll, setPollResults } = useChatPolls(id, polls, currentTime, isPlaying, setMessages);
 
   useEffect(() => {
     if (!isJoined || !id || !nickname || !sessionId) return;
@@ -216,11 +213,10 @@ export default function EmbedWebinar() {
           showTip(msg.data as Tip);
           break;
         case "poll":
-          setActivePoll({ poll: msg.data, seconds: msg.data.duration || DEFAULT_POLL_SECONDS });
-          setPollResults(null);
+          showPoll(msg.data, msg.data.duration || DEFAULT_POLL_SECONDS);
           break;
         case "pollResults":
-          setPollResults(msg.data.results);
+          setPollResults(msg.data.pollId, msg.data.results);
           break;
       }
     };
@@ -359,10 +355,10 @@ export default function EmbedWebinar() {
     wsRef.current?.send(JSON.stringify({ type: "like", data: { webinarId: id, sessionId } }));
   };
 
-  const submitVote = (optionIndex: number) => {
+  const submitVote = (pollId: string, optionIndex: number) => {
     const socket = wsRef.current;
-    if (!activePoll || !socket || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify({ type: "vote", data: { pollId: activePoll.poll.id, optionIndex, sessionId } }));
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: "vote", data: { pollId, optionIndex, sessionId } }));
     return true;
   };
 
@@ -576,7 +572,9 @@ export default function EmbedWebinar() {
 
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-2">
-            {messages.map((msg, i) => (
+            {messages.map((msg, i) => chatPolls[msg.id] ? (
+              <ChatPollCard key={msg.id} active={chatPolls[msg.id].active} results={chatPolls[msg.id].results} onVote={option => submitVote(chatPolls[msg.id].active.poll.id, option)} />
+            ) : (
               <div key={msg.id || i} className="text-sm">
                 <span className="font-medium text-primary mr-1">{msg.senderName}</span>
                 <span className="text-foreground">{msg.senderType === "assistant" ? <ChatMaterialText text={msg.message} /> : msg.message}</span>
@@ -621,12 +619,6 @@ export default function EmbedWebinar() {
         }}
       />
       {checkoutError && <p className="border-t p-3 text-sm text-destructive" role="alert">{checkoutError}</p>}
-      <ViewerPollDialog
-        active={activePoll}
-        results={pollResults}
-        onVote={submitVote}
-        onClose={() => { setActivePoll(null); setPollResults(null); }}
-      />
       <ViewerSurveyDialog
         survey={feedbackSurvey}
         open={showSurvey && !surveySubmitted}

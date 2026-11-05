@@ -141,6 +141,84 @@ test("owner can create, persist, edit and delete timed assistant materials in th
   expect(rows).toHaveLength(0);
 });
 
+test("tracking settings save, normalize, validate and clear IDs on an isolated webinar", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("h1").first().waitFor();
+  expect((await page.request.post("/api/admin/login", { data: { username, password } })).status()).toBe(200);
+  await page.evaluate(path => {
+    history.pushState({}, "", path); dispatchEvent(new PopStateEvent("popstate"));
+  }, `/admin/webinar/${webinarId}`);
+  await page.getByRole("tab", { name: "設定", exact: true }).click();
+  const pixel = page.getByTestId("input-meta-pixel-id");
+  const gtm = page.getByTestId("input-gtm-container-id");
+  const save = page.getByTestId("button-save-tracking");
+  await pixel.fill("1");
+  await expect(save).toBeDisabled();
+  await pixel.fill("987654321001234");
+  await gtm.fill("gtm-selle2e");
+  await expect(gtm).toHaveValue("GTM-SELLE2E");
+  const saved = page.waitForResponse(r => r.url().endsWith(`/api/webinars/${webinarId}`) && r.request().method() === "PATCH");
+  await save.click();
+  expect((await saved).status()).toBe(200);
+  const read = await page.request.get(`/api/webinars/${webinarId}`);
+  const persisted = await read.json();
+  expect(persisted.metaPixelId).toBe("987654321001234");
+  expect(persisted.gtmContainerId).toBe("GTM-SELLE2E");
+  await pixel.fill("");
+  await gtm.fill("");
+  const cleared = page.waitForResponse(r => r.url().endsWith(`/api/webinars/${webinarId}`) && r.request().method() === "PATCH");
+  await save.click();
+  expect((await cleared).status()).toBe(200);
+  const empty = await (await page.request.get(`/api/webinars/${webinarId}`)).json();
+  expect(empty.metaPixelId).toBeNull();
+  expect(empty.gtmContainerId).toBeNull();
+});
+
+test("real poll votes return their poll ID and repeated votes do not count twice", async ({ request }) => {
+  expect((await request.post("/api/admin/login", { data: { username, password } })).status()).toBe(200);
+  const pollIds: string[] = [];
+  let socket: WebSocket | undefined;
+  try {
+    for (const question of ["投票一", "投票二"]) {
+      const response = await request.post(`/api/webinars/${webinarId}/polls`, {
+        data: { question, options: ["甲", "乙"], triggerTime: 0, duration: 60 },
+      });
+      expect(response.status()).toBe(200);
+      pollIds.push((await response.json()).id);
+    }
+    const registered = await request.post("/api/registrations", { data: {
+      webinarId, name: "Poll integration test", phone: "0912345678", email: `${randomUUID()}@example.test`,
+    } });
+    expect(registered.status()).toBe(200);
+    const { watchToken } = await registered.json();
+    socket = new WebSocket("ws://127.0.0.1:5000/ws");
+    await new Promise<void>((resolve, reject) => { socket!.once("open", resolve); socket!.once("error", reject); });
+    const exchange = (expected: string, outgoing: any) => new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => { socket!.off("message", onMessage); reject(new Error(`No ${expected}`)); }, 5000);
+      const onMessage = (raw: any) => {
+        const message = JSON.parse(raw.toString());
+        if (message.type === expected) {
+          clearTimeout(timer); socket!.off("message", onMessage); resolve(message.data);
+        }
+      };
+      socket!.on("message", onMessage);
+      socket!.send(JSON.stringify(outgoing));
+    });
+    await exchange("sessionConfirmed", { type: "join", data: { webinarId, sessionId: randomUUID(), nickname: "投票測試", watchToken } });
+    for (const [index, optionIndex] of [[0, 0], [1, 1], [0, 0]]) {
+      const result = await exchange("pollResults", { type: "vote", data: { pollId: pollIds[index], optionIndex } });
+      expect(result.pollId).toBe(pollIds[index]);
+      expect(result.results).toEqual({ [optionIndex]: 1 });
+    }
+  } finally {
+    socket?.close();
+    for (const pollId of pollIds) {
+      await db.delete(schema.pollVotes).where(eq(schema.pollVotes.pollId, pollId));
+      await db.delete(schema.polls).where(eq(schema.polls.id, pollId));
+    }
+  }
+});
+
 for (const width of [390, 900]) {
   test(`embedded registration scrolls all session choices and form fields at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 650 });

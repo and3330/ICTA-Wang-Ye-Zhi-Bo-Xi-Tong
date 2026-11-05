@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Calendar, Clock, CheckCircle, Loader2, Play, Zap, ChevronDown, Users } from "lucide-react";
 import type { Webinar } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
-import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent } from "@/lib/webinar-tracking";
+import { getWebinarVisitorToken, openTrackedExternalUrl, trackWebinarEvent, trackCompletedWebinarRegistration } from "@/lib/webinar-tracking";
 import { saveWatchAccess } from "@/lib/watch-access";
 import { SellCaseLogo } from "@/components/sellcase-logo";
 import type { ExternalJourneyPublicSettings } from "@shared/externalJourneys";
@@ -188,6 +188,7 @@ export default function EmbedRegister() {
         }
       }
       // The parent notification does not contain the private watch URL.
+      trackCompletedWebinarRegistration(id, response?.id);
       postToAllowedParent({ type: "livecast:registered", webinarId: id });
     },
     onError: (error: any) => {

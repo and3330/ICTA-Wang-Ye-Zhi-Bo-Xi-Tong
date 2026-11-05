@@ -23,7 +23,9 @@ import { ProviderPlayer } from "@/components/provider-player";
 import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
-import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
+import { ViewerQaDialog, ViewerSurveyDialog } from "@/components/viewer-interactions";
+import { ChatPollCard } from "@/components/chat-poll-card";
+import { useChatPolls } from "@/hooks/use-chat-polls";
 import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
@@ -69,8 +71,6 @@ export default function WebinarRoom() {
   const [liveCtas, setLiveCtas] = useState<CtaButton[]>([]);
   const [checkoutCtaId, setCheckoutCtaId] = useState<string | null>(null);
   
-  const [activePoll, setActivePoll] = useState<ActivePoll | null>(null);
-  const [pollResults, setPollResults] = useState<Record<number, number> | null>(null);
   const [showQa, setShowQa] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
@@ -294,10 +294,7 @@ export default function WebinarRoom() {
     const due = collectTipChat(tips, currentTime, isPlaying, shownMessagesRef.current, id);
     if (due.length) setMessages(prev => [...prev, ...due]);
   }, [tips, currentTime, isPlaying, id]);
-  useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, remainingSeconds) => {
-    setActivePoll({ poll, seconds: remainingSeconds });
-    setPollResults(null);
-  });
+  const { chatPolls, showPoll, setPollResults } = useChatPolls(id, polls, currentTime, isPlaying, setMessages);
 
   useEffect(() => {
     if (!isJoined || !id || !sessionId) return;
@@ -327,11 +324,10 @@ export default function WebinarRoom() {
           break;
         case "poll":
           // Pushed by the host from the control room.
-          setActivePoll({ poll: msg.data, seconds: msg.data.duration || DEFAULT_POLL_SECONDS });
-          setPollResults(null);
+          showPoll(msg.data, msg.data.duration || DEFAULT_POLL_SECONDS);
           break;
         case "pollResults":
-          setPollResults(msg.data.results);
+          setPollResults(msg.data.pollId, msg.data.results);
           break;
         case "scheduledMessage":
           setMessages((prev) => [...prev, msg.data]);
@@ -524,20 +520,16 @@ export default function WebinarRoom() {
     }, 1500);
   };
 
-  const submitVote = (optionIndex: number) => {
+  const submitVote = (pollId: string, optionIndex: number) => {
     const socket = wsRef.current;
-    if (!activePoll || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify({
       type: "vote",
-      data: { pollId: activePoll.poll.id, optionIndex, sessionId },
+      data: { pollId, optionIndex, sessionId },
     }));
     return true;
   };
 
-  const dismissPoll = () => {
-    setActivePoll(null);
-    setPollResults(null);
-  };
 
   const extractVimeoId = (url: string) => {
     const trimmed = url.trim();
@@ -931,6 +923,8 @@ export default function WebinarRoom() {
                 </div>
               )}
               {messages.map((msg, index) => {
+                const chatPoll = chatPolls[msg.id];
+                if (chatPoll) return <ChatPollCard key={msg.id} active={chatPoll.active} results={chatPoll.results} onVote={option => submitVote(chatPoll.active.poll.id, option)} />;
                 const isMe = msg.senderName === nickname && msg.senderType === "viewer";
                 const isAssistant = msg.senderType === "assistant";
                 const isHost = msg.senderType === "host" || isAssistant;
@@ -1036,7 +1030,6 @@ export default function WebinarRoom() {
         }}
       />
 
-      <ViewerPollDialog active={activePoll} results={pollResults} onVote={submitVote} onClose={dismissPoll} />
 
       <ViewerSurveyDialog
         survey={feedbackSurvey}

@@ -82,7 +82,13 @@ for (const embed of [false, true]) {
     await page.getByTestId(`${prefix}email`).fill(`${randomUUID()}@example.test`);
     await page.getByTestId(embed ? "button-embed-session-dropdown" : "select-session").click();
     await page.getByTestId(embed ? "button-embed-session-on-demand" : "option-session-on-demand").click();
-    // Do not mock /api/registrations: verify the actual development endpoint.
+    // A failed signup must not report a completed registration.
+    await page.route("**/api/registrations", route => route.fulfill({ status: 400, json: { message: "測試拒絕報名" } }));
+    await submit.click();
+    await expect(page.getByText(/測試拒絕報名/).first()).toBeVisible();
+    expect(await page.evaluate(() => window.dataLayer?.filter(event => event.event === "webinar_registration").length || 0)).toBe(0);
+    await page.unroute("**/api/registrations");
+    // The successful submission uses the actual development endpoint.
     const responsePromise = page.waitForResponse(response =>
       response.url().endsWith("/api/registrations") && response.request().method() === "POST");
     await submit.click();
@@ -92,6 +98,21 @@ for (const embed of [false, true]) {
     const [stored] = await db.select({ id: schema.registrations.id, webinarId: schema.registrations.webinarId })
       .from(schema.registrations).where(eq(schema.registrations.id, result.id));
     expect(stored?.webinarId).toBe(webinarId);
+    await expect.poll(() => page.evaluate(pixel =>
+      ((window as any).__defaultTrackingCalls || []).filter((call: any[]) =>
+        call[0] === "trackSingle" && call[1] === pixel && call[2] === "CompleteRegistration",
+      ).length, memberPixel)).toBe(1);
+    const conversions = await page.evaluate(() => ({
+      meta: ((window as any).__defaultTrackingCalls || []).find((call: any[]) => call[2] === "CompleteRegistration"),
+      gtm: window.dataLayer?.filter(event => event.event === "webinar_registration") || [],
+    }));
+    expect(conversions.meta[4].eventID).toBe(`registration_${result.id}`);
+    expect(conversions.gtm).toHaveLength(1);
+    expect(conversions.gtm[0].registration_id).toBe(result.id);
+    await page.evaluate(({ webinarId, registrationId }) => {
+      window.dispatchEvent(new CustomEvent("livecast:webinar-registration", { detail: { webinarId, registrationId } }));
+    }, { webinarId, registrationId: result.id });
+    expect(await page.evaluate(() => window.dataLayer?.filter(event => event.event === "webinar_registration").length)).toBe(1);
     await expect(submit).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "Cookie 與行銷追蹤設定" })).toHaveCount(0);
   });

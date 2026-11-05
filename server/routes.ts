@@ -1220,7 +1220,7 @@ export async function registerRoutes(
             
             ws.send(JSON.stringify({
               type: "pollResults",
-              data: { results }
+              data: { pollId, results }
             }));
             break;
           }

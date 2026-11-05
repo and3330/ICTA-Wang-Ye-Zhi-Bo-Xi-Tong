@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function openViewer(page: Page, embed = false, timedMaterials = false) {
+async function openViewer(page: Page, embed = false, timedMaterials = false, inlinePolls = false) {
   await page.addInitScript(() => localStorage.setItem("sellcase.marketing-consent.v1", "denied"));
   await page.route("**/api/webinars/fullscreen-test**", route => {
     const path = new URL(route.request().url()).pathname;
@@ -9,7 +9,13 @@ async function openViewer(page: Page, embed = false, timedMaterials = false) {
       vimeoUrl: "https://vimeo.com/123456789", scheduleMode: "on_demand",
       startTime: "2020-01-01T00:00:00Z", timezone: "UTC",
       replayEnabled: true,
-    } : timedMaterials && path.endsWith("/ctas") ? [{
+    } : inlinePolls && path.endsWith("/polls") ? [{
+      id: "poll-a", webinarId: "fullscreen-test", question: "你想先學哪一項？", options: ["自動化", "內容"], triggerTime: 30, duration: 60,
+    }, {
+      id: "poll-b", webinarId: "fullscreen-test", question: "你希望如何學習？", options: ["實作", "案例"], triggerTime: 30, duration: 60,
+    }, {
+      id: "poll-expire", webinarId: "fullscreen-test", question: "短時間投票", options: ["有", "沒有"], triggerTime: 31, duration: 1,
+    }] : timedMaterials && path.endsWith("/ctas") ? [{
       id: "f768b343-e9f6-4694-bb5b-68226fe2ad53", webinarId: "fullscreen-test",
       text: "取得優惠", url: "https://example.com/cta-target", offerId: null,
       startTime: 30, endTime: null, style: "primary",
@@ -54,6 +60,61 @@ async function openViewer(page: Page, embed = false, timedMaterials = false) {
 }
 
 for (const embed of [false, true]) {
+  test(`${embed ? "embedded" : "standard"} polls are independent inline chat cards with votes, live polls and expiry`, async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as any).__sentVotes = [];
+      (window as any).WebSocket = class {
+        static OPEN = 1; static CONNECTING = 0;
+        readyState = 1; onopen: any; onmessage: any;
+        constructor() { (window as any).__pollSocket = this; setTimeout(() => this.onopen?.(), 0); }
+        emit(type: string, data: any) { this.onmessage?.({ data: JSON.stringify({ type, data }) }); }
+        send(raw: string) {
+          const message = JSON.parse(raw);
+          if (message.type === "join") setTimeout(() => this.emit("sessionConfirmed", { sessionId: "inline-poll-test" }), 0);
+          if (message.type === "vote") {
+            (window as any).__sentVotes.push(message.data);
+            setTimeout(() => this.emit("pollResults", { pollId: message.data.pollId, results: { [message.data.optionIndex]: 1 } }), 20);
+          }
+        }
+        close() { this.readyState = 3; }
+      };
+    });
+    await openViewer(page, embed, false, true);
+    await page.getByTestId(embed ? "button-embed-play-video" : "button-play-video").click();
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 30, duration: 3600 }));
+    const a = page.getByTestId("chat-poll-poll-a");
+    const b = page.getByTestId("chat-poll-poll-b");
+    await expect(a).toBeVisible();
+    await expect(b).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(a.getByRole("button", { name: "提交投票" })).toBeDisabled();
+    await a.getByRole("radio", { name: "自動化", exact: true }).focus();
+    await page.keyboard.press("Space");
+    await page.evaluate(() => { (window as any).__pollSocket.readyState = 3; });
+    await a.getByRole("button", { name: "提交投票" }).click();
+    await expect(a.getByRole("alert")).toContainText("連線中斷");
+    await page.evaluate(() => { (window as any).__pollSocket.readyState = 1; });
+    await a.getByRole("button", { name: "提交投票" }).click();
+    await expect(a.getByRole("img", { name: /自動化：100%/ })).toBeVisible();
+    await expect(b.getByRole("button", { name: "提交投票" })).toBeVisible();
+    await b.getByRole("radio", { name: "案例", exact: true }).click();
+    await b.getByRole("button", { name: "提交投票" }).click();
+    await expect(b.getByRole("img", { name: /案例：100%/ })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__sentVotes.map((v: any) => [v.pollId, v.optionIndex]))).toEqual([["poll-a", 0], ["poll-b", 1]]);
+    await page.evaluate(() => (window as any).__pollSocket.emit("poll", { id: "live-poll", question: "主辦人即時投票", options: ["可以", "稍後"], duration: 60, triggerTime: 0 }));
+    const live = page.getByTestId("chat-poll-live-poll");
+    await expect(live).toBeVisible();
+    await live.getByRole("button", { name: "略過", exact: true }).click();
+    await expect(live.getByText(/略過/)).toBeVisible();
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 31, duration: 3600 }));
+    const expired = page.getByTestId("chat-poll-poll-expire");
+    await expect(expired.getByText("投票已結束", { exact: true })).toBeVisible();
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 30, duration: 3600 }));
+    await expect(a).toHaveCount(1);
+    await expect(b).toHaveCount(1);
+    await expect(a.getByRole("img", { name: /自動化：100%/ })).toBeVisible();
+  });
+
   test(`${embed ? "embedded" : "standard"} tips stay in chat and CTA links navigate even when script popups are blocked`, async ({ page }) => {
     await openViewer(page, embed, true);
     await page.route("https://example.com/**", route => route.fulfill({ contentType: "text/html", body: "Configured CTA destination" }));

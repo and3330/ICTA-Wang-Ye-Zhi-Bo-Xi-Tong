@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import {
   WEBINAR_TRACKING_EVENT,
+  WEBINAR_REGISTRATION_EVENT,
   type WebinarEventType,
   type WebinarEventData,
 } from "@/lib/webinar-tracking";
@@ -11,8 +12,8 @@ export type TrackingWebinar = {
   gtmContainerId?: string | null;
 };
 
-export const isValidMetaPixelId = (value: string): boolean => /^\d+$/.test(value);
-export const isValidGtmContainerId = (value: string): boolean => /^GTM-[A-Z0-9]+$/.test(value);
+export const isValidMetaPixelId = (value: string): boolean => /^\d{5,32}$/.test(value);
+export const isValidGtmContainerId = (value: string): boolean => value.length >= 8 && value.length <= 24 && /^GTM-[A-Z0-9]+$/.test(value);
 // The platform pixel is reserved for explicitly authorized platform
 // conversions. A member webinar must never route its funnel events to it,
 // even if an old webinar record contains the same numeric ID.
@@ -42,6 +43,7 @@ const loadedPixels = new Set<string>(
     : [],
 );
 const loadedGtmContainers = new Set<string>();
+const completedRegistrationEvents = new Set<string>();
 const metaEventMap: Record<WebinarEventType, string> = {
   landing_view: "ViewContent",
   webinar_enter: "Lead",
@@ -122,6 +124,31 @@ export function WebinarTrackingProvider({
     if (webinarPixelAllowed) loadMetaPixel(safePixelId);
     if (isValidGtmContainerId(safeGtmId)) loadGtm(safeGtmId);
   }, [safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent]);
+
+  useEffect(() => {
+    const completedRegistration = (event: Event) => {
+      const detail = (event as CustomEvent<{ webinarId: string; registrationId: string }>).detail;
+      if (!detail || detail.webinarId !== webinarId || marketingConsent !== "granted") return;
+      const eventId = `registration_${detail.registrationId}`;
+      const payload = { webinar_id: detail.webinarId, registration_id: detail.registrationId, event_id: eventId };
+      if (webinarPixelAllowed) {
+        const key = `meta:${safePixelId}:${eventId}`;
+        if (!completedRegistrationEvents.has(key)) {
+          completedRegistrationEvents.add(key);
+          window.fbq?.("trackSingle", safePixelId, "CompleteRegistration", payload, { eventID: eventId });
+        }
+      }
+      if (isValidGtmContainerId(safeGtmId)) {
+        const key = `gtm:${safeGtmId}:${eventId}`;
+        if (!completedRegistrationEvents.has(key)) {
+          completedRegistrationEvents.add(key);
+          window.dataLayer?.push({ event: "webinar_registration", ...payload });
+        }
+      }
+    };
+    window.addEventListener(WEBINAR_REGISTRATION_EVENT, completedRegistration);
+    return () => window.removeEventListener(WEBINAR_REGISTRATION_EVENT, completedRegistration);
+  }, [webinarId, safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent]);
 
   useEffect(() => {
     const forward = (event: Event) => {

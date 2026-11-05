@@ -26,6 +26,15 @@ export type WebinarEventData = {
 };
 
 export const WEBINAR_TRACKING_EVENT = "livecast:webinar-event";
+export const WEBINAR_REGISTRATION_EVENT = "livecast:webinar-registration";
+
+/** Call only with the ID returned by a successful persisted registration. */
+export function trackCompletedWebinarRegistration(webinarId: string | undefined, registrationId: unknown) {
+  if (!isUuid(webinarId) || typeof registrationId !== "string" || !isUuid(registrationId)) return;
+  window.dispatchEvent(new CustomEvent(WEBINAR_REGISTRATION_EVENT, {
+    detail: { webinarId, registrationId },
+  }));
+}
 
 const sentEvents = new Set<string>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
