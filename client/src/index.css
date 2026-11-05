@@ -448,13 +448,14 @@
 /* Live control room */
 .admin-control{min-height:100vh;background:linear-gradient(180deg,hsl(var(--muted)/.45),hsl(var(--background)) 280px)}
 .admin-control .control-main{max-width:1500px}
-.control-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}
+.control-intro{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:16px}
 .control-intro h2{font-size:clamp(1.35rem,2vw,1.8rem);font-weight:750;letter-spacing:-.035em;margin:.2rem 0}
 .control-intro>div>p:last-child{font-size:.875rem;color:hsl(var(--muted-foreground));margin:0}
 .control-eyebrow{display:flex;align-items:center;gap:6px;color:hsl(var(--primary));font-size:.72rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
 .control-eyebrow svg{animation:control-pulse 1.8s ease-in-out infinite}
 @keyframes control-pulse{50%{opacity:.35}}
 .control-stats{display:grid;grid-template-columns:repeat(4,minmax(105px,1fr));gap:8px}
+.admin-control .control-main{padding-top:16px}
 .control-stat{min-width:112px;padding:10px 12px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card)/.9);box-shadow:0 1px 2px hsl(var(--foreground)/.03)}
 .control-stat span{display:flex;align-items:center;gap:5px;font-size:.68rem;color:hsl(var(--muted-foreground));white-space:nowrap}
 .control-stat strong{display:block;font-size:1.45rem;line-height:1.15;margin-top:5px}
@@ -464,10 +465,14 @@
 .control-grid>div{box-shadow:0 8px 30px hsl(var(--foreground)/.035)}
 .control-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .control-card-heading .badge{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.control-audience-scroll{height:612px}
-.control-chat-card,.control-actions-card{min-height:700px}
-.control-chat-content{display:flex;min-height:620px;flex-direction:column}
-.control-chat-scroll{height:470px}
+.control-audience-scroll{height:clamp(320px,calc(100dvh - 330px),720px)}
+.control-audience-search{position:relative;margin-bottom:8px}
+.control-audience-search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:hsl(var(--muted-foreground))}
+.control-audience-search input{height:32px;padding-left:30px;font-size:.8rem}
+.control-chat-content{display:flex;flex-direction:column}
+.control-chat-wrap{position:relative;margin-bottom:12px}
+.control-chat-scroll{height:clamp(300px,calc(100dvh - 420px),640px);overflow-y:auto;overscroll-behavior:contain}
+.control-new-messages{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 12px;border-radius:999px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));font-size:.75rem;font-weight:600;box-shadow:0 4px 14px hsl(var(--foreground)/.15)}
 .control-empty-chat{height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:hsl(var(--muted-foreground));font-size:.875rem}
 .control-composer{margin-top:auto}
 .control-compose-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
@@ -498,16 +503,16 @@
 .control-send-button{width:auto;min-width:44px;gap:7px;padding-inline:14px}
 .control-studio>h4{font-weight:700}
 .control-action-tabs{margin-top:12px}
-.control-action-tabs [role=tablist]{grid-template-columns:repeat(3,minmax(0,1fr))}
+.control-action-tabs [role=tablist]{grid-template-columns:repeat(4,minmax(0,1fr))}
 .control-action-tabs [role=tab]{min-width:0;padding-inline:6px;font-size:.74rem;overflow:hidden;text-overflow:ellipsis}
-.control-actions-card{position:sticky;top:78px}
+.control-actions-card{position:sticky;top:78px;max-height:calc(100dvh - 94px);overflow-y:auto}
 .control-actions-card input,.control-actions-card select{background:hsl(var(--background))}
 
 @media(max-width:1100px){
   .control-intro{align-items:stretch;flex-direction:column}
   .control-stats{width:100%}
   .control-grid{grid-template-columns:minmax(230px,1fr) minmax(420px,2fr)}
-  .control-actions-card{grid-column:1/-1;position:static;min-height:0}
+  .control-actions-card{grid-column:1/-1;position:static;min-height:0;max-height:none}
   .control-studio{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,1fr);gap:16px}
   .control-studio>h4,.control-studio>p{grid-column:1/-1}
   .control-action-tabs{margin-top:0}
@@ -526,10 +531,8 @@
   .control-stat strong{font-size:1.25rem}
   .control-grid{display:flex;flex-direction:column}
   .control-grid>div{width:100%}
-  .control-audience-card,.control-chat-card,.control-actions-card{min-height:0}
   .control-audience-scroll{height:260px}
-  .control-chat-content{min-height:520px}
-  .control-chat-scroll{height:350px}
+  .control-chat-scroll{height:min(60dvh,420px)}
   .control-card-heading{flex-direction:column}
   .control-studio{display:block}
   .control-studio>div{margin-bottom:1rem!important}

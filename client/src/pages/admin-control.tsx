@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import { 
   ArrowLeft, Send, Users, Heart, MessageSquare, 
-  Loader2, Radio, BarChart, User, MessageCircle, Clock, Languages, X
+  Loader2, Radio, BarChart, User, MessageCircle, Clock, Languages, X, Search, ArrowDown
 } from "lucide-react";
 import type { Webinar, ChatMessage, Poll } from "@shared/schema";
 
@@ -51,6 +51,9 @@ const t: Record<LangAdmin, Record<string, string>> = {
     sendReply: "回覆",
     backToBroadcast: "改回發送給所有觀眾",
     speakAs: "發言名稱",
+    searchViewers: "搜尋觀眾",
+    newMessages: "則新訊息",
+    tabPoll: "投票",
     displayName: "顯示名稱",
     replyPlaceholder: "回覆此觀眾...",
     broadcastPlaceholder: "廣播給所有觀眾...",
@@ -128,6 +131,9 @@ const t: Record<LangAdmin, Record<string, string>> = {
     sendReply: "回复",
     backToBroadcast: "改回发送给所有观众",
     speakAs: "发言名称",
+    searchViewers: "搜索观众",
+    newMessages: "条新消息",
+    tabPoll: "投票",
     displayName: "显示名称",
     replyPlaceholder: "回复此观众...",
     broadcastPlaceholder: "广播给所有观众...",
@@ -228,6 +234,13 @@ export default function AdminControl() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
+  // Follow new messages only while the host is at the bottom; reading older
+  // messages is never interrupted, and a pill shows how many arrived.
+  const stickToBottom = useRef(true);
+  const [unseenCount, setUnseenCount] = useState(0);
+  const [audienceQuery, setAudienceQuery] = useState("");
 
   const { data: webinar, isLoading } = useQuery<Webinar>({
     queryKey: ["/api/webinars", id],
@@ -342,9 +355,29 @@ export default function AdminControl() {
     };
   }, [id]);
 
+  const scrollChatToBottom = (smooth = true) => {
+    const box = chatScrollRef.current;
+    if (!box) return;
+    box.scrollTo({ top: box.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    stickToBottom.current = true;
+    setUnseenCount(0);
+  };
+
+  // Only the chat box scrolls; the page itself never jumps while typing elsewhere.
+  const lastMessageCount = useRef(0);
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [allMessages, selectedSession]);
+    const added = Math.max(0, allMessages.length - lastMessageCount.current);
+    lastMessageCount.current = allMessages.length;
+    if (stickToBottom.current) scrollChatToBottom();
+    else if (added) setUnseenCount((count) => count + added);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMessages, !!webinar]);
+
+  useEffect(() => {
+    scrollChatToBottom(false);
+    if (selectedSession) messageInputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSession]);
 
   const sendBroadcastMessage = () => {
     if (!messageInput.trim() || !wsRef.current) return;
@@ -544,8 +577,10 @@ export default function AdminControl() {
   const sortByActivity = (a: typeof viewerRows[number], b: typeof viewerRows[number]) =>
     (b.lastActivity ? new Date(b.lastActivity).getTime() : 0) -
     (a.lastActivity ? new Date(a.lastActivity).getTime() : 0);
-  const onlineRows = viewerRows.filter((r) => r.online).sort(sortByActivity);
-  const offlineRows = viewerRows.filter((r) => !r.online).sort(sortByActivity);
+  const audienceNeedle = audienceQuery.trim().toLowerCase();
+  const matchesAudience = (r: typeof viewerRows[number]) => !audienceNeedle || r.nickname.toLowerCase().includes(audienceNeedle);
+  const onlineRows = viewerRows.filter((r) => r.online && matchesAudience(r)).sort(sortByActivity);
+  const offlineRows = viewerRows.filter((r) => !r.online && matchesAudience(r)).sort(sortByActivity);
   const totalViewers = viewerRows.length;
 
   return (
@@ -580,11 +615,7 @@ export default function AdminControl() {
 
       <main className="control-main container mx-auto px-4 py-6">
         <section className="control-intro">
-          <div>
-            <p className="control-eyebrow"><Radio className="h-3.5 w-3.5" /> {s.liveStatus}</p>
-            <h2>{s.commandCenter}</h2>
-            <p>{s.commandHint}</p>
-          </div>
+          <p className="control-eyebrow"><Radio className="h-3.5 w-3.5" /> {s.liveStatus}</p>
           <div className="control-stats" aria-label={s.liveStatus}>
             <div className="control-stat control-stat-live"><span><Users className="h-4 w-4" />{s.onlineCount}</span><strong>{viewerCount}</strong></div>
             <div className="control-stat"><span><MessageCircle className="h-4 w-4" />{s.interactiveViewers}</span><strong>{viewerSessions.size}</strong></div>
@@ -603,8 +634,20 @@ export default function AdminControl() {
               <p className="text-xs text-muted-foreground">{s.audienceHint}</p>
             </CardHeader>
             <CardContent>
+              {totalViewers > 6 && (
+                <div className="control-audience-search">
+                  <Search className="h-3.5 w-3.5" aria-hidden />
+                  <Input
+                    value={audienceQuery}
+                    onChange={(e) => setAudienceQuery(e.target.value)}
+                    placeholder={s.searchViewers}
+                    aria-label={s.searchViewers}
+                    data-testid="input-search-viewers"
+                  />
+                </div>
+              )}
               <ScrollArea className="control-audience-scroll">
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <Button
                     variant={selectedSession === null ? "secondary" : "ghost"}
                     className="w-full justify-start"
@@ -709,7 +752,18 @@ export default function AdminControl() {
               </div>
             </CardHeader>
             <CardContent className="control-chat-content">
-              <ScrollArea className="control-chat-scroll mb-3 pr-3">
+              <div className="control-chat-wrap">
+              <div
+                ref={chatScrollRef}
+                className="control-chat-scroll pr-2"
+                onScroll={(e) => {
+                  const box = e.currentTarget;
+                  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+                  stickToBottom.current = atBottom;
+                  if (atBottom) setUnseenCount(0);
+                }}
+                data-testid="control-chat-scroll"
+              >
                 <div className="space-y-0.5">
                   {(selectedSession ? getSessionMessages() : allMessages).length === 0 && (
                     <div className="control-empty-chat"><MessageSquare className="h-7 w-7" /><p>{s.emptyMessages}</p></div>
@@ -754,7 +808,14 @@ export default function AdminControl() {
                   })}
                   <div ref={chatEndRef} />
                 </div>
-              </ScrollArea>
+              </div>
+              {unseenCount > 0 && (
+                <button type="button" className="control-new-messages" onClick={() => scrollChatToBottom()} data-testid="button-new-messages">
+                  <ArrowDown className="h-3.5 w-3.5" />
+                  {unseenCount} {s.newMessages}
+                </button>
+              )}
+              </div>
 
               <div className="control-composer space-y-2 border-t pt-3">
                 <div className="control-compose-meta">
@@ -791,11 +852,13 @@ export default function AdminControl() {
 
                 <div className="flex gap-2">
                   <Input
+                    ref={messageInputRef}
                     placeholder={selectedSession ? s.replyPlaceholder : s.broadcastPlaceholder}
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
                     disabled={!!selectedSession && !onlineSessions.has(selectedSession)}
                     onKeyDown={(e) => {
+                      if (e.key === "Escape" && selectedSession) setSelectedSession(null);
                       // Enter that picks a Chinese IME candidate must not send.
                       if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                         e.preventDefault();
@@ -860,10 +923,11 @@ export default function AdminControl() {
                   )}
 
                   <Tabs defaultValue="cta" className="control-action-tabs">
-                    <TabsList className="grid w-full grid-cols-3">
+                    <TabsList className="grid w-full grid-cols-4">
                       <TabsTrigger value="cta">CTA</TabsTrigger>
                       <TabsTrigger value="tip">{s.quickTip}</TabsTrigger>
                       <TabsTrigger value="chat">{s.quickChat}</TabsTrigger>
+                      <TabsTrigger value="poll" data-testid="tab-studio-poll">{s.tabPoll}</TabsTrigger>
                     </TabsList>
                   <TabsContent value="cta" className="space-y-2 mt-3">
                     <p className="text-sm font-medium">{s.quickCta}</p>
@@ -965,7 +1029,7 @@ export default function AdminControl() {
                       placeholder={s.chatMessage}
                       value={chatMsgInput}
                       onChange={(e) => setChatMsgInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") pushLiveChat(); }}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) pushLiveChat(); }}
                       data-testid="input-studio-chat-message"
                     />
                     <Button size="sm" className="w-full" onClick={pushLiveChat} data-testid="button-studio-push-chat">
@@ -973,11 +1037,8 @@ export default function AdminControl() {
                       {s.sendChat}
                     </Button>
                   </TabsContent>
-                  </Tabs>
-                </div>
-
-                <div>
-                  <h4 className="font-medium mb-2">{s.quickPoll}</h4>
+                  <TabsContent value="poll" className="space-y-2 mt-3">
+                    <p className="text-sm font-medium">{s.quickPoll}</p>
                   {polls && polls.length > 0 ? (
                     <div className="space-y-2">
                       {polls.map((poll) => (
@@ -1003,7 +1064,10 @@ export default function AdminControl() {
                   ) : (
                     <p className="text-sm text-muted-foreground">{s.noPollSettings}</p>
                   )}
+                  </TabsContent>
+                  </Tabs>
                 </div>
+
 
               </div>
             </CardContent>
