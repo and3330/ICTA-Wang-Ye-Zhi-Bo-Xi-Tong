@@ -6,10 +6,11 @@ import { registerRoutes } from "./routes";
 import { storage } from "./storage";
 import type { Webinar } from "@shared/schema";
 
-test("child deletion always passes the URL webinar scope to storage", async (t) => {
+test("child deletion scopes storage access to the URL webinar and rejects foreign sessions before deletion", async (t) => {
   const webinarId = "tenant-a-webinar";
   const ownerId = "tenant-a";
   const calls: Array<[string, string]> = [];
+  const sessionReadScopes: string[] = [];
   const originals = {
     getWebinar: storage.getWebinar,
     getUser: storage.getUser,
@@ -17,6 +18,7 @@ test("child deletion always passes the URL webinar scope to storage", async (t) 
     deleteTip: storage.deleteTip,
     deletePoll: storage.deletePoll,
     deleteWebinarSession: storage.deleteWebinarSession,
+    getWebinarSessions: storage.getWebinarSessions,
   };
   storage.getWebinar = async (id) => id === webinarId
     ? { id, userId: ownerId, publishStatus: "draft" } as Webinar
@@ -26,6 +28,7 @@ test("child deletion always passes the URL webinar scope to storage", async (t) 
   storage.deleteTip = async (scope, id) => { calls.push([scope, id]); return false; };
   storage.deletePoll = async (scope, id) => { calls.push([scope, id]); return false; };
   storage.deleteWebinarSession = async (scope, id) => { calls.push([scope, id]); return false; };
+  storage.getWebinarSessions = async scope => { sessionReadScopes.push(scope); return []; };
 
   const app = express();
   app.use(express.json());
@@ -58,8 +61,8 @@ test("child deletion always passes the URL webinar scope to storage", async (t) 
     [webinarId, "public-child-from-tenant-b"],
     [webinarId, "public-child-from-tenant-b"],
     [webinarId, "public-child-from-tenant-b"],
-    [webinarId, "public-child-from-tenant-b"],
   ]);
+  assert.deepEqual(sessionReadScopes, [webinarId]);
 });
 
 test("super admin receives owner detail projection and administrator Q&A on a tenant draft", async (t) => {
