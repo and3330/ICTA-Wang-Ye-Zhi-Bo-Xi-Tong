@@ -11,9 +11,16 @@ import { useToast } from "@/hooks/use-toast";
 import { useAdminLang, type LangAdmin } from "@/hooks/use-lang";
 import { 
   ArrowLeft, Send, Users, Heart, MessageSquare, 
-  Loader2, Radio, BarChart, User, MessageCircle, Clock, Languages
+  Loader2, Radio, BarChart, User, MessageCircle, Clock, Languages, X
 } from "lucide-react";
 import type { Webinar, ChatMessage, Poll } from "@shared/schema";
+
+/** Same name, same color: makes it easy to follow one viewer down the chat. */
+function viewerTone(name: string | null | undefined): string {
+  let hash = 0;
+  for (const char of name || "?") hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return `control-tone-${hash % 6}`;
+}
 
 const t: Record<LangAdmin, Record<string, string>> = {
   "zh-TW": {
@@ -38,7 +45,12 @@ const t: Record<LangAdmin, Record<string, string>> = {
     allChat: "所有聊天訊息",
     badgeHost: "主辦",
     badgeDummy: "假人",
-    viewConversation: "查看對話",
+    badgePrivate: "私訊",
+    viewConversation: "回覆",
+    sendBroadcast: "廣播",
+    sendReply: "回覆",
+    backToBroadcast: "改回發送給所有觀眾",
+    speakAs: "發言名稱",
     displayName: "顯示名稱",
     replyPlaceholder: "回覆此觀眾...",
     broadcastPlaceholder: "廣播給所有觀眾...",
@@ -110,7 +122,12 @@ const t: Record<LangAdmin, Record<string, string>> = {
     allChat: "所有聊天消息",
     badgeHost: "主办",
     badgeDummy: "假人",
-    viewConversation: "查看对话",
+    badgePrivate: "私信",
+    viewConversation: "回复",
+    sendBroadcast: "广播",
+    sendReply: "回复",
+    backToBroadcast: "改回发送给所有观众",
+    speakAs: "发言名称",
     displayName: "显示名称",
     replyPlaceholder: "回复此观众...",
     broadcastPlaceholder: "广播给所有观众...",
@@ -589,7 +606,7 @@ export default function AdminControl() {
               <ScrollArea className="control-audience-scroll">
                 <div className="space-y-2">
                   <Button
-                    variant={selectedSession === null ? "default" : "ghost"}
+                    variant={selectedSession === null ? "secondary" : "ghost"}
                     className="w-full justify-start"
                     onClick={() => setSelectedSession(null)}
                     data-testid="button-view-all"
@@ -613,7 +630,7 @@ export default function AdminControl() {
                       {onlineRows.map((row) => (
                         <Button
                           key={row.sessionId}
-                          variant={selectedSession === row.sessionId ? "default" : "ghost"}
+                          variant={selectedSession === row.sessionId ? "secondary" : "ghost"}
                           className="w-full justify-start"
                           onClick={() => setSelectedSession(row.sessionId)}
                           data-testid={`button-session-${row.sessionId}`}
@@ -646,7 +663,7 @@ export default function AdminControl() {
                       {offlineRows.map((row) => (
                         <Button
                           key={row.sessionId}
-                          variant={selectedSession === row.sessionId ? "default" : "ghost"}
+                          variant={selectedSession === row.sessionId ? "secondary" : "ghost"}
                           className="w-full justify-start opacity-70"
                           onClick={() => setSelectedSession(row.sessionId)}
                           data-testid={`button-session-${row.sessionId}`}
@@ -689,53 +706,49 @@ export default function AdminControl() {
               </CardTitle>
                   <p className="text-xs text-muted-foreground mt-1">{s.chatHint}</p>
                 </div>
-                <Badge variant={selectedSession ? "default" : "secondary"}>
-                  {selectedSession ? `${s.privateMode} ${getSessionNickname(selectedSession)}` : s.broadcastMode}
-                </Badge>
               </div>
             </CardHeader>
             <CardContent className="control-chat-content">
-              <ScrollArea className="control-chat-scroll mb-4 pr-4">
-                <div className="space-y-3">
+              <ScrollArea className="control-chat-scroll mb-3 pr-3">
+                <div className="space-y-0.5">
                   {(selectedSession ? getSessionMessages() : allMessages).length === 0 && (
                     <div className="control-empty-chat"><MessageSquare className="h-7 w-7" /><p>{s.emptyMessages}</p></div>
                   )}
                   {(selectedSession ? getSessionMessages() : allMessages).map((msg, index) => {
                     const chatMsg = msg as ChatMessage & { sessionId?: string };
+                    const kind = msg.senderType === "host" ? "host" : msg.senderType === "scheduled" ? "dummy" : "viewer";
+                    const canReply = kind === "viewer" && !!chatMsg.sessionId && !selectedSession;
                     return (
-                      <div key={msg.id || index} className="flex gap-2 p-2 rounded-md hover:bg-muted/50">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`text-sm font-medium ${
-                              msg.senderType === "host" 
-                                ? "text-red-500" 
-                                : msg.senderType === "scheduled" 
-                                ? "text-blue-500" 
-                                : "text-foreground"
-                            }`}>
-                              {msg.senderName}
-                            </span>
-                            {msg.senderType === "host" && (
-                              <Badge variant="destructive" className="text-xs">{s.badgeHost}</Badge>
-                            )}
-                            {msg.senderType === "scheduled" && (
-                              <Badge variant="secondary" className="text-xs">{s.badgeDummy}</Badge>
-                            )}
-                            {msg.senderType === "viewer" && chatMsg.sessionId && !selectedSession && (
-                              <Badge 
-                                variant="outline" 
-                                className="text-xs cursor-pointer hover:bg-primary hover:text-primary-foreground"
-                                onClick={() => setSelectedSession(chatMsg.sessionId!)}
-                              >
-                                {s.viewConversation}
-                              </Badge>
-                            )}
-                            <span className="text-xs text-muted-foreground">
-                              {formatTime(msg.sentAt)}
-                            </span>
+                      <div
+                        key={msg.id || index}
+                        className={`control-msg control-msg-${kind}`}
+                        data-testid={`control-message-${index}`}
+                      >
+                        <span className={`control-msg-avatar ${kind === "viewer" ? viewerTone(msg.senderName) : ""}`} aria-hidden>
+                          {msg.senderName?.trim().charAt(0).toUpperCase() || "?"}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="control-msg-head">
+                            <span className="control-msg-name">{msg.senderName}</span>
+                            {kind === "host" && <span className="control-tag control-tag-host">{s.badgeHost}</span>}
+                            {kind === "dummy" && <span className="control-tag">{s.badgeDummy}</span>}
+                            {msg.isPrivate && <span className="control-tag control-tag-private">{s.badgePrivate}</span>}
+                            <time className="control-msg-time">{formatTime(msg.sentAt)}</time>
                           </div>
-                          <p className="text-sm text-muted-foreground mt-1">{msg.message}</p>
+                          <p className="control-msg-text">{msg.message}</p>
                         </div>
+                        {canReply && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="control-msg-reply"
+                            onClick={() => setSelectedSession(chatMsg.sessionId!)}
+                            data-testid={`button-reply-${index}`}
+                          >
+                            <MessageCircle className="h-3.5 w-3.5" />
+                            {s.viewConversation}
+                          </Button>
+                        )}
                       </div>
                     );
                   })}
@@ -743,13 +756,35 @@ export default function AdminControl() {
                 </div>
               </ScrollArea>
 
-              <div className="control-composer space-y-3 border-t pt-3">
+              <div className="control-composer space-y-2 border-t pt-3">
                 <div className="control-compose-meta">
+                  {selectedSession ? (
+                    <span className="control-target control-target-private">
+                      <MessageCircle className="h-3.5 w-3.5 flex-none" />
+                      <span className="truncate">{s.privateMode} {getSessionNickname(selectedSession)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSession(null)}
+                        aria-label={s.backToBroadcast}
+                        title={s.backToBroadcast}
+                        data-testid="button-clear-reply-target"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="control-target">
+                      <Radio className="h-3.5 w-3.5 flex-none" />
+                      <span className="truncate">{s.broadcastMode}</span>
+                    </span>
+                  )}
                   <Input
                     placeholder={s.displayName}
+                    aria-label={s.speakAs}
+                    title={s.speakAs}
                     value={hostName}
                     onChange={(e) => { setHostName(e.target.value); setHostNameEdited(true); }}
-                    className="max-w-[150px]"
+                    className="control-host-name"
                     data-testid="input-host-name"
                   />
                 </div>
@@ -761,24 +796,25 @@ export default function AdminControl() {
                     onChange={(e) => setMessageInput(e.target.value)}
                     disabled={!!selectedSession && !onlineSessions.has(selectedSession)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      // Enter that picks a Chinese IME candidate must not send.
+                      if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
                         selectedSession ? sendReplyToSession() : sendBroadcastMessage();
                       }
                     }}
                     data-testid="input-host-message"
                   />
                   <Button
-                    onClick={selectedSession ? sendReplyToSession : sendBroadcastMessage} 
+                    onClick={selectedSession ? sendReplyToSession : sendBroadcastMessage}
                     className="control-send-button"
-                    variant={selectedSession ? "default" : "secondary"}
-                    disabled={!!selectedSession && !onlineSessions.has(selectedSession)}
+                    disabled={!messageInput.trim() || (!!selectedSession && !onlineSessions.has(selectedSession))}
                     data-testid="button-send-host-message"
                   >
                     <Send className="h-4 w-4" />
-                    <span>{selectedSession ? s.toastReply : s.toastBroadcast}</span>
+                    <span>{selectedSession ? s.sendReply : s.sendBroadcast}</span>
                   </Button>
                 </div>
-                
+
                 {selectedSession && (
                   onlineSessions.has(selectedSession) ? (
                     <p className="text-xs text-muted-foreground">
