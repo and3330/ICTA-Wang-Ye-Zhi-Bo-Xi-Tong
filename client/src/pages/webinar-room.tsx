@@ -73,6 +73,7 @@ export default function WebinarRoom() {
   const [pollResults, setPollResults] = useState<Record<number, number>>({});
   
   const wsRef = useRef<WebSocket | null>(null);
+  const [chatConnected, setChatConnected] = useState(true);
   const [viewerCount, setViewerCount] = useState(1);
   
   const shownMessagesRef = useRef<Set<string>>(new Set());
@@ -332,18 +333,11 @@ export default function WebinarRoom() {
   useEffect(() => {
     if (!isJoined || !id || !sessionId) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    wsRef.current = ws;
+    let disposed = false;
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: "join",
-        data: { webinarId: id, sessionId, nickname, watchToken: watchToken || undefined }
-      }));
-    };
-
-    ws.onmessage = (event) => {
+    const handleMessage = (event: MessageEvent) => {
       const msg: WebSocketMessage = JSON.parse(event.data);
       
       switch (msg.type) {
@@ -392,19 +386,101 @@ export default function WebinarRoom() {
           break;
         }
         case "history":
-          setMessages(msg.data.messages || []);
+          // History arrives on every (re)join. Keep the timed fake-audience
+          // messages that only exist in this browser, and drop optimistic
+          // copies of messages the server has now confirmed.
+          setMessages((prev) => {
+            const history: ChatMessage[] = msg.data.messages || [];
+            const historyIds = new Set(history.map((m) => m.id));
+            const localOnly = prev.filter((m) => {
+              const localId = String(m.id);
+              if (historyIds.has(m.id)) return false;
+              if (localId.startsWith("scheduled_")) return true;
+              if (localId.startsWith("local-")) {
+                return !history.some((h) => h.senderType === "viewer" && h.message === m.message);
+              }
+              return false;
+            });
+            return [...history, ...localOnly].sort(
+              (a, b) => new Date(a.sentAt ?? 0).getTime() - new Date(b.sentAt ?? 0).getTime(),
+            );
+          });
           setLikeCount(msg.data.likeCount || 0);
           break;
+        case "error": {
+          const code = msg.data?.code;
+          if (code === "chat_rejected") {
+            // The server did not save it: remove the newest optimistic copy.
+            setMessages((prev) => {
+              const index = prev.map((m) => String(m.id).startsWith("local-")).lastIndexOf(true);
+              return index === -1 ? prev : [...prev.slice(0, index), ...prev.slice(index + 1)];
+            });
+          }
+          toast({
+            title: code === "ai_busy" ? "AI 助教" : code === "join_failed" ? "無法加入聊天室" : "訊息沒有送出",
+            description: code === "join_failed"
+              ? "請重新整理頁面，或從報名信裡的連結重新進入。"
+              : msg.data?.message || "請稍後再試。",
+            variant: code === "ai_busy" ? "default" : "destructive",
+          });
+          break;
+        }
         case "sessionConfirmed":
           break;
       }
     };
 
-    ws.onclose = (event) => {
-      if (event.code === 1008 || event.code === 1011) setIsJoined(false);
+    const connect = () => {
+      if (disposed) return;
+      retryTimer = null;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        attempt = 0;
+        setChatConnected(true);
+        socket.send(JSON.stringify({
+          type: "join",
+          data: { webinarId: id, sessionId, nickname, watchToken: watchToken || undefined }
+        }));
+      };
+      socket.onmessage = handleMessage;
+      socket.onclose = (event) => {
+        if (wsRef.current === socket) wsRef.current = null;
+        if (disposed) return;
+        // 1008/1011: access expired or could not be verified; reconnecting
+        // would only be refused again.
+        if (event.code === 1008 || event.code === 1011) {
+          setIsJoined(false);
+          return;
+        }
+        // Network drops, a phone suspending the tab and server redeploys all
+        // land here: retry with backoff so chat, AI replies and host pushes
+        // resume without a page reload.
+        setChatConnected(false);
+        const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+        attempt += 1;
+        retryTimer = setTimeout(connect, delay);
+      };
     };
 
+    // Coming back to the tab or regaining network should not wait out the backoff.
+    const reconnectNow = () => {
+      if (disposed || !retryTimer || document.visibilityState !== "visible") return;
+      clearTimeout(retryTimer);
+      connect();
+    };
+    document.addEventListener("visibilitychange", reconnectNow);
+    window.addEventListener("online", reconnectNow);
+
+    connect();
+
     return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      document.removeEventListener("visibilitychange", reconnectNow);
+      window.removeEventListener("online", reconnectNow);
       if (currentTime > 0) {
         saveProgressMutation.mutate({
           viewerSessionId: sessionId,
@@ -412,7 +488,9 @@ export default function WebinarRoom() {
           totalWatched: currentTime,
         });
       }
-      ws.close();
+      const socket = wsRef.current;
+      wsRef.current = null;
+      socket?.close();
     };
   }, [isJoined, id, nickname, sessionId, watchToken]);
 
@@ -436,7 +514,12 @@ export default function WebinarRoom() {
 
   const sendMessage = () => {
     const text = messageInput.trim();
-    if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!text) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      // Keep the typed text so the viewer can resend once chat is back.
+      toast({ title: "聊天室重新連線中", description: "連上後再按一次送出就可以了。" });
+      return;
+    }
     wsRef.current.send(JSON.stringify({
       type: "chat",
       data: {
@@ -533,22 +616,37 @@ export default function WebinarRoom() {
     url: `https://player.vimeo.com/video/${extractVimeoId(effectiveVimeoUrl)}?${extractVimeoHash(effectiveVimeoUrl) ? `h=${extractVimeoHash(effectiveVimeoUrl)}&` : ""}autoplay=0&title=0&byline=0&portrait=0&controls=0`,
   } : undefined);
 
+  // The "live" position is the time since this viewer started watching this
+  // session. The key is scoped to the selected session so a viewer coming back
+  // for a later session (or a replay days later) starts again instead of being
+  // thrown to the last seconds of the video.
+  const liveStartKey = `liveStart_${id}_${sessionId}_${watchState?.selectedSession || watchState?.waitUntil || "on-demand"}`;
+
   const handlePlayerReady = (player: any) => {
     playerRef.current = player;
     setPlayerReady(true);
     try {
-      const startKey = `liveStart_${id}_${sessionId}`;
-      let startedAt = Number(localStorage.getItem(startKey) || 0);
-      if (!startedAt) {
-        startedAt = Date.now();
-        localStorage.setItem(startKey, String(startedAt));
-      }
+      localStorage.removeItem(`liveStart_${id}_${sessionId}`); // pre-fix key, never expired
+      const startedAt = Number(localStorage.getItem(liveStartKey) || 0);
+      if (!startedAt) return; // first visit: the clock starts on first play
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      if (elapsed > 1) {
-        Promise.resolve(player.getDuration()).then((duration: number) => {
-          const target = duration > 0 ? Math.min(elapsed, Math.max(0, duration - 2)) : elapsed;
-          return player.setCurrentTime(target);
-        }).catch(() => {});
+      if (elapsed <= 1) return;
+      Promise.resolve(player.getDuration()).then((duration: number) => {
+        if (duration > 0 && elapsed >= duration - 2) {
+          // The earlier viewing already finished; watch again from the start.
+          localStorage.removeItem(liveStartKey);
+          return;
+        }
+        return player.setCurrentTime(elapsed);
+      }).catch(() => {});
+    } catch {}
+  };
+
+  const handlePlayerPlay = () => {
+    setIsPlaying(true);
+    try {
+      if (!localStorage.getItem(liveStartKey)) {
+        localStorage.setItem(liveStartKey, String(Date.now() - currentTimeRef.current * 1000));
       }
     } catch {}
   };
@@ -695,7 +793,7 @@ export default function WebinarRoom() {
               className="absolute inset-0 w-full h-full"
               onReady={handlePlayerReady}
               onTimeUpdate={(seconds, duration) => { setCurrentTime(Math.floor(seconds)); if (duration) setVideoDuration(duration); }}
-              onPlay={() => setIsPlaying(true)}
+              onPlay={handlePlayerPlay}
               onPause={() => setIsPlaying(false)}
               onEnded={() => {
                 setVideoEnded(true);
@@ -959,6 +1057,16 @@ export default function WebinarRoom() {
           </ScrollArea>
 
           <div className="border-t bg-card p-3">
+            {!chatConnected && (
+              <div
+                className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 rounded-md px-2 py-1.5 mb-2"
+                role="status"
+                data-testid="chat-reconnecting"
+              >
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>聊天室連線中斷，正在重新連線…</span>
+              </div>
+            )}
             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2 px-1">
               <span className="truncate">{nickname}</span>
               <span className="ml-auto flex-shrink-0 opacity-70">Shift + Enter 送出</span>

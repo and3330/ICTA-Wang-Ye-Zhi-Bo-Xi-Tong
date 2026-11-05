@@ -908,7 +908,7 @@ export async function registerRoutes(
             if (!requestedWebinar || !canViewWebinar(requestedWebinar, sessionUserId, sessionActor?.isSuperAdmin === true && sessionActor.isActive)) {
               ws.send(JSON.stringify({
                 type: "error",
-                data: { message: "Webinar not found or unavailable" },
+                data: { message: "Webinar not found or unavailable", code: "join_failed" },
               }));
               break;
             }
@@ -917,7 +917,7 @@ export async function registerRoutes(
             if (!isPrivilegedViewer) {
               const owner = requestedWebinar.userId ? await storage.getUser(requestedWebinar.userId) : undefined;
               if (!await hasStoredPublicEntitlement(owner)) {
-                ws.send(JSON.stringify({ type: "error", data: { message: "Webinar not found or unavailable" } }));
+                ws.send(JSON.stringify({ type: "error", data: { message: "Webinar not found or unavailable", code: "join_failed" } }));
                 break;
               }
               const token = verifyWatchToken(watchToken);
@@ -925,11 +925,11 @@ export async function registerRoutes(
                 ? await storage.getRegistration(token.registrationId)
                 : undefined;
               if (!registration || registration.webinarId !== webinarId) {
-                ws.send(JSON.stringify({ type: "error", data: { message: "Invalid watch token" } }));
+                ws.send(JSON.stringify({ type: "error", data: { message: "Invalid watch token", code: "join_failed" } }));
                 break;
               }
               if (!webinarWatchEligibility(requestedWebinar, registration).canWatch) {
-                ws.send(JSON.stringify({ type: "error", data: { message: "This webinar is not currently available" } }));
+                ws.send(JSON.stringify({ type: "error", data: { message: "This webinar is not currently available", code: "join_failed" } }));
                 break;
               }
               joinedRegistrationId = registration.id;
@@ -1066,7 +1066,8 @@ export async function registerRoutes(
             if (!sessionId) break;
             const validatedChat = validateViewerChatContent(chatMessage);
             if (!validatedChat.ok) {
-              ws.send(JSON.stringify({ type: "error", data: { message: validatedChat.message } }));
+              // chat_rejected: the message was not saved, so the viewer must not keep it as sent.
+              ws.send(JSON.stringify({ type: "error", data: { message: validatedChat.message, code: "chat_rejected" } }));
               break;
             }
             const viewerChatMessage = validatedChat.value;
@@ -1446,7 +1447,7 @@ export async function registerRoutes(
       }));
     if (!admitted.accepted) {
       if (viewerSocket.readyState === WebSocket.OPEN) {
-        viewerSocket.send(JSON.stringify({ type: "error", data: { message: admitted.message } }));
+        viewerSocket.send(JSON.stringify({ type: "error", data: { message: admitted.message, code: "ai_busy" } }));
       }
       return;
     }
