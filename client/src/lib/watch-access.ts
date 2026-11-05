@@ -1,5 +1,7 @@
 export type WatchState = {
   registrationId?: string;
+  /** The name the viewer registered with, used to prefill the chat name. */
+  viewerName?: string | null;
   selectedSession?: string | null;
   waitUntil?: string | null;
   vimeoUrl?: string | null;

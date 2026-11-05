@@ -20,6 +20,8 @@ import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
 import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
+import { ViewerVolumeControl } from "@/components/viewer-volume";
+import { viewerCheckoutError } from "@/lib/viewer-messages";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -93,6 +95,9 @@ export default function EmbedWebinar() {
   const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
   const effectivePlayback = canWatch && watchToken ? watchState?.playback : undefined;
   const hasPlayback = !!(effectivePlayback?.url || effectivePlayback?.embedUrl || effectiveVimeoUrl);
+  useEffect(() => {
+    if (watchState?.viewerName) setNicknameInput(current => current || watchState.viewerName!);
+  }, [watchState?.viewerName]);
   useAttendanceTracking({
     registrationId: watchState?.registrationId,
     watchToken,
@@ -425,8 +430,9 @@ export default function EmbedWebinar() {
             placeholder="請輸入您的暱稱"
             value={nicknameInput}
             onChange={(e) => setNicknameInput(e.target.value)}
+            autoFocus
             onKeyDown={(e) => {
-              if (e.key === "Enter" && nicknameInput.trim()) {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && nicknameInput.trim()) {
                 setNickname(nicknameInput.trim());
                 setIsJoined(true);
                 trackWebinarEvent(id, "webinar_enter");
@@ -511,6 +517,7 @@ export default function EmbedWebinar() {
               {playError && <span role="alert" className="max-w-sm px-4 text-sm">{playError}</span>}
             </button>
           )}
+          {canWatch && playerReady && <ViewerVolumeControl playerRef={playerRef} className="absolute top-2 left-2 z-10" />}
         </div>
         {visibleTip && (
           <div className="absolute top-2 right-2 z-20 max-w-[70%] rounded-md bg-background/95 p-2 shadow-lg" data-testid="embed-tip-card">
@@ -544,7 +551,7 @@ export default function EmbedWebinar() {
                     sessionId,
                     registrationId: watchState.registrationId,
                     watchToken: watchToken || undefined,
-                  }).catch(error => setCheckoutError(error instanceof Error ? error.message : "無法開啟付款，請稍後再試。"));
+                  }).catch(error => setCheckoutError(viewerCheckoutError(error)));
                 }
                 else if (cta.url) void openTrackedExternalUrl(
                   id,
@@ -613,7 +620,7 @@ export default function EmbedWebinar() {
             placeholder="輸入訊息..."
             value={messageInput}
             onChange={(e) => setMessageInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") sendMessage(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) sendMessage(); }}
             className="flex-1"
             data-testid="input-embed-chat"
           />
@@ -627,7 +634,9 @@ export default function EmbedWebinar() {
         onOpenChange={open => !open && setCheckoutCtaId(null)}
         onContinue={async (buyer: CheckoutBuyer) => {
           if (!id || !checkoutCtaId) throw new Error("目前無法確認商品，請關閉後再試。");
-          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer });
+          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer }).catch(error => {
+            throw new Error(viewerCheckoutError(error));
+          });
         }}
       />
       {checkoutError && <p className="border-t p-3 text-sm text-destructive" role="alert">{checkoutError}</p>}

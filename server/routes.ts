@@ -4466,6 +4466,19 @@ export async function registerRoutes(
 
   app.delete("/api/webinars/:id/sessions/:sessionId", requireWebinarOwner, async (req, res) => {
     try {
+      const webinarId = req.params.id as string;
+      const existing = (await storage.getWebinarSessions(webinarId)).find(item => item.id === req.params.sessionId);
+      if (!existing) return res.status(404).json({ message: "Session not found" });
+      // Deleting a session people registered for leaves them without a time;
+      // the admin must confirm that explicitly.
+      if (req.query.force !== "1") {
+        const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
+          .from(registrations)
+          .where(and(eq(registrations.webinarId, webinarId), eq(registrations.selectedSession, existing.scheduledStart)));
+        if (count > 0) {
+          return res.status(409).json({ message: `已有 ${count} 人報名這個場次`, registrations: count });
+        }
+      }
       const deleted = await storage.deleteWebinarSession(req.params.id as string, req.params.sessionId as string);
       if (!deleted) return res.status(404).json({ message: "Session not found" });
       res.json({ success: true });
@@ -4665,6 +4678,7 @@ export async function registerRoutes(
     }
     res.json({
       registrationId: registration.id,
+      viewerName: registration.nickname || registration.name || null,
       selectedSession,
       canWatch,
       waitUntil: canWatch ? null : selectedSession,

@@ -23,6 +23,8 @@ import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
 import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
+import { ViewerVolumeControl } from "@/components/viewer-volume";
+import { viewerCheckoutError } from "@/lib/viewer-messages";
 
 interface WebSocketMessage {
   type: string;
@@ -164,6 +166,11 @@ export default function WebinarRoom() {
     enabled: isJoined && canWatch,
     currentPosition: currentTime,
   });
+
+  // A viewer who came from the registration email already gave a name.
+  useEffect(() => {
+    if (watchState?.viewerName) setNicknameInput((current) => current || watchState.viewerName!);
+  }, [watchState?.viewerName]);
 
   const isOnDemand = webinar?.scheduleMode && typeof webinar.scheduleMode === 'object' && (webinar.scheduleMode as any).onDemand;
   const isJustInTime = webinar?.scheduleMode && typeof webinar.scheduleMode === 'object' && (webinar.scheduleMode as any).justInTime;
@@ -704,13 +711,16 @@ export default function WebinarRoom() {
                 進入後即刻開始
               </p>
             )}
-            <p className="text-center text-muted-foreground mb-6">請輸入您的暱稱加入直播</p>
+            <p className="text-center text-muted-foreground mb-6">
+              {watchState?.viewerName ? "確認聊天室顯示的名字，就可以進場" : "請輸入您的暱稱加入直播"}
+            </p>
             <div className="space-y-4">
               <Input
                 placeholder="輸入暱稱"
                 value={nicknameInput}
                 onChange={(e) => setNicknameInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleJoin()}
+                autoFocus
                 data-testid="input-nickname"
               />
               <Button onClick={handleJoin} className="w-full" data-testid="button-join">
@@ -810,7 +820,7 @@ export default function WebinarRoom() {
                   <Button
                     key={cta.id}
                     variant={cta.style === "primary" ? "default" : cta.style === "danger" ? "destructive" : "secondary"}
-                    className="w-full sm:w-auto animate-pulse"
+                    className="w-full sm:w-auto animate-[pulse_1s_ease-in-out_3]"
                     onClick={() => {
                       if (cta.offerId && id) {
                         // A verified registration is resolved by the server from the viewing
@@ -820,7 +830,7 @@ export default function WebinarRoom() {
                           return;
                         }
                         void openOfferCheckout(id, cta.id, { sessionId, registrationId: watchState.registrationId, watchToken: watchToken || undefined }).catch((error) => {
-                          toast({ title: error.message || "Unable to start checkout", variant: "destructive" });
+                          toast({ title: viewerCheckoutError(error), variant: "destructive" });
                         });
                       } else if (cta.url) {
                         void openTrackedExternalUrl(
@@ -839,11 +849,12 @@ export default function WebinarRoom() {
               </div>
             )}
 
-            <div className="absolute top-3 left-3 z-10">
+            <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
               <Badge variant="secondary" className="bg-black/60 text-white border-0 backdrop-blur-sm">
                 <div className="w-2 h-2 rounded-full bg-red-500 mr-1.5 animate-pulse" />
                 LIVE
               </Badge>
+              {playerReady && <ViewerVolumeControl playerRef={playerRef} />}
             </div>
             
             {visibleTip && (
@@ -1050,7 +1061,7 @@ export default function WebinarRoom() {
             )}
             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2 px-1">
               <span className="truncate">{nickname}</span>
-              <span className="ml-auto flex-shrink-0 opacity-70">Shift + Enter 送出</span>
+              <span className="ml-auto flex-shrink-0 opacity-70">Enter 送出</span>
             </div>
             <div className="flex gap-2 items-center">
               <Input
@@ -1059,7 +1070,8 @@ export default function WebinarRoom() {
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && e.shiftKey && !e.nativeEvent.isComposing) {
+                  // isComposing: Enter that picks a Chinese IME candidate must not send.
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     sendMessage();
                   }
@@ -1086,7 +1098,9 @@ export default function WebinarRoom() {
         onOpenChange={open => !open && setCheckoutCtaId(null)}
         onContinue={async (buyer: CheckoutBuyer) => {
           if (!id || !checkoutCtaId) throw new Error("目前無法確認商品，請關閉後再試。");
-          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer });
+          await openOfferCheckout(id, checkoutCtaId, { sessionId, buyer }).catch((error) => {
+            throw new Error(viewerCheckoutError(error));
+          });
         }}
       />
 

@@ -31,6 +31,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { parseClock } from "@/lib/clock-time";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, LineChart, Line } from "recharts";
 import type { Webinar, FakeUser, ScheduledMessage, CtaButton, Poll, Registration, Tip, Question, FeedbackSurvey, Webhook, WebinarDocument, EmailSequence, SocialPost, ChatMessage } from "@shared/schema";
@@ -209,6 +211,44 @@ const t: Record<LangAdmin, Record<string, string>> = {
     placeholderImageUrl: "或輸入圖片網址",
     btnSave: "儲存",
     btnCancel: "取消",
+    btnEdit: "編輯",
+    valClockFormat: "請用「分:秒」格式，例如 5:30 或 1:05:30",
+    valPollOptionsMin: "投票至少要有 2 個選項，用逗號分隔",
+    editCtaTitle: "編輯 CTA 按鈕",
+    editCtaAria: "編輯 CTA",
+    editPollTitle: "編輯投票",
+    editTipTitle: "編輯小提示",
+    editFakeUserTitle: "編輯假人",
+    editMessageTitle: "編輯預排訊息",
+    toastPollUpdated: "投票已更新",
+    toastTipUpdated: "小提示已更新",
+    toastFakeUserUpdated: "假人已更新",
+    toastMessageUpdated: "預排訊息已更新",
+    toastSessionMoved: "場次時間已更新",
+    toastSurveyUpdated: "問卷已更新",
+    toastSurveyOn: "問卷已啟用",
+    toastSurveyOff: "問卷已停用",
+    sessionNewTimeAria: "新的場次時間",
+    sessionEditAria: "修改場次時間",
+    surveyEnableAria: "啟用回饋問卷",
+    surveyEditTitle: "編輯回饋問卷",
+    surveyEditDesc: "題目改了之後，舊的統計仍照原題目編號計算；刪掉的題目不再顯示統計。",
+    surveyTitleLabel: "問卷標題",
+    surveyQuestionPrefix: "第 ",
+    surveyQuestionSuffix: " 題",
+    surveyDeleteQuestion: "刪除這題",
+    surveyQuestionPlaceholder: "題目",
+    surveyOptionsPlaceholder: "選項，用逗號分隔",
+    surveyAddQuestion: "新增題目",
+    surveyNeedTitle: "請填問卷標題",
+    surveyNeedQuestion: "問卷至少要有 1 題",
+    surveyQuestionEmpty: "每一題都要填題目",
+    surveyOptionsMin: "選擇題至少要有 2 個選項：",
+    confirmDeleteTitle: "確定要刪除嗎？",
+    confirmDeleteDesc: "刪除後無法復原。",
+    confirmDeleteSessionTitle: "這個場次已經有人報名",
+    confirmDeleteSessionDesc: "已有 {n} 人報名這個場次。刪除後，他們不會收到這個場次的提醒，也無法在這個時間觀看。確定要刪除嗎？",
+    btnDeleteConfirm: "刪除",
     headerSubtitle: "直播間設定",
     btnLiveControl: "即時控制台",
     tabSchedule: "排程",
@@ -658,6 +698,44 @@ const t: Record<LangAdmin, Record<string, string>> = {
     placeholderImageUrl: "或输入图片网址",
     btnSave: "保存",
     btnCancel: "取消",
+    btnEdit: "编辑",
+    valClockFormat: "请用「分:秒」格式，例如 5:30 或 1:05:30",
+    valPollOptionsMin: "投票至少要有 2 个选项，用逗号分隔",
+    editCtaTitle: "编辑 CTA 按钮",
+    editCtaAria: "编辑 CTA",
+    editPollTitle: "编辑投票",
+    editTipTitle: "编辑小提示",
+    editFakeUserTitle: "编辑假人",
+    editMessageTitle: "编辑预排消息",
+    toastPollUpdated: "投票已更新",
+    toastTipUpdated: "小提示已更新",
+    toastFakeUserUpdated: "假人已更新",
+    toastMessageUpdated: "预排消息已更新",
+    toastSessionMoved: "场次时间已更新",
+    toastSurveyUpdated: "问卷已更新",
+    toastSurveyOn: "问卷已启用",
+    toastSurveyOff: "问卷已停用",
+    sessionNewTimeAria: "新的场次时间",
+    sessionEditAria: "修改场次时间",
+    surveyEnableAria: "启用反馈问卷",
+    surveyEditTitle: "编辑反馈问卷",
+    surveyEditDesc: "题目改了之后，旧的统计仍按原题目编号计算；删掉的题目不再显示统计。",
+    surveyTitleLabel: "问卷标题",
+    surveyQuestionPrefix: "第 ",
+    surveyQuestionSuffix: " 题",
+    surveyDeleteQuestion: "删除这题",
+    surveyQuestionPlaceholder: "题目",
+    surveyOptionsPlaceholder: "选项，用逗号分隔",
+    surveyAddQuestion: "新增题目",
+    surveyNeedTitle: "请填写问卷标题",
+    surveyNeedQuestion: "问卷至少要有 1 题",
+    surveyQuestionEmpty: "每一题都要填写题目",
+    surveyOptionsMin: "选择题至少要有 2 个选项：",
+    confirmDeleteTitle: "确定要删除吗？",
+    confirmDeleteDesc: "删除后无法恢复。",
+    confirmDeleteSessionTitle: "这个场次已经有人报名",
+    confirmDeleteSessionDesc: "已有 {n} 人报名这个场次。删除后，他们不会收到这个场次的提醒，也无法在这个时间观看。确定要删除吗？",
+    btnDeleteConfirm: "删除",
     headerSubtitle: "直播间设置",
     btnLiveControl: "实时控制台",
     tabSchedule: "排程",
@@ -1067,15 +1145,15 @@ function createSchemas(s: Record<string, string>) {
     scheduledMessage: z.object({
       fakeUserId: z.string().min(1, s.valSelectFakeUser),
       message: z.string().min(1, s.valEnterMessage),
-      triggerTime: z.string().min(1, s.valEnterTriggerTime),
+      triggerTime: z.string().min(1, s.valEnterTriggerTime).refine(value => parseClock(value) !== null, s.valClockFormat),
     }),
     cta: z.object({
       text: z.string().min(1, s.valEnterButtonText),
       url: z.string().optional(),
       offerId: z.string().optional(),
       salesPageId: z.string().optional(),
-      startTime: z.string().min(1, s.valEnterStartTime),
-      endTime: z.string().optional(),
+      startTime: z.string().min(1, s.valEnterStartTime).refine(value => parseClock(value) !== null, s.valClockFormat),
+      endTime: z.string().optional().refine(value => !value || parseClock(value) !== null, s.valClockFormat),
       style: z.string().default("primary"),
     }).superRefine((value, context) => {
       if (!value.offerId && !value.salesPageId && !z.string().url().safeParse(value.url).success) {
@@ -1085,13 +1163,13 @@ function createSchemas(s: Record<string, string>) {
     poll: z.object({
       question: z.string().min(1, s.valEnterQuestion),
       options: z.string().min(1, s.valEnterOptions),
-      triggerTime: z.string().min(1, s.valEnterTriggerTime),
+      triggerTime: z.string().min(1, s.valEnterTriggerTime).refine(value => parseClock(value) !== null, s.valClockFormat),
       duration: z.string().default("60"),
     }),
     tip: z.object({
       title: z.string().min(1, s.valEnterTitle),
       content: z.string().min(1, s.valEnterContent),
-      triggerTime: z.string().min(1, s.valEnterTriggerTime),
+      triggerTime: z.string().min(1, s.valEnterTriggerTime).refine(value => parseClock(value) !== null, s.valClockFormat),
       duration: z.string().default("30"),
     }),
   };
@@ -1148,6 +1226,8 @@ export default function AdminWebinarDetail() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionDate, setEditingSessionDate] = useState("");
   const [surveyDraft, setSurveyDraft] = useState<SurveyDraft | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; run: () => void } | null>(null);
+  const confirmDelete = (run: () => void) => setPendingConfirm({ title: s.confirmDeleteTitle, description: s.confirmDeleteDesc, run });
   const [funnelFrom, setFunnelFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 30);
@@ -1697,7 +1777,7 @@ export default function AdminWebinarDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "fake-users"] });
       setIsFakeUserOpen(false);
-      toast({ title: editingFakeUser ? "假人已更新" : s.toastFakeUserCreated });
+      toast({ title: editingFakeUser ? s.toastFakeUserUpdated : s.toastFakeUserCreated });
       setEditingFakeUser(null);
       fakeUserForm.reset();
     },
@@ -1706,17 +1786,16 @@ export default function AdminWebinarDetail() {
 
   const createMessage = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.scheduledMessage>) => {
-      const [min, sec] = data.triggerTime.split(":").map(Number);
       return apiRequest(
         editingMessage ? "PATCH" : "POST",
         editingMessage ? `/api/webinars/${id}/scheduled-messages/${editingMessage.id}` : `/api/webinars/${id}/scheduled-messages`,
-        { ...data, triggerTime: min * 60 + (sec || 0) },
+        { ...data, triggerTime: parseClock(data.triggerTime) ?? 0 },
       );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "scheduled-messages"] });
       setIsMessageOpen(false);
-      toast({ title: editingMessage ? "預排訊息已更新" : s.toastScheduledMsgCreated });
+      toast({ title: editingMessage ? s.toastMessageUpdated : s.toastScheduledMsgCreated });
       setEditingMessage(null);
       messageForm.reset();
     },
@@ -1725,10 +1804,7 @@ export default function AdminWebinarDetail() {
 
   const createCta = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.cta>) => {
-      const parseTime = (t: string) => {
-        const [min, sec] = t.split(":").map(Number);
-        return min * 60 + (sec || 0);
-      };
+      const parseTime = (t: string) => parseClock(t) ?? 0;
       return apiRequest(editingCta ? "PATCH" : "POST", editingCta ? `/api/webinars/${id}/ctas/${editingCta.id}` : `/api/webinars/${id}/ctas`, {
         text: data.text,
         url: data.offerId || data.salesPageId ? null : data.url,
@@ -1788,21 +1864,20 @@ export default function AdminWebinarDetail() {
 
   const createPoll = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.poll>) => {
-      const [min, sec] = data.triggerTime.split(":").map(Number);
       const options = data.options.split(/[,，]/).map(o => o.trim()).filter(Boolean);
-      if (options.length < 2) throw new Error("投票至少要有 2 個選項，用逗號分隔");
+      if (options.length < 2) throw new Error(s.valPollOptionsMin);
       const duration = parseInt(data.duration, 10);
       return apiRequest(editingPoll ? "PATCH" : "POST", editingPoll ? `/api/webinars/${id}/polls/${editingPoll.id}` : `/api/webinars/${id}/polls`, {
         question: data.question,
         options,
-        triggerTime: min * 60 + (sec || 0),
+        triggerTime: parseClock(data.triggerTime) ?? 0,
         duration: Number.isFinite(duration) ? duration : 60,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "polls"] });
       setIsPollOpen(false);
-      toast({ title: editingPoll ? "投票已更新" : s.toastPollCreated });
+      toast({ title: editingPoll ? s.toastPollUpdated : s.toastPollCreated });
       setEditingPoll(null);
       pollForm.reset();
     },
@@ -1811,19 +1886,18 @@ export default function AdminWebinarDetail() {
 
   const createTip = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.tip>) => {
-      const [min, sec] = data.triggerTime.split(":").map(Number);
       const duration = parseInt(data.duration, 10);
       return apiRequest(editingTip ? "PATCH" : "POST", editingTip ? `/api/webinars/${id}/tips/${editingTip.id}` : `/api/webinars/${id}/tips`, {
         title: data.title,
         content: data.content,
-        triggerTime: min * 60 + (sec || 0),
+        triggerTime: parseClock(data.triggerTime) ?? 0,
         duration: Number.isFinite(duration) ? duration : 30,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "tips"] });
       setIsTipOpen(false);
-      toast({ title: editingTip ? "小提示已更新" : s.toastTipCreated });
+      toast({ title: editingTip ? s.toastTipUpdated : s.toastTipCreated });
       setEditingTip(null);
       tipForm.reset();
     },
@@ -1836,7 +1910,7 @@ export default function AdminWebinarDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "sessions"] });
       setEditingSessionId(null);
-      toast({ title: "場次時間已更新" });
+      toast({ title: s.toastSessionMoved });
     },
     onError: (error: Error) => toast({
       title: s.toastSaveFailed,
@@ -1849,8 +1923,8 @@ export default function AdminWebinarDetail() {
     mutationFn: async ({ surveyId, draft }: { surveyId: string; draft: SurveyDraft }) => {
       const questions = draft.questions.map((q) => {
         const options = q.options.split(/[,，]/).map((o) => o.trim()).filter(Boolean);
-        if (!q.question.trim()) throw new Error("每一題都要填題目");
-        if (q.type === "multiChoice" && options.length < 2) throw new Error(`「${q.question}」至少要有 2 個選項`);
+        if (!q.question.trim()) throw new Error(s.surveyQuestionEmpty);
+        if (q.type === "multiChoice" && options.length < 2) throw new Error(`${s.surveyOptionsMin}${q.question}`);
         return {
           id: q.id,
           type: q.type,
@@ -1859,14 +1933,14 @@ export default function AdminWebinarDetail() {
           ...(q.type === "multiChoice" ? { options } : {}),
         };
       });
-      if (!draft.title.trim()) throw new Error("請填問卷標題");
-      if (questions.length === 0) throw new Error("問卷至少要有 1 題");
+      if (!draft.title.trim()) throw new Error(s.surveyNeedTitle);
+      if (questions.length === 0) throw new Error(s.surveyNeedQuestion);
       return apiRequest("PATCH", `/api/webinars/${id}/feedback-survey/${surveyId}`, { title: draft.title.trim(), questions });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "feedback-survey"] });
       setSurveyDraft(null);
-      toast({ title: "問卷已更新" });
+      toast({ title: s.toastSurveyUpdated });
     },
     onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
@@ -1876,7 +1950,7 @@ export default function AdminWebinarDetail() {
       apiRequest("PATCH", `/api/webinars/${id}/feedback-survey/${surveyId}`, { isActive }),
     onSuccess: (_, { isActive }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "feedback-survey"] });
-      toast({ title: isActive ? "問卷已啟用" : "問卷已停用" });
+      toast({ title: isActive ? s.toastSurveyOn : s.toastSurveyOff });
     },
     onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
@@ -3038,7 +3112,7 @@ export default function AdminWebinarDetail() {
                                   <div className="flex items-center gap-1 flex-wrap">
                                     <Input
                                       type="datetime-local"
-                                      aria-label="新的場次時間"
+                                      aria-label={s.sessionNewTimeAria}
                                       value={editingSessionDate}
                                       onChange={(e) => setEditingSessionDate(e.target.value)}
                                       className="h-8 w-auto"
@@ -3050,7 +3124,7 @@ export default function AdminWebinarDetail() {
                                       onClick={() => moveSession.mutate({ sessionId: session.id, date: editingSessionDate })}
                                       data-testid={`button-save-session-${session.id}`}
                                     >
-                                      儲存
+                                      {s.btnSave}
                                     </Button>
                                     <Button size="sm" variant="ghost" onClick={() => setEditingSessionId(null)}>
                                       {s.btnCancel}
@@ -3061,7 +3135,7 @@ export default function AdminWebinarDetail() {
                                 <Button
                                   size="icon"
                                   variant="ghost"
-                                  aria-label="修改場次時間"
+                                  aria-label={s.sessionEditAria}
                                   onClick={() => {
                                     const start = new Date(session.scheduledStart);
                                     setEditingSessionDate(new Date(start.getTime() - start.getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
@@ -3074,14 +3148,26 @@ export default function AdminWebinarDetail() {
                                 <Button
                                   size="icon"
                                   variant="ghost"
-                                  onClick={async () => {
-                                    try {
-                                      await apiRequest("DELETE", `/api/webinars/${id}/sessions/${session.id}`);
-                                      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "sessions"] });
-                                      toast({ title: s.toastSessionDeleted });
-                                    } catch (err: any) {
-                                      toast({ title: s.toastDeleteFailed, description: err.message, variant: "destructive" });
-                                    }
+                                  onClick={() => {
+                                    const remove = async (force: boolean) => {
+                                      try {
+                                        await apiRequest("DELETE", `/api/webinars/${id}/sessions/${session.id}${force ? "?force=1" : ""}`);
+                                        queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "sessions"] });
+                                        toast({ title: s.toastSessionDeleted });
+                                      } catch (err: any) {
+                                        const registered = String(err?.message || "").match(/^409:.*"registrations":(\d+)/);
+                                        if (registered) {
+                                          setPendingConfirm({
+                                            title: s.confirmDeleteSessionTitle,
+                                            description: s.confirmDeleteSessionDesc.replace("{n}", registered[1]),
+                                            run: () => void remove(true),
+                                          });
+                                          return;
+                                        }
+                                        toast({ title: s.toastDeleteFailed, description: err.message, variant: "destructive" });
+                                      }
+                                    };
+                                    confirmDelete(() => void remove(false));
                                   }}
                                   data-testid={`button-delete-session-${session.id}`}
                                 >
@@ -3636,7 +3722,7 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{editingCta ? "編輯 CTA 按鈕" : s.interCtaDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingCta ? s.editCtaTitle : s.interCtaDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...ctaForm}>
                         <form onSubmit={ctaForm.handleSubmit((data) => createCta.mutate(data))} className="space-y-4">
@@ -3740,7 +3826,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createCta.isPending}>
                             {createCta.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {editingCta ? "儲存" : s.btnCreate}
+                            {editingCta ? s.btnSave : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -3772,7 +3858,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            aria-label="編輯 CTA"
+                            aria-label={s.editCtaAria}
                             onClick={() => {
                               setEditingCta(cta);
                               ctaForm.reset({
@@ -3792,7 +3878,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => deleteMutation.mutate({ type: "ctas", itemId: cta.id })}
+                            onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "ctas", itemId: cta.id }))}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
@@ -3820,7 +3906,7 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{editingPoll ? "編輯投票" : s.interPollDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingPoll ? s.editPollTitle : s.interPollDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...pollForm}>
                         <form onSubmit={pollForm.handleSubmit((data) => createPoll.mutate(data))} className="space-y-4">
@@ -3880,7 +3966,7 @@ export default function AdminWebinarDetail() {
                           </div>
                           <Button type="submit" disabled={createPoll.isPending}>
                             {createPoll.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {editingPoll ? "儲存" : s.btnCreate}
+                            {editingPoll ? s.btnSave : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -3909,7 +3995,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            aria-label="編輯投票"
+                            aria-label={s.editPollTitle}
                             data-testid={`button-edit-poll-${poll.id}`}
                             onClick={() => {
                               setEditingPoll(poll);
@@ -3927,7 +4013,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => deleteMutation.mutate({ type: "polls", itemId: poll.id })}
+                            onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "polls", itemId: poll.id }))}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
@@ -3955,7 +4041,7 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{editingTip ? "編輯小提示" : s.interTipDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingTip ? s.editTipTitle : s.interTipDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...tipForm}>
                         <form onSubmit={tipForm.handleSubmit((data) => createTip.mutate(data))} className="space-y-4">
@@ -4015,7 +4101,7 @@ export default function AdminWebinarDetail() {
                           </div>
                           <Button type="submit" disabled={createTip.isPending}>
                             {createTip.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {editingTip ? "儲存" : s.btnCreate}
+                            {editingTip ? s.btnSave : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -4041,7 +4127,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            aria-label="編輯小提示"
+                            aria-label={s.editTipTitle}
                             data-testid={`button-edit-tip-${tip.id}`}
                             onClick={() => {
                               setEditingTip(tip);
@@ -4059,7 +4145,7 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => deleteMutation.mutate({ type: "tips", itemId: tip.id })}
+                            onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "tips", itemId: tip.id }))}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
@@ -4102,13 +4188,13 @@ export default function AdminWebinarDetail() {
                             data-testid="button-edit-survey"
                           >
                             <Edit className="h-4 w-4 mr-1" />
-                            編輯
+                            {s.btnEdit}
                           </Button>
                           <Switch
                             checked={!!feedbackSurvey.isActive}
                             disabled={toggleSurvey.isPending}
                             onCheckedChange={(checked) => toggleSurvey.mutate({ surveyId: feedbackSurvey.id, isActive: checked })}
-                            aria-label="啟用回饋問卷"
+                            aria-label={s.surveyEnableAria}
                             data-testid="switch-survey-active"
                           />
                         </div>
@@ -4262,13 +4348,13 @@ export default function AdminWebinarDetail() {
               <Dialog open={!!surveyDraft} onOpenChange={(open) => { if (!open) setSurveyDraft(null); }}>
                 <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle>編輯回饋問卷</DialogTitle>
-                    <DialogDescription>題目改了之後，舊的統計仍照原題目編號計算；刪掉的題目不再顯示統計。</DialogDescription>
+                    <DialogTitle>{s.surveyEditTitle}</DialogTitle>
+                    <DialogDescription>{s.surveyEditDesc}</DialogDescription>
                   </DialogHeader>
                   {surveyDraft && (
                     <div className="space-y-4">
                       <div className="space-y-1">
-                        <Label>問卷標題</Label>
+                        <Label>{s.surveyTitleLabel}</Label>
                         <Input
                           value={surveyDraft.title}
                           onChange={(e) => setSurveyDraft({ ...surveyDraft, title: e.target.value })}
@@ -4283,7 +4369,7 @@ export default function AdminWebinarDetail() {
                         return (
                           <div key={q.id} className="space-y-2 rounded-md border p-3" data-testid={`survey-question-editor-${index}`}>
                             <div className="flex items-center gap-2">
-                              <span className="text-xs text-muted-foreground">第 {index + 1} 題</span>
+                              <span className="text-xs text-muted-foreground">{s.surveyQuestionPrefix}{index + 1}{s.surveyQuestionSuffix}</span>
                               <Select value={q.type} onValueChange={(value) => update({ type: value as SurveyDraftQuestion["type"] })}>
                                 <SelectTrigger className="h-8 w-[120px]"><SelectValue /></SelectTrigger>
                                 <SelectContent>
@@ -4303,7 +4389,7 @@ export default function AdminWebinarDetail() {
                               <Button
                                 size="icon"
                                 variant="ghost"
-                                aria-label="刪除這題"
+                                aria-label={s.surveyDeleteQuestion}
                                 onClick={() => setSurveyDraft({ ...surveyDraft, questions: surveyDraft.questions.filter((_, i) => i !== index) })}
                               >
                                 <Trash2 className="h-4 w-4 text-destructive" />
@@ -4311,14 +4397,14 @@ export default function AdminWebinarDetail() {
                             </div>
                             <Input
                               value={q.question}
-                              placeholder="題目"
+                              placeholder={s.surveyQuestionPlaceholder}
                               onChange={(e) => update({ question: e.target.value })}
                               data-testid={`input-survey-question-${index}`}
                             />
                             {q.type === "multiChoice" && (
                               <Input
                                 value={q.options}
-                                placeholder="選項，用逗號分隔"
+                                placeholder={s.surveyOptionsPlaceholder}
                                 onChange={(e) => update({ options: e.target.value })}
                                 data-testid={`input-survey-options-${index}`}
                               />
@@ -4336,7 +4422,7 @@ export default function AdminWebinarDetail() {
                         data-testid="button-add-survey-question"
                       >
                         <Plus className="h-4 w-4 mr-1" />
-                        新增題目
+                        {s.surveyAddQuestion}
                       </Button>
                       <div className="flex justify-end gap-2 border-t pt-3">
                         <Button variant="ghost" onClick={() => setSurveyDraft(null)}>{s.btnCancel}</Button>
@@ -4346,7 +4432,7 @@ export default function AdminWebinarDetail() {
                           data-testid="button-save-survey"
                         >
                           {saveSurvey.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                          儲存
+                          {s.btnSave}
                         </Button>
                       </div>
                     </div>
@@ -4390,7 +4476,7 @@ export default function AdminWebinarDetail() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  onClick={() => deleteMutation.mutate({ type: "questions", itemId: q.id })}
+                                  onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "questions", itemId: q.id }))}
                                 >
                                   <Trash2 className="h-4 w-4 text-destructive" />
                                 </Button>
@@ -4563,7 +4649,7 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{editingFakeUser ? "編輯假人" : s.chatFakeUserDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingFakeUser ? s.editFakeUserTitle : s.chatFakeUserDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...fakeUserForm}>
                         <form onSubmit={fakeUserForm.handleSubmit((data) => createFakeUser.mutate(data))} className="space-y-4">
@@ -4582,7 +4668,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createFakeUser.isPending}>
                             {createFakeUser.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {editingFakeUser ? "儲存" : s.btnCreate}
+                            {editingFakeUser ? s.btnSave : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -4599,7 +4685,7 @@ export default function AdminWebinarDetail() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              aria-label="編輯假人"
+                              aria-label={s.editFakeUserTitle}
                               data-testid={`button-edit-fake-user-${user.id}`}
                               onClick={() => {
                                 setEditingFakeUser(user);
@@ -4612,7 +4698,7 @@ export default function AdminWebinarDetail() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => deleteMutation.mutate({ type: "fake-users", itemId: user.id })}
+                              onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "fake-users", itemId: user.id }))}
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>
@@ -4641,7 +4727,7 @@ export default function AdminWebinarDetail() {
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{editingMessage ? "編輯預排訊息" : s.chatMsgDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingMessage ? s.editMessageTitle : s.chatMsgDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...messageForm}>
                         <form onSubmit={messageForm.handleSubmit((data) => createMessage.mutate(data))} className="space-y-4">
@@ -4697,7 +4783,7 @@ export default function AdminWebinarDetail() {
                           />
                           <Button type="submit" disabled={createMessage.isPending}>
                             {createMessage.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {editingMessage ? "儲存" : s.btnCreate}
+                            {editingMessage ? s.btnSave : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -4725,7 +4811,7 @@ export default function AdminWebinarDetail() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                aria-label="編輯預排訊息"
+                                aria-label={s.editMessageTitle}
                                 data-testid={`button-edit-scheduled-message-${msg.id}`}
                                 onClick={() => {
                                   setEditingMessage(msg);
@@ -4742,7 +4828,7 @@ export default function AdminWebinarDetail() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => deleteMutation.mutate({ type: "scheduled-messages", itemId: msg.id })}
+                                onClick={() => confirmDelete(() => deleteMutation.mutate({ type: "scheduled-messages", itemId: msg.id }))}
                               >
                                 <Trash2 className="h-4 w-4 text-destructive" />
                               </Button>
@@ -6571,6 +6657,28 @@ export default function AdminWebinarDetail() {
         </Tabs>
       </main>
       <SalesTemplateChooser open={!!salesTemplateOffer} onOpenChange={open => !open && setSalesTemplateOffer(null)} pending={createSalesPage.isPending} onChoose={template => salesTemplateOffer && createSalesPage.mutate({ offer: salesTemplateOffer, template })} />
+      <AlertDialog open={!!pendingConfirm} onOpenChange={open => { if (!open) setPendingConfirm(null); }}>
+        <AlertDialogContent data-testid="dialog-confirm-delete">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingConfirm?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{pendingConfirm?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{s.btnCancel}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                const run = pendingConfirm?.run;
+                setPendingConfirm(null);
+                run?.();
+              }}
+              data-testid="button-confirm-delete"
+            >
+              {s.btnDeleteConfirm}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
