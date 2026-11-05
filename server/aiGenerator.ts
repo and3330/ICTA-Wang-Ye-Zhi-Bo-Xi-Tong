@@ -321,7 +321,9 @@ export async function generateEmailSequence(
       `分眾 segment 只能是：all（全部）、watched（有看完大部分）、not_watched（有出席但沒看完）、no_show（報名沒出席）。`,
       `請生成 4-6 封郵件，至少涵蓋 watched、not_watched、no_show 三種分眾各一封，並可加 all 的通用感謝信。`,
       `delayMinutes 是研討會結束後幾分鐘寄出（例：感謝信 60、回放提醒 1440、限時優惠 2880、最後通知 4320）。`,
-      `htmlBody 用簡潔 HTML（<p> <strong> <ul> <a> 等），可使用變數 {{name}} {{title}} {{url}}（{{url}} 是直播間/回放連結）。語氣親切專業、有銷售說服力但不誇大。繁體中文。`,
+      `htmlBody 用簡潔 HTML（<p> <strong> <ul> <a> 等），可使用變數 {{name}}（收件人名字）{{title}}（研討會名稱）{{url}}（收件人專屬的直播間/回放連結）{{cta_url}}（課程報名或購買頁）。`,
+      `連結只能用 {{url}} 或 {{cta_url}}：邀請看回放用 {{url}}，邀請報名、購買、領優惠用 {{cta_url}}。絕對不要自己編網址。系統寄信時會自動換成真正的連結。`,
+      `語氣親切專業、有銷售說服力但不誇大。繁體中文。`,
       `只輸出 JSON，不要解說或 markdown。格式：`,
       `{"emails":[{"name":"第1封-感謝","segment":"all","delayMinutes":60,"subject":"...","htmlBody":"<p>親愛的 {{name}}...</p>"}]}`,
     ].filter(Boolean).join("\n");
@@ -335,8 +337,11 @@ export async function generateEmailSequence(
     const emails = parsed?.emails;
     if (!Array.isArray(emails)) return null;
 
+    // A link the AI made up would send buyers nowhere; point it at the sales page instead.
+    const safeLinks = (html: string) => html.replace(/href\s*=\s*(["'])(?!\{\{(?:url|cta_url)\}\})[^"']*\1/gi, 'href="{{cta_url}}"');
     return emails
       .filter((e) => e && typeof e.subject === "string" && e.subject.trim() && typeof e.htmlBody === "string" && e.htmlBody.trim())
+      .map((e) => ({ ...e, htmlBody: safeLinks(e.htmlBody) }))
       .slice(0, 6)
       .map((e) => ({
         name: (typeof e.name === "string" && e.name.trim() ? e.name.trim() : e.subject.trim()).slice(0, 160),

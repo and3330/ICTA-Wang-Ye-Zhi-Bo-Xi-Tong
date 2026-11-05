@@ -28,6 +28,7 @@ import {
   Sparkles, Megaphone, CheckCircle2, Activity, Inbox, Archive, UserRound, Send, Database, BrainCircuit, ShoppingBag
   , Flame, Snowflake, ChevronRight, Target, AlertCircle
 } from "lucide-react";
+import { EmailPreviewDialog, type EmailPreviewRequest } from "@/components/email-preview-dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -636,6 +637,10 @@ const t: Record<LangAdmin, Record<string, string>> = {
     seqSegNotWatched: "沒看完",
     seqSegNoShow: "沒出席",
     seqDelayLabel: "結束後幾分鐘寄出",
+    btnPreview: "預覽",
+    seqSendAfter: "研討會結束後",
+    emailCustomNote: "有填自訂主旨和內容時，上面 4 封信都會改用這份內容。可用 {{name}} {{title}} {{date}} {{url}}（觀眾專屬直播間連結）{{cta_url}}（報名 / 購買頁）。",
+    seqLinkNote: "信裡的 {{url}} 會自動換成每位觀眾自己的直播間 / 回放連結；{{cta_url}} 會換成「互動」裡第一個有網址的 CTA 按鈕（課程報名或購買頁）。",
     seqEnabledLabel: "啟用",
     seqDelete: "刪除",
     seqGenSuccess: "已生成追蹤郵件序列",
@@ -1123,6 +1128,10 @@ const t: Record<LangAdmin, Record<string, string>> = {
     seqSegNotWatched: "没看完",
     seqSegNoShow: "没出席",
     seqDelayLabel: "结束后几分钟寄出",
+    btnPreview: "预览",
+    seqSendAfter: "研讨会结束后",
+    emailCustomNote: "有填自定义主旨和内容时，上面 4 封信都会改用这份内容。可用 {{name}} {{title}} {{date}} {{url}}（观众专属直播间链接）{{cta_url}}（报名 / 购买页）。",
+    seqLinkNote: "信里的 {{url}} 会自动换成每位观众自己的直播间 / 回放链接；{{cta_url}} 会换成「互动」里第一个有网址的 CTA 按钮（课程报名或购买页）。",
     seqEnabledLabel: "启用",
     seqDelete: "删除",
     seqGenSuccess: "已生成追踪邮件序列",
@@ -1174,6 +1183,20 @@ function createSchemas(s: Record<string, string>) {
       duration: z.string().default("30"),
     }),
   };
+}
+
+/** "1 小時", "2 天 3 小時" — easier to read than a count of minutes. */
+function formatDelayMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} 分鐘`;
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  return [days ? `${days} 天` : "", hours ? `${hours} 小時` : "", mins ? `${mins} 分鐘` : ""].filter(Boolean).join(" ");
+}
+
+/** The words of an email body, for a short summary under its subject. */
+function htmlToPlainText(html: string): string {
+  return html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
 }
 
 type SurveyDraftQuestion = {
@@ -1512,6 +1535,7 @@ export default function AdminWebinarDetail() {
   const [aiGenGoal, setAiGenGoal] = useState("");
   const [aiGenReplace, setAiGenReplace] = useState(false);
   const [seqGoal, setSeqGoal] = useState("");
+  const [emailPreview, setEmailPreview] = useState<EmailPreviewRequest | null>(null);
   const [postGoal, setPostGoal] = useState("");
 
   const isAiPointsError = (err: any) => {
@@ -3248,7 +3272,16 @@ export default function AdminWebinarDetail() {
                 <CardContent className="space-y-4">
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <Label>{s.notifEmailConfirmation}</Label>
+                      <Label className="flex-1">{s.notifEmailConfirmation}</Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "confirmation", title: s.notifEmailConfirmation, customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-confirmation"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
                       <Switch
                         checked={emailConfirmation}
                         onCheckedChange={setEmailConfirmation}
@@ -3256,7 +3289,16 @@ export default function AdminWebinarDetail() {
                       />
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <Label>{s.notifEmail24h}</Label>
+                      <Label className="flex-1">{s.notifEmail24h}</Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "reminder_24h", title: s.notifEmail24h, customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-reminder_24h"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
                       <Switch
                         checked={emailReminder24h}
                         onCheckedChange={setEmailReminder24h}
@@ -3264,7 +3306,16 @@ export default function AdminWebinarDetail() {
                       />
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <Label>{s.notifEmail1h}</Label>
+                      <Label className="flex-1">{s.notifEmail1h}</Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "reminder_1h", title: s.notifEmail1h, customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-reminder_1h"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
                       <Switch
                         checked={emailReminder1h}
                         onCheckedChange={setEmailReminder1h}
@@ -3272,7 +3323,16 @@ export default function AdminWebinarDetail() {
                       />
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <Label>{s.notifEmailFollowUp}</Label>
+                      <Label className="flex-1">{s.notifEmailFollowUp}</Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "followup", title: s.notifEmailFollowUp, customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-followup"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
                       <Switch
                         checked={emailFollowUp}
                         onCheckedChange={setEmailFollowUp}
@@ -3298,6 +3358,7 @@ export default function AdminWebinarDetail() {
                       rows={4}
                       data-testid="input-email-template"
                     />
+                    <p className="text-xs text-muted-foreground">{s.emailCustomNote}</p>
                   </div>
                   <Button
                     onClick={() => {
@@ -3463,6 +3524,7 @@ export default function AdminWebinarDetail() {
                     />
                     <p className="text-xs text-muted-foreground">{s.aiGenCostHint}</p>
                   </div>
+                  <p className="text-xs text-muted-foreground">{s.seqLinkNote}</p>
                   {emailSequences && emailSequences.length > 0 ? (
                     <div className="space-y-3">
                       {emailSequences.map((seq) => (
@@ -3473,10 +3535,18 @@ export default function AdminWebinarDetail() {
                                 {seq.segment === "watched" ? s.seqSegWatched : seq.segment === "not_watched" ? s.seqSegNotWatched : seq.segment === "no_show" ? s.seqSegNoShow : s.seqSegAll}
                               </span>
                               <span className="text-xs text-muted-foreground">
-                                {s.seqDelayLabel}: {seq.delayMinutes}
+                                {s.seqSendAfter} {formatDelayMinutes(seq.delayMinutes)}
                               </span>
                             </div>
                             <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setEmailPreview({ kind: "sequence", sequenceId: seq.id, title: seq.name || seq.subject })}
+                                data-testid={`button-preview-seq-${seq.id}`}
+                              >
+                                <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                              </Button>
                               <Switch
                                 checked={!!seq.enabled}
                                 onCheckedChange={(v) => updateSequence.mutate({ seqId: seq.id, patch: { enabled: v } })}
@@ -3493,12 +3563,12 @@ export default function AdminWebinarDetail() {
                             </div>
                           </div>
                           <p className="text-sm font-medium" data-testid={`text-seq-subject-${seq.id}`}>{seq.subject}</p>
-                          <div
-                            className="text-sm text-muted-foreground whitespace-pre-wrap max-h-40 overflow-y-auto border-t pt-2"
+                          <p
+                            className="text-sm text-muted-foreground line-clamp-3 border-t pt-2"
                             data-testid={`text-seq-body-${seq.id}`}
                           >
-                            {seq.htmlBody}
-                          </div>
+                            {htmlToPlainText(seq.htmlBody)}
+                          </p>
                         </div>
                       ))}
                     </div>
@@ -6658,6 +6728,7 @@ export default function AdminWebinarDetail() {
         </Tabs>
       </main>
       <SalesTemplateChooser open={!!salesTemplateOffer} onOpenChange={open => !open && setSalesTemplateOffer(null)} pending={createSalesPage.isPending} onChoose={template => salesTemplateOffer && createSalesPage.mutate({ offer: salesTemplateOffer, template })} />
+      {id && <EmailPreviewDialog webinarId={id} request={emailPreview} onClose={() => setEmailPreview(null)} />}
       <AlertDialog open={!!pendingConfirm} onOpenChange={open => { if (!open) setPendingConfirm(null); }}>
         <AlertDialogContent data-testid="dialog-confirm-delete">
           <AlertDialogHeader>

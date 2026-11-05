@@ -246,30 +246,74 @@ export function registrationWebinarUrl(
   return `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(token)}`;
 }
 
+export type EmailKind = "confirmation" | "reminder_24h" | "reminder_1h" | "followup" | "sequence";
+
+/**
+ * The one place an email is put together, used both for sending and for the
+ * admin preview, so the preview always shows what viewers really get.
+ */
+export function renderEmail(input: {
+  kind: string;
+  name: string;
+  webinar: Pick<Webinar, "title" | "timezone" | "emailSettings">;
+  startTime: Date;
+  onDemand: boolean;
+  webinarUrl: string;
+  /** The sales / sign-up page; falls back to the room link. */
+  ctaUrl?: string | null;
+  sequence?: Pick<EmailSequence, "subject" | "htmlBody">;
+  emailSettings?: { customSubject?: string; customTemplate?: string };
+}): { subject: string; html: string } {
+  const settings = input.emailSettings ?? (input.webinar.emailSettings as any) ?? {};
+  const built = input.kind === "sequence"
+    ? (input.sequence
+      ? fillSequenceTemplate(input.sequence as EmailSequence, input.name, input.webinar.title, input.webinarUrl)
+      : { subject: "", html: "" })
+    : getEmailHtml(
+      input.kind,
+      input.name,
+      input.webinar.title,
+      input.startTime,
+      input.webinarUrl,
+      input.webinar.timezone || "Asia/Taipei",
+      settings?.customSubject,
+      settings?.customTemplate,
+      input.onDemand,
+    );
+  const ctaUrl = (input.ctaUrl || input.webinarUrl).replace(/"/g, "%22");
+  return {
+    subject: built.subject.replace(/\{\{cta_url\}\}/g, ctaUrl),
+    html: built.html.replace(/\{\{cta_url\}\}/g, ctaUrl),
+  };
+}
+
+/** The first CTA button that links to a real page: where sales emails send people. */
+export async function webinarSalesUrl(webinarId: string): Promise<string | null> {
+  const ctas = await storage.getCtaButtonsByWebinar(webinarId);
+  const linked = ctas
+    .filter((cta) => typeof cta.url === "string" && /^https?:\/\//i.test(cta.url))
+    .sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
+  return linked[0]?.url ?? null;
+}
+
 export function buildDeferredEmail(
   reminder: EmailReminder,
   registration: Registration,
   webinar: Webinar,
   baseUrl: string,
   sequence?: EmailSequence,
+  ctaUrl?: string | null,
 ): { subject: string; html: string } {
-  const webinarUrl = registrationWebinarUrl(baseUrl, registration, webinar);
-  if (reminder.reminderType === "sequence") {
-    if (!sequence) return { subject: "", html: "" };
-    return fillSequenceTemplate(sequence, registration.name, webinar.title, webinarUrl);
-  }
-  const emailSettings = webinar.emailSettings as any;
-  return getEmailHtml(
-    reminder.reminderType,
-    registration.name,
-    webinar.title,
-    registration.selectedSession ? new Date(registration.selectedSession) : new Date(),
-    webinarUrl,
-    webinar.timezone || "Asia/Taipei",
-    emailSettings?.customSubject,
-    emailSettings?.customTemplate,
-    !registration.selectedSession,
-  );
+  return renderEmail({
+    kind: reminder.reminderType,
+    name: registration.name,
+    webinar,
+    startTime: registration.selectedSession ? new Date(registration.selectedSession) : new Date(),
+    onDemand: !registration.selectedSession,
+    webinarUrl: registrationWebinarUrl(baseUrl, registration, webinar),
+    ctaUrl,
+    sequence,
+  });
 }
 
 // 依觀看行為判斷觀眾屬於哪個分眾
@@ -366,11 +410,11 @@ export function startEmailScheduler(): { stop: () => Promise<void> } {
               await finish({ status: "failed", errorMessage: "Suppressed after refund", leaseToken: null, leaseExpiresAt: null });
               return;
             }
-            const filled = buildDeferredEmail(reminder, registration, webinar, baseUrl, seq);
+            const filled = buildDeferredEmail(reminder, registration, webinar, baseUrl, seq, await webinarSalesUrl(webinar.id));
             subject = filled.subject;
             html = filled.html;
           } else {
-            const built = buildDeferredEmail(reminder, registration, webinar, baseUrl);
+            const built = buildDeferredEmail(reminder, registration, webinar, baseUrl, undefined, await webinarSalesUrl(webinar.id));
             subject = built.subject;
             html = built.html;
           }
