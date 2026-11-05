@@ -4547,6 +4547,11 @@ export async function registerRoutes(
         return res.status(409).json({ message: `已有 ${count} 人報名這個場次，不能改時間。請新增一個場次，再通知已報名的觀眾。` });
       }
       const session = await storage.moveWebinarSession(webinarId, existing.id, { scheduledStart: new Date(scheduledStart) });
+      // Moving a recurring slot must not let the pattern recreate the old time.
+      const webinar = await storage.getWebinar(webinarId);
+      if (webinar?.recurringSchedule?.enabled) {
+        await storage.createWebinarSession({ webinarId, scheduledStart: existing.scheduledStart, status: "cancelled" });
+      }
       res.json(session);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -4567,6 +4572,13 @@ export async function registerRoutes(
         if (count > 0) {
           return res.status(409).json({ message: `已有 ${count} 人報名這個場次`, registrations: count });
         }
+      }
+      // A recurring slot is kept as "cancelled" so the weekly pattern does not
+      // put it back on the registration form; other sessions are removed.
+      const webinar = await storage.getWebinar(webinarId);
+      if (webinar?.recurringSchedule?.enabled) {
+        await storage.updateWebinarSession(existing.id, { status: "cancelled" });
+        return res.json({ success: true });
       }
       const deleted = await storage.deleteWebinarSession(req.params.id as string, req.params.sessionId as string);
       if (!deleted) return res.status(404).json({ message: "Session not found" });
@@ -5359,6 +5371,7 @@ export async function registerRoutes(
         baseUrl = `${req.protocol}://${req.get("host")}`;
       }
       const upcoming = (await storage.getWebinarSessions(webinarId))
+        .filter((session) => session.status === "scheduled")
         .map((session) => new Date(session.scheduledStart))
         .filter((date) => date.getTime() > Date.now())
         .sort((a, b) => a.getTime() - b.getTime())[0];

@@ -390,6 +390,8 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedScheduledDesc: "儲存後會自動排出接下來 14 天的場次；每一場時間一過，報名表就自動改成下一場，不需要手動產生。",
     schedJitOverridesRecurring: "「即時開始」目前是開啟的，報名表會先列出「即時開始」場次。只想用上面的固定時段，請到左側「即時開始」停用。",
     schedJitDisable: "停用即時開始",
+    schedNeedDaysAndTimes: "請至少勾選一天，並加入至少一個時段",
+    schedBadExcludeDates: "排除日期格式要像 2026-01-01，多個日期用逗號分隔",
     schedEveryDay: "每天",
     schedEveryWeek: "每週",
     schedEveryTwoWeeks: "每兩週",
@@ -883,6 +885,8 @@ const t: Record<LangAdmin, Record<string, string>> = {
     schedScheduledDesc: "保存后会自动排出接下来 14 天的场次；每一场时间一过，报名表就自动改成下一场，不需要手动生成。",
     schedJitOverridesRecurring: "「即时开始」目前是开启的，报名表会先列出「即时开始」场次。只想用上面的固定时段，请到左侧「即时开始」停用。",
     schedJitDisable: "停用即时开始",
+    schedNeedDaysAndTimes: "请至少勾选一天，并加入至少一个时段",
+    schedBadExcludeDates: "排除日期格式要像 2026-01-01，多个日期用逗号分隔",
     schedEveryDay: "每天",
     schedEveryWeek: "每周",
     schedEveryTwoWeeks: "每两周",
@@ -1328,6 +1332,7 @@ export default function AdminWebinarDetail() {
   const [newSessionDate, setNewSessionDate] = useState("");
 
   const [scheduleSubSection, setScheduleSubSection] = useState("eventSettings");
+  const scheduleTabInitialized = useRef(false);
   const [eventType, setEventType] = useState<"recurring" | "oneTime" | "specificDates">("recurring");
   const [onDemandEnabled, setOnDemandEnabled] = useState(false);
   const [eventStartDate, setEventStartDate] = useState("");
@@ -1773,13 +1778,15 @@ export default function AdminWebinarDetail() {
       const sm2 = webinar.scheduleMode as any;
       setOnDemandEnabled(sm2?.onDemand ?? false);
       if (sm2?.justInTime) {
-        setEventType("oneTime");
-        setScheduleSubSection("justInTime");
+        setEventType(rs?.enabled ? "recurring" : "oneTime");
+        // Open the just-in-time tab once, on arrival; never after a save.
+        if (!scheduleTabInitialized.current) setScheduleSubSection("justInTime");
       } else if (rs?.enabled) {
         setEventType("recurring");
       } else {
         setEventType(sm2?.eventType === "specificDates" ? "specificDates" : "oneTime");
       }
+      scheduleTabInitialized.current = true;
 
       if (sm2?.eventEndType) {
         setEventEndType(sm2.eventEndType);
@@ -2818,12 +2825,16 @@ export default function AdminWebinarDetail() {
                               justInTimeMinutes: existingSm?.justInTimeMinutes || 15,
                               eventType,
                               eventEndType,
+                              eventStartDate: eventStartDate || null,
                               eventEndDate: eventEndType === "endDate" ? eventEndDate : null,
                               timezoneType,
                               showTimezoneOnForm,
                             };
+                            const existingRs = webinar?.recurringSchedule as any;
                             updateWebinar.mutate({
                               scheduleMode,
+                              // Choosing one-time or specific dates must actually stop the weekly pattern.
+                              ...(existingRs ? { recurringSchedule: { ...existingRs, enabled: eventType === "recurring" } } : {}),
                               timezone: timezoneType === "fixed" ? settingsTimezone : (webinar?.timezone || "Asia/Taipei"),
                               startTime: eventStartDate && webinar?.startTime
                                 ? applyDatePreservingTime(
@@ -2855,7 +2866,13 @@ export default function AdminWebinarDetail() {
 
                         <div className="space-y-4">
                           <div className="flex items-center gap-3 flex-wrap">
-                            <Select value={scheduleFrequency} onValueChange={setScheduleFrequency}>
+                            <Select
+                              value={scheduleFrequency}
+                              onValueChange={(value) => {
+                                setScheduleFrequency(value);
+                                if (value === "everyDay") setRecurringDays([0, 1, 2, 3, 4, 5, 6]);
+                              }}
+                            >
                               <SelectTrigger className="w-40" data-testid="select-schedule-frequency">
                                 <SelectValue />
                               </SelectTrigger>
@@ -2922,7 +2939,7 @@ export default function AdminWebinarDetail() {
                                 variant="outline"
                                 onClick={() => {
                                   if (newTimeSlot && /^\d{2}:\d{2}$/.test(newTimeSlot)) {
-                                    setScheduledTimeSlots(prev => [...prev, newTimeSlot].sort());
+                                    setScheduledTimeSlots(prev => prev.includes(newTimeSlot) ? prev : [...prev, newTimeSlot].sort());
                                     setNewTimeSlot("09:00");
                                   }
                                 }}
@@ -2947,6 +2964,14 @@ export default function AdminWebinarDetail() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <Button
                             onClick={() => {
+                              const recurringDraftError = (): string | null => {
+                                if (!recurringDays.length || !scheduledTimeSlots.length) return s.schedNeedDaysAndTimes;
+                                const dates = recurringExcludeDates.split(",").map(d => d.trim()).filter(Boolean);
+                                if (dates.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) return s.schedBadExcludeDates;
+                                return null;
+                              };
+                              const problem = recurringDraftError();
+                              if (problem) { toast({ title: problem, variant: "destructive" }); return; }
                               updateWebinar.mutate({
                                 recurringSchedule: {
                                   enabled: true,
@@ -2966,6 +2991,14 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="outline"
                             onClick={async () => {
+                              const recurringDraftError = (): string | null => {
+                                if (!recurringDays.length || !scheduledTimeSlots.length) return s.schedNeedDaysAndTimes;
+                                const dates = recurringExcludeDates.split(",").map(d => d.trim()).filter(Boolean);
+                                if (dates.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) return s.schedBadExcludeDates;
+                                return null;
+                              };
+                              const problem = recurringDraftError();
+                              if (problem) { toast({ title: problem, variant: "destructive" }); return; }
                               try {
                                 await apiRequest("PATCH", `/api/webinars/${id}`, {
                                   recurringSchedule: {
@@ -3170,9 +3203,9 @@ export default function AdminWebinarDetail() {
                           </Button>
                         </div>
 
-                        {webinarSessions && webinarSessions.length > 0 ? (
+                        {webinarSessions && webinarSessions.some(session => session.status !== "cancelled") ? (
                           <div className="space-y-2">
-                            {webinarSessions.map((session) => (
+                            {webinarSessions.filter(session => session.status !== "cancelled").map((session) => (
                               <div key={session.id} className="flex items-center justify-between gap-2 p-3 bg-muted rounded-md">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <Clock className="h-4 w-4 text-muted-foreground" />

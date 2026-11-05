@@ -138,8 +138,10 @@ export function generateRecurringSessions(
     const civil = new Date(civilStart);
     civil.setUTCDate(civil.getUTCDate() + offset);
     if (!recurring.days.includes(civil.getUTCDay())) continue;
+    // The admin form saves "everyTwoWeeks"; older data used "biweekly".
+    const frequency = (recurring as typeof recurring & { frequency?: string }).frequency;
     if (
-      (recurring as typeof recurring & { frequency?: string }).frequency === "biweekly" &&
+      (frequency === "biweekly" || frequency === "everyTwoWeeks") &&
       Math.floor((civil.getTime() - recurrenceAnchor.getTime()) / (7 * 86_400_000)) % 2 !== 0
     ) continue;
     const ymd = [
@@ -192,8 +194,14 @@ export function getAvailableSessions(
     jitSessions.push({ id: "jit", scheduledStart: nextStart, status: "scheduled" });
   }
 
+  // A recurring slot the host deleted is kept as a "cancelled" row so the
+  // pattern does not bring it back.
+  const cancelled = new Set(persistedSessions
+    .filter((session) => session.webinarId === webinar.id && session.status === "cancelled")
+    .map((session) => new Date(session.scheduledStart).getTime()));
   const sessions = [
-    ...generateRecurringSessions(webinar, now),
+    ...generateRecurringSessions(webinar, now, 14, 20 + cancelled.size)
+      .filter((slot) => !cancelled.has(slot.scheduledStart.getTime())),
     ...persistedSessions
       .filter((session) =>
         session.webinarId === webinar.id &&

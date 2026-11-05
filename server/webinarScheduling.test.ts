@@ -195,3 +195,22 @@ test("expired fixed webinars are closed instead of masquerading as on-demand", (
   assert.equal(availability.registrationOpen, false);
   assert.deepEqual(availability.sessions, []);
 });
+test("every-two-weeks and cancelled recurring slots", () => {
+  const now = new Date("2026-11-02T00:00:00.000Z"); // a Monday
+  const base = webinar({
+    timezone: "UTC",
+    startTime: new Date("2026-11-02T10:00:00.000Z"),
+    recurringSchedule: { enabled: true, days: [1], times: ["10:00"], excludeDates: [], frequency: "everyTwoWeeks" } as any,
+    scheduleMode: { recurring: true } as any,
+  });
+  const starts = getAvailableSessions(base, [], now).sessions.map(s => s.scheduledStart.toISOString().slice(0, 10));
+  assert.deepEqual(starts, ["2026-11-02"]);
+
+  const weekly = webinar({ ...base, recurringSchedule: { ...(base.recurringSchedule as any), frequency: "everyWeek" } });
+  const cancelled = [{
+    id: "c1", webinarId: weekly.id, scheduledStart: new Date("2026-11-09T10:00:00.000Z"),
+    scheduledEnd: null, status: "cancelled", attendeeCount: 0,
+  }];
+  const remaining = getAvailableSessions(weekly, cancelled as any, now).sessions.map(s => s.scheduledStart.toISOString().slice(0, 10));
+  assert.deepEqual(remaining, ["2026-11-02"]);
+});
