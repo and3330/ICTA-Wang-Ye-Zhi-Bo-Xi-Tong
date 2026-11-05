@@ -485,7 +485,7 @@ const t: Record<LangAdmin, Record<string, string>> = {
     interPollDuration: "持續時間（秒）",
     interNoPolls: "尚無投票",
     interTipTitle: "小提示卡",
-    interTipDesc: "在特定時間點顯示的提示訊息",
+    interTipDesc: "影片到點後由小幫手發到聊天室，不再彈出提示卡；原顯示秒數不會移除聊天室訊息。",
     interAddTip: "新增提示",
     interTipDialogTitle: "新增小提示",
     interTipTitleLabel: "標題",

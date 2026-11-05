@@ -1,4 +1,4 @@
-import type { ChatMessage, FakeUser, ScheduledMessage } from "@shared/schema";
+import type { ChatMessage, FakeUser, ScheduledMessage, Tip } from "@shared/schema";
 
 /** Timed materials are local to this viewer's playback, never broadcast. */
 export function collectScheduledChat(
@@ -28,4 +28,12 @@ export function collectScheduledChat(
       isPrivate: assistant,
     } as ChatMessage];
   });
+}
+
+/** Tips become durable-in-this-view chat entries, not expiring overlays. */
+export function collectTipChat(tips: readonly Tip[], currentTime: number, isPlaying: boolean, shown: Set<string>, webinarId: string): ChatMessage[] {
+  return collectScheduledChat(tips.map(tip => ({
+    id: `tip_${tip.id}`, webinarId, fakeUserId: null, messageType: "assistant",
+    triggerTime: tip.triggerTime, message: [tip.title, tip.content].filter(Boolean).join("\n"),
+  })), currentTime, isPlaying, shown, webinarId);
 }

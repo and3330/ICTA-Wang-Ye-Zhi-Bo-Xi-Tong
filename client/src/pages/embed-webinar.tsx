@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { collectScheduledChat } from "@/lib/scheduled-chat";
+import { collectScheduledChat, collectTipChat } from "@/lib/scheduled-chat";
 import { ChatMaterialText } from "@/components/chat-material-text";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
-import { Heart, Send, ExternalLink, Loader2, Play, Info, X, Star, MessageCircleQuestion } from "lucide-react";
+import { Heart, Send, ExternalLink, Loader2, Play, X, Star, MessageCircleQuestion } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, ScheduledMessage, FakeUser, Tip, Poll, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
@@ -21,7 +21,7 @@ import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
-import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
+import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
 
@@ -65,7 +65,6 @@ export default function EmbedWebinar() {
   const [viewerCount, setViewerCount] = useState(1);
   const shownMessagesRef = useRef<Set<string>>(new Set());
 
-  const [visibleTip, setVisibleTip] = useState<Tip | null>(null);
   const [activePoll, setActivePoll] = useState<ActivePoll | null>(null);
   const [pollResults, setPollResults] = useState<Record<number, number> | null>(null);
   const [videoEnded, setVideoEnded] = useState(false);
@@ -137,11 +136,16 @@ export default function EmbedWebinar() {
     enabled: !!id && isJoined,
   });
 
-  const showTip = (tip: Tip, seconds: number) => {
-    setVisibleTip(tip);
-    setTimeout(() => setVisibleTip(current => (current?.id === tip.id ? null : current)), seconds * 1000);
+  const showTip = (tip: Tip) => {
+    if (!id) return;
+    const due = collectTipChat([tip], tip.triggerTime, true, shownMessagesRef.current, id);
+    if (due.length) setMessages(prev => [...prev, ...due]);
   };
-  useTimedItems(tips, currentTime, isPlaying, DEFAULT_TIP_SECONDS, showTip);
+  useEffect(() => {
+    if (!tips || !id) return;
+    const due = collectTipChat(tips, currentTime, isPlaying, shownMessagesRef.current, id);
+    if (due.length) setMessages(prev => [...prev, ...due]);
+  }, [tips, currentTime, isPlaying, id]);
   useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, seconds) => {
     setActivePoll({ poll, seconds });
     setPollResults(null);
@@ -209,7 +213,7 @@ export default function EmbedWebinar() {
           break;
         }
         case "liveTip":
-          showTip(msg.data as Tip, msg.data.duration || DEFAULT_TIP_SECONDS);
+          showTip(msg.data as Tip);
           break;
         case "poll":
           setActivePoll({ poll: msg.data, seconds: msg.data.duration || DEFAULT_POLL_SECONDS });
@@ -507,29 +511,16 @@ export default function EmbedWebinar() {
           )}
           {canWatch && playerReady && <ViewerVolumeControl playerRef={playerRef} className="absolute top-2 left-2 z-10" />}
         </div>
-        {visibleTip && (
-          <div className="absolute top-2 right-2 z-20 max-w-[70%] rounded-md bg-background/95 p-2 shadow-lg" data-testid="embed-tip-card">
-            <div className="flex items-start gap-2">
-              <Info className="h-4 w-4 flex-shrink-0 text-primary mt-0.5" />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium">{visibleTip.title}</p>
-                {visibleTip.content && <p className="text-[11px] text-muted-foreground mt-0.5 break-words">{visibleTip.content}</p>}
-              </div>
-              <button type="button" aria-label="關閉提示" onClick={() => setVisibleTip(null)} className="text-muted-foreground">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        )}
         {(visibleCtas.length > 0 || liveCtas.length > 0) && (
         <div className="absolute bottom-2 left-2 right-2 z-10 flex flex-col items-center gap-1.5">
         {[...visibleCtas, ...liveCtas].map(cta => (
             <Button
               key={cta.id}
+              asChild={!!cta.url && !cta.offerId}
               size="sm"
               variant={cta.style === "danger" ? "destructive" : cta.style === "secondary" ? "secondary" : "default"}
               data-testid={`embed-cta-${cta.id}`}
-              onClick={() => {
+              onClick={(event) => {
                 if (cta.offerId && id) {
                   if (!watchState?.registrationId) {
                     setCheckoutCtaId(cta.id);
@@ -545,11 +536,13 @@ export default function EmbedWebinar() {
                   id,
                   cta.url,
                   { ctaId: cta.id, watchToken: watchToken || undefined },
+                  { preventDefault: () => event.preventDefault() },
                 );
               }}
             >
-                <ExternalLink className="h-3 w-3 mr-1" />
-                {cta.text}
+                {cta.url && !cta.offerId
+                  ? <a href={cta.url} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-3 w-3 mr-1" />{cta.text}</a>
+                  : <><ExternalLink className="h-3 w-3 mr-1" />{cta.text}</>}
             </Button>
         ))}
         </div>

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { ScheduledMessage } from "@shared/schema";
-import { collectScheduledChat } from "./scheduled-chat";
+import type { ScheduledMessage, Tip } from "@shared/schema";
+import { collectScheduledChat, collectTipChat } from "./scheduled-chat";
 import { insertScheduledMessageSchema } from "@shared/schema";
 
 const item = (id: string, triggerTime: number, messageType = "assistant"): ScheduledMessage => ({
@@ -21,6 +21,21 @@ test("materials wait for playing and specified video position, not wall time", (
   assert.equal(due[0].senderType, "assistant");
   assert.equal(due[0].isPrivate, true);
   assert.equal(due[0].message, rows[0].message);
+});
+
+test("all due tips become chat entries even after their former overlay duration", () => {
+  const tips = [
+    { id: "one", webinarId: "room", title: "一", content: "重點一", triggerTime: 10, duration: 1 },
+    { id: "two", webinarId: "room", title: "二", content: "重點二", triggerTime: 10, duration: 1 },
+  ] as Tip[];
+  const shown = new Set<string>();
+  assert.equal(collectTipChat(tips, 100, false, shown, "room").length, 0);
+  const messages = collectTipChat(tips, 100, true, shown, "room");
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].message, "一\n重點一");
+  assert.equal(messages[0].senderType, "assistant");
+  assert.equal(collectTipChat(tips, 100, true, shown, "room").length, 0);
+  assert.equal(collectTipChat(tips, 100, true, new Set(), "room").length, 2);
 });
 
 test("seeking catches up chronologically without duplicate sends on rewind or updates", () => {

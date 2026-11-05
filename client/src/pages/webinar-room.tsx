@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { collectScheduledChat } from "@/lib/scheduled-chat";
+import { collectScheduledChat, collectTipChat } from "@/lib/scheduled-chat";
 import { ChatMaterialText } from "@/components/chat-material-text";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Heart, Send, Users, Loader2, ExternalLink, X, Info, Star, Play, MessageCircleQuestion } from "lucide-react";
+import { Heart, Send, Users, Loader2, ExternalLink, X, Star, Play, MessageCircleQuestion } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
@@ -24,7 +24,7 @@ import { FullscreenVideo } from "@/components/fullscreen-video";
 import type { PlaybackSource } from "@/lib/media";
 import { CheckoutBuyerDialog, type CheckoutBuyer } from "@/components/checkout-buyer-dialog";
 import { useTimedItems, ViewerPollDialog, ViewerQaDialog, ViewerSurveyDialog, type ActivePoll } from "@/components/viewer-interactions";
-import { DEFAULT_POLL_SECONDS, DEFAULT_TIP_SECONDS } from "@/lib/timed-interactions";
+import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
 
@@ -79,7 +79,6 @@ export default function WebinarRoom() {
   
   const shownMessagesRef = useRef<Set<string>>(new Set());
   
-  const [visibleTip, setVisibleTip] = useState<Tip | null>(null);
 
   const [floatingHearts, setFloatingHearts] = useState<{ id: number; x: number }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -290,14 +289,11 @@ export default function WebinarRoom() {
     if (due.length) setMessages(prev => [...prev, ...due]);
   }, [currentTime, scheduledMessages, fakeUsers, isPlaying, id]);
   
-  // A viewer who joins late or seeks forward sees only a tip or poll whose
-  // display window is still open, for the part of the window that is left.
-  useTimedItems(tips, currentTime, isPlaying, DEFAULT_TIP_SECONDS, (tip, remainingSeconds) => {
-    setVisibleTip(tip);
-    setTimeout(() => {
-      setVisibleTip((current) => current?.id === tip.id ? null : current);
-    }, remainingSeconds * 1000);
-  });
+  useEffect(() => {
+    if (!tips || !id) return;
+    const due = collectTipChat(tips, currentTime, isPlaying, shownMessagesRef.current, id);
+    if (due.length) setMessages(prev => [...prev, ...due]);
+  }, [tips, currentTime, isPlaying, id]);
   useTimedItems(polls, currentTime, isPlaying, DEFAULT_POLL_SECONDS, (poll, remainingSeconds) => {
     setActivePoll({ poll, seconds: remainingSeconds });
     setPollResults(null);
@@ -351,10 +347,8 @@ export default function WebinarRoom() {
         }
         case "liveTip": {
           const tip = msg.data as Tip;
-          setVisibleTip(tip);
-          setTimeout(() => {
-            setVisibleTip((current) => (current?.id === tip.id ? null : current));
-          }, (msg.data.duration || 10) * 1000);
+          const due = collectTipChat([tip], tip.triggerTime, true, shownMessagesRef.current, id!);
+          if (due.length) setMessages(prev => [...prev, ...due]);
           break;
         }
         case "history":
@@ -800,9 +794,10 @@ export default function WebinarRoom() {
                 {[...visibleCtas, ...liveCtas].map((cta) => (
                   <Button
                     key={cta.id}
+                    asChild={!!cta.url && !cta.offerId}
                     variant={cta.style === "primary" ? "default" : cta.style === "danger" ? "destructive" : "secondary"}
                     className="w-full sm:w-auto animate-[pulse_1s_ease-in-out_3]"
-                    onClick={() => {
+                    onClick={(event) => {
                       if (cta.offerId && id) {
                         // A verified registration is resolved by the server from the viewing
                         // context. Unregistered checkout must collect buyer contact first.
@@ -818,13 +813,15 @@ export default function WebinarRoom() {
                           id,
                           cta.url,
                           { ctaId: cta.id, watchToken: watchToken || undefined },
+                          { preventDefault: () => event.preventDefault() },
                         );
                       }
                     }}
                     data-testid={`cta-button-${cta.id}`}
                   >
-                    <ExternalLink className="w-4 h-4 mr-2" />
-                    {cta.text}
+                    {cta.url && !cta.offerId
+                      ? <a href={cta.url} target="_blank" rel="noopener noreferrer"><ExternalLink className="w-4 h-4 mr-2" />{cta.text}</a>
+                      : <><ExternalLink className="w-4 h-4 mr-2" />{cta.text}</>}
                   </Button>
                 ))}
               </div>
@@ -838,29 +835,6 @@ export default function WebinarRoom() {
               {playerReady && <ViewerVolumeControl playerRef={playerRef} />}
             </div>
             
-            {visibleTip && (
-              <div className="hidden lg:block absolute top-4 right-4 z-20 max-w-xs animate-in slide-in-from-right duration-300" data-testid="tip-card-desktop">
-                <Card className="bg-white/95 dark:bg-card/95 backdrop-blur shadow-lg">
-                  <CardContent className="p-3">
-                    <div className="flex items-start gap-2">
-                      <Info className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
-                      <div className="flex-1">
-                        <h4 className="font-medium text-sm">{visibleTip.title}</h4>
-                        <p className="text-xs text-muted-foreground mt-1">{visibleTip.content}</p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setVisibleTip(null)}
-                        data-testid="button-close-tip"
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
 
             {videoEnded && (() => {
               const replay = webinar.replaySettings as { headline?: string; message?: string; ctaText?: string; ctaUrl?: string } | null;
@@ -895,30 +869,6 @@ export default function WebinarRoom() {
           </div>
         </FullscreenVideo>
 
-        {visibleTip && (
-          <div className="lg:hidden px-3 py-2 border-b bg-background animate-in slide-in-from-top duration-300" data-testid="tip-card-mobile">
-            <Card className="bg-primary/5 border-primary/20">
-              <CardContent className="p-3">
-                <div className="flex items-start gap-2">
-                  <Info className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-sm">{visibleTip.title}</h4>
-                    <p className="text-xs text-muted-foreground mt-1 break-words">{visibleTip.content}</p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 flex-shrink-0"
-                    onClick={() => setVisibleTip(null)}
-                    data-testid="button-close-tip-mobile"
-                  >
-                    <X className="w-4 h-4" />
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
 
         <div className="w-full lg:w-[380px] flex flex-col border-l bg-background flex-1 lg:flex-none lg:h-full min-h-0 relative">
           <div className="px-4 py-3 border-b flex items-center justify-between gap-2 bg-card">

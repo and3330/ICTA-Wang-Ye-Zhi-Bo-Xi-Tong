@@ -141,6 +141,7 @@ export async function openTrackedExternalUrl(
   webinarId: string | undefined,
   url: string,
   data: Pick<WebinarEventData, "ctaId" | "ctaKey"> & { watchToken?: string; sessionId?: string } = {},
+  nativeClick?: { preventDefault: () => void },
 ): Promise<void> {
   const cta = isUuid(data.ctaId)
     ? { ctaId: data.ctaId }
@@ -151,6 +152,7 @@ export async function openTrackedExternalUrl(
   // Only persisted CTA buttons can be attributed. Other external links retain
   // their normal behavior rather than being routed through this integration.
   if (!webinarId || !isUuid(data.ctaId)) {
+    if (nativeClick) return;
     window.open(url, "_blank", "noopener,noreferrer");
     return;
   }
@@ -158,6 +160,10 @@ export async function openTrackedExternalUrl(
   // not use noopener for an about:blank tab: browsers return null, orphaning it
   // before we can route the server-issued URL. Remove opener before navigation.
   const popup = window.open("", "_blank");
+  // Keep the anchor's native click when popup reservation is blocked. Retrying
+  // window.open after await would lose the browser's user activation.
+  if (!popup && nativeClick) return;
+  nativeClick?.preventDefault();
   try { if (popup) popup.opener = null; } catch {}
   const openDirectly = () => {
     if (popup && !popup.closed) popup.location.replace(url);
@@ -165,7 +171,7 @@ export async function openTrackedExternalUrl(
   };
   let publicSettings: { approvedOrigins?: string[] };
   try {
-    const settingsResponse = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/external-journey/public`, { credentials: "same-origin" });
+    const settingsResponse = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/external-journey/public`, { credentials: "same-origin", signal: AbortSignal.timeout(3000) });
     if (!settingsResponse.ok) return openDirectly();
     publicSettings = await settingsResponse.json() as { approvedOrigins?: string[] };
     const targetOrigin = new URL(url).origin;
@@ -191,6 +197,7 @@ export async function openTrackedExternalUrl(
         targetUrl: url,
         visitId: getWebinarVisitorToken(webinarId),
       }),
+      signal: AbortSignal.timeout(3000),
       });
       if (!response.ok) throw new Error("Unable to create attributed referral");
       const result = await response.json() as { redirectUrl?: string };

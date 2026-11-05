@@ -9,7 +9,15 @@ async function openViewer(page: Page, embed = false, timedMaterials = false) {
       vimeoUrl: "https://vimeo.com/123456789", scheduleMode: "on_demand",
       startTime: "2020-01-01T00:00:00Z", timezone: "UTC",
       replayEnabled: true,
-    } : timedMaterials && path.endsWith("/scheduled-messages") ? [{
+    } : timedMaterials && path.endsWith("/ctas") ? [{
+      id: "f768b343-e9f6-4694-bb5b-68226fe2ad53", webinarId: "fullscreen-test",
+      text: "取得優惠", url: "https://example.com/cta-target", offerId: null,
+      startTime: 30, endTime: null, style: "primary",
+    }] : timedMaterials && path.endsWith("/tips") ? [{
+      id: "tip-1", webinarId: "fullscreen-test", title: "第一個重點", content: "這是第一段提示", triggerTime: 20, duration: 1,
+    }, {
+      id: "tip-2", webinarId: "fullscreen-test", title: "第二個重點", content: "這是第二段提示", triggerTime: 20, duration: 1,
+    }] : timedMaterials && path.endsWith("/scheduled-messages") ? [{
       id: "materials-1", webinarId: "fullscreen-test", fakeUserId: null, messageType: "assistant",
       message: "這是你的課程講義\nhttps://example.com/handout", triggerTime: 30,
     }, {
@@ -46,6 +54,36 @@ async function openViewer(page: Page, embed = false, timedMaterials = false) {
 }
 
 for (const embed of [false, true]) {
+  test(`${embed ? "embedded" : "standard"} tips stay in chat and CTA links navigate even when script popups are blocked`, async ({ page }) => {
+    await openViewer(page, embed, true);
+    await page.route("https://example.com/**", route => route.fulfill({ contentType: "text/html", body: "Configured CTA destination" }));
+    await page.getByTestId(embed ? "button-embed-play-video" : "button-play-video").click();
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 30, duration: 3600 }));
+    await expect(page.getByText("第一個重點", { exact: false })).toHaveCount(1);
+    await expect(page.getByText("第二個重點", { exact: false })).toHaveCount(1);
+    await expect(page.getByTestId("tip-card-desktop")).toHaveCount(0);
+    await expect(page.getByTestId("tip-card-mobile")).toHaveCount(0);
+    await expect(page.getByTestId("embed-tip-card")).toHaveCount(0);
+    const cta = page.getByRole("link", { name: "取得優惠", exact: true });
+    await expect(cta).toHaveAttribute("href", "https://example.com/cta-target");
+    const normalPopup = page.waitForEvent("popup");
+    await cta.click();
+    const normal = await normalPopup;
+    await expect(normal).toHaveURL("https://example.com/cta-target");
+    await normal.close();
+    await page.evaluate(() => { window.open = () => null; });
+    const nativePopup = page.waitForEvent("popup");
+    await cta.focus();
+    await page.keyboard.press("Enter");
+    const native = await nativePopup;
+    await expect(native).toHaveURL("https://example.com/cta-target");
+    await native.close();
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 5, duration: 3600 }));
+    await page.evaluate(() => (window as any).__testPlayer.handlers.timeupdate({ seconds: 100, duration: 3600 }));
+    await expect(page.getByText("第一個重點", { exact: false })).toHaveCount(1);
+    await expect(page.getByText("第二個重點", { exact: false })).toHaveCount(1);
+  });
+
   test(`${embed ? "embedded" : "standard"} assistant sends materials in chat at video times once without fake viewers`, async ({ page }) => {
     await openViewer(page, embed, true);
     const play = page.getByTestId(embed ? "button-embed-play-video" : "button-play-video");
