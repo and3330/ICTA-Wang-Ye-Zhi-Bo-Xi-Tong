@@ -3946,6 +3946,24 @@ export async function registerRoutes(
     }
   });
 
+  const pollPatchSchema = z.object({
+    question: z.string().trim().min(1).max(500).optional(),
+    options: z.array(z.string().trim().min(1).max(200)).min(2).max(10).optional(),
+    triggerTime: z.number().int().min(0).optional(),
+    duration: z.number().int().min(5).max(3600).optional(),
+  }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required");
+
+  app.patch("/api/webinars/:id/polls/:pollId", requireWebinarOwner, async (req, res) => {
+    try {
+      const patch = pollPatchSchema.parse(req.body);
+      const poll = await storage.updatePoll(req.params.id as string, req.params.pollId as string, patch);
+      if (!poll) return res.status(404).json({ message: "Poll not found" });
+      res.json(poll);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
   app.delete("/api/webinars/:id/polls/:pollId", requireWebinarOwner, async (req, res) => {
     const deleted = await storage.deletePoll(req.params.id as string, req.params.pollId as string);
     if (!deleted) return res.status(404).json({ message: "Poll not found" });
@@ -3965,6 +3983,24 @@ export async function registerRoutes(
         webinarId: req.params.id
       });
       const tip = await storage.createTip(data);
+      res.json(tip);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  const tipPatchSchema = z.object({
+    title: z.string().trim().min(1).max(200).optional(),
+    content: z.string().max(2000).optional(),
+    triggerTime: z.number().int().min(0).optional(),
+    duration: z.number().int().min(1).max(3600).optional(),
+  }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required");
+
+  app.patch("/api/webinars/:id/tips/:tipId", requireWebinarOwner, async (req, res) => {
+    try {
+      const patch = tipPatchSchema.parse(req.body);
+      const tip = await storage.updateTip(req.params.id as string, req.params.tipId as string, patch);
+      if (!tip) return res.status(404).json({ message: "Tip not found" });
       res.json(tip);
     } catch (error: any) {
       res.status(400).json({ message: error.message });

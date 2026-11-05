@@ -1132,6 +1132,8 @@ export default function AdminWebinarDetail() {
   const offerProvider = "ecpay" as const;
   const [isPollOpen, setIsPollOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
+  const [editingPoll, setEditingPoll] = useState<Poll | null>(null);
+  const [editingTip, setEditingTip] = useState<Tip | null>(null);
   const [funnelFrom, setFunnelFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 30);
@@ -1766,37 +1768,55 @@ export default function AdminWebinarDetail() {
   const createPoll = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.poll>) => {
       const [min, sec] = data.triggerTime.split(":").map(Number);
-      return apiRequest("POST", `/api/webinars/${id}/polls`, {
+      const options = data.options.split(/[,，]/).map(o => o.trim()).filter(Boolean);
+      if (options.length < 2) throw new Error("投票至少要有 2 個選項，用逗號分隔");
+      const duration = parseInt(data.duration, 10);
+      return apiRequest(editingPoll ? "PATCH" : "POST", editingPoll ? `/api/webinars/${id}/polls/${editingPoll.id}` : `/api/webinars/${id}/polls`, {
         question: data.question,
-        options: data.options.split(",").map(o => o.trim()),
+        options,
         triggerTime: min * 60 + (sec || 0),
-        duration: parseInt(data.duration),
+        duration: Number.isFinite(duration) ? duration : 60,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "polls"] });
       setIsPollOpen(false);
+      toast({ title: editingPoll ? "投票已更新" : s.toastPollCreated });
+      setEditingPoll(null);
       pollForm.reset();
-      toast({ title: s.toastPollCreated });
     },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
 
   const createTip = useMutation({
     mutationFn: async (data: z.infer<typeof schemas.tip>) => {
       const [min, sec] = data.triggerTime.split(":").map(Number);
-      return apiRequest("POST", `/api/webinars/${id}/tips`, {
+      const duration = parseInt(data.duration, 10);
+      return apiRequest(editingTip ? "PATCH" : "POST", editingTip ? `/api/webinars/${id}/tips/${editingTip.id}` : `/api/webinars/${id}/tips`, {
         title: data.title,
         content: data.content,
         triggerTime: min * 60 + (sec || 0),
-        duration: parseInt(data.duration),
+        duration: Number.isFinite(duration) ? duration : 30,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "tips"] });
       setIsTipOpen(false);
+      toast({ title: editingTip ? "小提示已更新" : s.toastTipCreated });
+      setEditingTip(null);
       tipForm.reset();
-      toast({ title: s.toastTipCreated });
     },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
+  });
+
+  const toggleSurvey = useMutation({
+    mutationFn: async ({ surveyId, isActive }: { surveyId: string; isActive: boolean }) =>
+      apiRequest("PATCH", `/api/webinars/${id}/feedback-survey/${surveyId}`, { isActive }),
+    onSuccess: (_, { isActive }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/webinars", id, "feedback-survey"] });
+      toast({ title: isActive ? "問卷已啟用" : "問卷已停用" });
+    },
+    onError: (error: Error) => toast({ title: s.toastSaveFailed, description: error.message, variant: "destructive" }),
   });
 
   const updateWebinar = useMutation({
@@ -3690,16 +3710,16 @@ export default function AdminWebinarDetail() {
                     <CardTitle className="text-base">{s.interPollTitle}</CardTitle>
                     <CardDescription>{s.interPollDesc}</CardDescription>
                   </div>
-                  <Dialog open={isPollOpen} onOpenChange={setIsPollOpen}>
+                  <Dialog open={isPollOpen} onOpenChange={open => { setIsPollOpen(open); if (!open) setEditingPoll(null); }}>
                     <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-poll">
+                      <Button size="sm" data-testid="button-add-poll" onClick={() => { setEditingPoll(null); pollForm.reset(); }}>
                         <Plus className="h-4 w-4 mr-1" />
                         {s.interAddPoll}
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{s.interPollDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingPoll ? "編輯投票" : s.interPollDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...pollForm}>
                         <form onSubmit={pollForm.handleSubmit((data) => createPoll.mutate(data))} className="space-y-4">
@@ -3759,7 +3779,7 @@ export default function AdminWebinarDetail() {
                           </div>
                           <Button type="submit" disabled={createPoll.isPending}>
                             {createPoll.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {s.btnCreate}
+                            {editingPoll ? "儲存" : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -3788,6 +3808,24 @@ export default function AdminWebinarDetail() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            aria-label="編輯投票"
+                            data-testid={`button-edit-poll-${poll.id}`}
+                            onClick={() => {
+                              setEditingPoll(poll);
+                              pollForm.reset({
+                                question: poll.question,
+                                options: (poll.options as string[]).join(", "),
+                                triggerTime: formatTime(poll.triggerTime),
+                                duration: String(poll.duration ?? 60),
+                              });
+                              setIsPollOpen(true);
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             onClick={() => deleteMutation.mutate({ type: "polls", itemId: poll.id })}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
@@ -3807,16 +3845,16 @@ export default function AdminWebinarDetail() {
                     <CardTitle className="text-base">{s.interTipTitle}</CardTitle>
                     <CardDescription>{s.interTipDesc}</CardDescription>
                   </div>
-                  <Dialog open={isTipOpen} onOpenChange={setIsTipOpen}>
+                  <Dialog open={isTipOpen} onOpenChange={open => { setIsTipOpen(open); if (!open) setEditingTip(null); }}>
                     <DialogTrigger asChild>
-                      <Button size="sm" data-testid="button-add-tip">
+                      <Button size="sm" data-testid="button-add-tip" onClick={() => { setEditingTip(null); tipForm.reset(); }}>
                         <Plus className="h-4 w-4 mr-1" />
                         {s.interAddTip}
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>{s.interTipDialogTitle}</DialogTitle>
+                        <DialogTitle>{editingTip ? "編輯小提示" : s.interTipDialogTitle}</DialogTitle>
                       </DialogHeader>
                       <Form {...tipForm}>
                         <form onSubmit={tipForm.handleSubmit((data) => createTip.mutate(data))} className="space-y-4">
@@ -3876,7 +3914,7 @@ export default function AdminWebinarDetail() {
                           </div>
                           <Button type="submit" disabled={createTip.isPending}>
                             {createTip.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {s.btnCreate}
+                            {editingTip ? "儲存" : s.btnCreate}
                           </Button>
                         </form>
                       </Form>
@@ -3899,6 +3937,24 @@ export default function AdminWebinarDetail() {
                             <p className="font-medium text-sm mt-1">{tip.title}</p>
                             <p className="text-xs text-muted-foreground mt-0.5">{tip.content}</p>
                           </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="編輯小提示"
+                            data-testid={`button-edit-tip-${tip.id}`}
+                            onClick={() => {
+                              setEditingTip(tip);
+                              tipForm.reset({
+                                title: tip.title,
+                                content: tip.content || "",
+                                triggerTime: formatTime(tip.triggerTime),
+                                duration: String(tip.duration ?? 10),
+                              });
+                              setIsTipOpen(true);
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -3925,9 +3981,18 @@ export default function AdminWebinarDetail() {
                     <div className="space-y-4">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{feedbackSurvey.title}</span>
-                        <Badge variant={feedbackSurvey.isActive ? "default" : "secondary"}>
-                          {feedbackSurvey.isActive ? s.interFeedbackActive : s.interFeedbackInactive}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={feedbackSurvey.isActive ? "default" : "secondary"}>
+                            {feedbackSurvey.isActive ? s.interFeedbackActive : s.interFeedbackInactive}
+                          </Badge>
+                          <Switch
+                            checked={!!feedbackSurvey.isActive}
+                            disabled={toggleSurvey.isPending}
+                            onCheckedChange={(checked) => toggleSurvey.mutate({ surveyId: feedbackSurvey.id, isActive: checked })}
+                            aria-label="啟用回饋問卷"
+                            data-testid="switch-survey-active"
+                          />
+                        </div>
                       </div>
                       {feedbackSurvey.questions && (feedbackSurvey.questions as any[]).length > 0 && (
                         <div className="space-y-2">

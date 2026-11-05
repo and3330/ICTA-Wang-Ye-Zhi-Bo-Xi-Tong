@@ -260,12 +260,14 @@ export interface IStorage {
   createTip(data: InsertTip): Promise<Tip>;
   getTipsByWebinar(webinarId: string): Promise<Tip[]>;
   deleteTip(webinarId: string, id: string): Promise<boolean>;
+  updateTip(webinarId: string, id: string, data: Partial<InsertTip>): Promise<Tip | undefined>;
   
   // Polls
   createPoll(data: InsertPoll): Promise<Poll>;
   getPollsByWebinar(webinarId: string): Promise<Poll[]>;
   getPoll(id: string): Promise<Poll | undefined>;
   deletePoll(webinarId: string, id: string): Promise<boolean>;
+  updatePoll(webinarId: string, id: string, data: Partial<InsertPoll>): Promise<Poll | undefined>;
   
   // Poll Votes
   createPollVote(data: InsertPollVote): Promise<PollVote>;
@@ -2144,6 +2146,13 @@ export class DatabaseStorage implements IStorage {
       .returning({ id: tips.id })).length === 1;
   }
 
+  async updateTip(webinarId: string, id: string, data: Partial<InsertTip>): Promise<Tip | undefined> {
+    const { webinarId: _ignored, ...patch } = data;
+    const result = await db.update(tips).set(patch)
+      .where(and(eq(tips.id, id), eq(tips.webinarId, webinarId))).returning();
+    return result[0];
+  }
+
   // Polls
   async createPoll(data: InsertPoll): Promise<Poll> {
     const result = await db.insert(polls).values({
@@ -2167,6 +2176,15 @@ export class DatabaseStorage implements IStorage {
   async deletePoll(webinarId: string, id: string): Promise<boolean> {
     return (await db.delete(polls).where(and(eq(polls.id, id), eq(polls.webinarId, webinarId)))
       .returning({ id: polls.id })).length === 1;
+  }
+
+  async updatePoll(webinarId: string, id: string, data: Partial<InsertPoll>): Promise<Poll | undefined> {
+    const { webinarId: _ignored, ...patch } = data;
+    const result = await db.update(polls).set({
+      ...patch,
+      ...(patch.options ? { options: patch.options as string[] } : {}),
+    }).where(and(eq(polls.id, id), eq(polls.webinarId, webinarId))).returning();
+    return result[0];
   }
 
   // Poll Votes
