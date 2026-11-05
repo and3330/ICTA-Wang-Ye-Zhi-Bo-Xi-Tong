@@ -1208,6 +1208,35 @@ function htmlToPlainText(html: string): string {
 }
 
 /**
+ * Where a registration came from, in words a host recognises: the ad/UTM tag
+ * when there is one, otherwise the page the form was on.
+ */
+function registrationSource(reg: { utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null; source?: string | null; landingUrl?: string | null }): { label: string; detail: string } {
+  const utm = reg.utmSource || reg.source;
+  if (utm) {
+    return {
+      label: reg.utmMedium ? `${utm} / ${reg.utmMedium}` : utm,
+      detail: reg.utmCampaign ? `活動：${reg.utmCampaign}` : "",
+    };
+  }
+  if (reg.landingUrl) {
+    try {
+      const url = new URL(reg.landingUrl);
+      const path = url.pathname.replace(/\/$/, "");
+      if (url.host === window.location.host) {
+        if (path.startsWith("/embed/register")) return { label: "嵌入表單", detail: "網站未提供上層頁面" };
+        if (path.startsWith("/form") || path.startsWith("/register")) return { label: "SellCase 報名頁", detail: "" };
+        return { label: "SellCase 頁面", detail: path || "/" };
+      }
+      return { label: url.host.replace(/^www\./, ""), detail: path && path !== "/" ? path : "" };
+    } catch {
+      return { label: "直接報名", detail: "" };
+    }
+  }
+  return { label: "直接報名", detail: "" };
+}
+
+/**
  * Numbers that change while the page is open (registrations, viewers, leads,
  * funnel): refresh every 30 s while the tab is visible and on return to it.
  */
@@ -1292,6 +1321,7 @@ export default function AdminWebinarDetail() {
     return localDateInput(date);
   });
   const [funnelTo, setFunnelTo] = useState(() => localDateInput(new Date()));
+  const [sourceFilter, setSourceFilter] = useState("__all__");
   const [answeringQuestionId, setAnsweringQuestionId] = useState<string | null>(null);
   const [answerInput, setAnswerInput] = useState("");
 
@@ -5037,6 +5067,226 @@ export default function AdminWebinarDetail() {
             <div className="admin-workspace-grid">
               {contextualRail([{ id: "registrants", label: s.regTitle, icon: Users }], registrationsSection, setRegistrationsSection)}
               <div className="space-y-4">
+              <Card id="webinar-section-registrants">
+              <CardHeader className="flex flex-row items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base">{s.regTitle}</CardTitle>
+                  <CardDescription>{s.regDesc}</CardDescription>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                    <SelectTrigger className="w-[170px] h-9" data-testid="select-source-filter">
+                      <SelectValue placeholder="報名來源" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">所有來源</SelectItem>
+                      {Array.from(new Set((registrations || []).map((r) => registrationSource(r).label))).map((label) => (
+                        <SelectItem key={label} value={label}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={tagFilter} onValueChange={setTagFilter}>
+                    <SelectTrigger className="w-[160px] h-9" data-testid="select-tag-filter">
+                      <SelectValue placeholder={s.tagFilter} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">{s.tagAll}</SelectItem>
+                      {Array.from(new Set((registrations || []).flatMap((r) => r.tags || []))).map((tag) => (
+                        <SelectItem key={tag} value={tag}>{tag}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button variant="outline" size="sm" onClick={() => window.open(`/api/webinars/${id}/registrations/export`, "_blank")} data-testid="button-export-csv">
+                    <Download className="h-4 w-4 mr-1" />
+                    {s.regExportCsv}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="px-0 pb-0">
+                {registrationsLoading ? (
+                  <div className="space-y-2 p-5">{Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded bg-muted" />)}</div>
+                ) : registrationsError ? (
+                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-rose-700"><AlertCircle className="h-4 w-4" />報名名單載入失敗，請重新整理後再試。</div>
+                ) : registrations && registrations.length > 0 ? (
+                  <>
+                  {(() => {
+                    const total = registrations.length;
+                    const attended = registrations.filter((r) => r.attended).length;
+                    const scheduled = registrations.filter((r) => r.selectedSession).length;
+                    const bySource = new Map<string, number>();
+                    registrations.forEach((r) => {
+                      const label = registrationSource(r).label;
+                      bySource.set(label, (bySource.get(label) || 0) + 1);
+                    });
+                    const sources = Array.from(bySource.entries()).sort((a, b) => b[1] - a[1]);
+                    return (
+                      <div className="space-y-3 border-t px-5 py-4">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {[
+                            { label: "總報名", value: total },
+                            { label: "已觀看", value: `${attended}（${total ? Math.round((attended / total) * 100) : 0}%）` },
+                            { label: "預約場次", value: scheduled },
+                            { label: "隨選觀看", value: total - scheduled },
+                          ].map((tile) => (
+                            <div key={tile.label} className="rounded-lg bg-muted/50 px-3 py-2">
+                              <div className="text-[11px] text-muted-foreground">{tile.label}</div>
+                              <div className="mt-0.5 text-lg font-semibold tabular-nums">{tile.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5" data-testid="registration-source-breakdown">
+                          <span className="mr-1 text-xs font-medium text-muted-foreground">報名來源</span>
+                          {sources.map(([label, count]) => (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() => setSourceFilter(sourceFilter === label ? "__all__" : label)}
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                                sourceFilter === label ? "border-primary bg-primary text-primary-foreground" : "bg-background hover:bg-muted",
+                              )}
+                            >
+                              {label} <span className="tabular-nums opacity-70">{count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  <div className="max-h-[560px] overflow-auto border-t">
+                    <Table className="min-w-[1100px]">
+                      <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead className="w-[150px]">姓名</TableHead>
+                          <TableHead className="w-[220px]">聯絡資料</TableHead>
+                          <TableHead className="w-[200px]">場次</TableHead>
+                          <TableHead className="w-[190px]">報名來源</TableHead>
+                          <TableHead className="w-[150px]">報名時間</TableHead>
+                          <TableHead className="w-[130px]">觀看狀態</TableHead>
+                          <TableHead className="min-w-[160px]">標籤</TableHead>
+                          <TableHead className="w-[80px] text-right">操作</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {registrations
+                          .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
+                          .filter((reg) => sourceFilter === "__all__" || registrationSource(reg).label === sourceFilter)
+                          .map((reg, index) => {
+                            const watchMinutes = Math.floor((reg.watchDuration || 0) / 60);
+                            const watchSeconds = (reg.watchDuration || 0) % 60;
+                            return (
+                              <TableRow
+                                key={reg.id}
+                                className={cn(index % 2 === 1 && "bg-muted/35")}
+                                data-testid={`row-registration-${reg.id}`}
+                              >
+                                <TableCell className="align-top font-medium">
+                                  <div className="max-w-[140px] truncate" title={reg.name}>{reg.name}</div>
+                                  {reg.nickname && reg.nickname !== reg.name && (
+                                    <div className="mt-1 text-xs text-muted-foreground">暱稱：{reg.nickname}</div>
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <a href={`mailto:${reg.email}`} className="block max-w-[210px] truncate text-sm text-primary hover:underline" title={reg.email}>
+                                    {reg.email}
+                                  </a>
+                                  <div className="mt-1 text-xs text-muted-foreground">{reg.phone || "—"}</div>
+                                </TableCell>
+                                <TableCell className="align-top text-sm">
+                                  <Badge variant={reg.selectedSession ? "secondary" : "outline"} className="mb-1 text-[11px]">
+                                    {reg.selectedSession ? "預約場次" : "隨選觀看"}
+                                  </Badge>
+                                  <div>
+                                  {reg.selectedSession
+                                    ? new Date(reg.selectedSession).toLocaleString(lang, {
+                                        timeZone: webinar.timezone || "Asia/Taipei",
+                                        year: "numeric",
+                                        month: "2-digit",
+                                        day: "2-digit",
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })
+                                    : "報名後立即觀看"}
+                                  </div>
+                                </TableCell>
+                                <TableCell className="align-top text-sm">
+                                  {(() => {
+                                    const origin = registrationSource(reg);
+                                    return (
+                                      <div className="max-w-[180px]" title={reg.landingUrl || undefined} data-testid={`text-source-${reg.id}`}>
+                                        <div className="truncate font-medium">{origin.label}</div>
+                                        {origin.detail && <div className="truncate text-xs text-muted-foreground">{origin.detail}</div>}
+                                      </div>
+                                    );
+                                  })()}
+                                </TableCell>
+                                <TableCell className="align-top text-sm text-muted-foreground">
+                                  {reg.registeredAt ? new Date(reg.registeredAt).toLocaleString(lang) : "—"}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <Badge variant={reg.attended ? "default" : "outline"} className="mb-1">
+                                    {reg.attended ? s.regAttended : "尚未觀看"}
+                                  </Badge>
+                                  <div className="text-xs text-muted-foreground">
+                                    觀看 {watchMinutes > 0 ? `${watchMinutes} 分` : ""}{watchSeconds} 秒
+                                  </div>
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <div className="flex flex-wrap gap-1">
+                                    {(reg.tags || []).map((tag, i) => (
+                                      <Badge key={i} className="text-xs" data-testid={`badge-tag-${reg.id}-${i}`}>{tag}</Badge>
+                                    ))}
+                                    {(reg.tags || []).length === 0 && (
+                                      <span className="text-sm text-muted-foreground">—</span>
+                                    )}
+                                  </div>
+                                  {editTagsRegId === reg.id && (
+                                    <div className="mt-2 flex min-w-[300px] items-center gap-1">
+                                      <Input
+                                        value={editTagsValue}
+                                        onChange={(e) => setEditTagsValue(e.target.value)}
+                                        placeholder={s.tagPlaceholder}
+                                        className="h-8 text-sm"
+                                        data-testid={`input-tags-${reg.id}`}
+                                      />
+                                      <Button
+                                        size="sm"
+                                        className="h-8"
+                                        disabled={saveRegTags.isPending}
+                                        onClick={() => saveRegTags.mutate({ regId: reg.id, tags: editTagsValue.split(",").map((t) => t.trim()).filter(Boolean) })}
+                                        data-testid={`button-save-tags-${reg.id}`}
+                                      >
+                                        {s.tagSave}
+                                      </Button>
+                                      <Button variant="ghost" size="sm" className="h-8" onClick={() => setEditTagsRegId(null)}>
+                                        {s.tagCancel}
+                                      </Button>
+                                    </div>
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top text-right">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 text-xs"
+                                    onClick={() => { setEditTagsRegId(reg.id); setEditTagsValue((reg.tags || []).join(", ")); }}
+                                    data-testid={`button-edit-tags-${reg.id}`}
+                                  >
+                                    {s.tagEdit}
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  </>
+                ) : (
+                  <p className="text-center text-muted-foreground py-8">{s.regNoRegistrations}</p>
+                )}
+              </CardContent>
+              </Card>
               <Card className="overflow-hidden border-teal-200/70 bg-gradient-to-br from-card via-card to-teal-50/70">
                 <CardHeader className="border-b border-teal-100/80 pb-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -5150,164 +5400,6 @@ export default function AdminWebinarDetail() {
                     </div>
                   )}
                 </CardContent>
-              </Card>
-              <Card id="webinar-section-registrants">
-              <CardHeader className="flex flex-row items-center justify-between gap-2">
-                <div>
-                  <CardTitle className="text-base">{s.regTitle}</CardTitle>
-                  <CardDescription>{s.regDesc}</CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Select value={tagFilter} onValueChange={setTagFilter}>
-                    <SelectTrigger className="w-[160px] h-9" data-testid="select-tag-filter">
-                      <SelectValue placeholder={s.tagFilter} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all__">{s.tagAll}</SelectItem>
-                      {Array.from(new Set((registrations || []).flatMap((r) => r.tags || []))).map((tag) => (
-                        <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button variant="outline" size="sm" onClick={() => window.open(`/api/webinars/${id}/registrations/export`, "_blank")} data-testid="button-export-csv">
-                    <Download className="h-4 w-4 mr-1" />
-                    {s.regExportCsv}
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="px-0 pb-0">
-                {registrationsLoading ? (
-                  <div className="space-y-2 p-5">{Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded bg-muted" />)}</div>
-                ) : registrationsError ? (
-                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-rose-700"><AlertCircle className="h-4 w-4" />報名名單載入失敗，請重新整理後再試。</div>
-                ) : registrations && registrations.length > 0 ? (
-                  <div className="max-h-[560px] overflow-auto border-t">
-                    <Table className="min-w-[1120px]">
-                      <TableHeader className="sticky top-0 z-10 bg-slate-800">
-                        <TableRow className="hover:bg-slate-800">
-                          <TableHead className="w-[150px] text-white">姓名</TableHead>
-                          <TableHead className="w-[220px] text-white">聯絡資料</TableHead>
-                          <TableHead className="w-[130px] text-white">觀看方式</TableHead>
-                          <TableHead className="w-[190px] text-white">選擇場次</TableHead>
-                          <TableHead className="w-[180px] text-white">報名時間</TableHead>
-                          <TableHead className="w-[145px] text-white">觀看狀態</TableHead>
-                          <TableHead className="min-w-[210px] text-white">來源與標籤</TableHead>
-                          <TableHead className="w-[100px] text-right text-white">操作</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {registrations
-                          .filter((reg) => tagFilter === "__all__" || (reg.tags || []).includes(tagFilter))
-                          .map((reg, index) => {
-                            const watchMinutes = Math.floor((reg.watchDuration || 0) / 60);
-                            const watchSeconds = (reg.watchDuration || 0) % 60;
-                            return (
-                              <TableRow
-                                key={reg.id}
-                                className={cn(index % 2 === 1 && "bg-muted/35")}
-                                data-testid={`row-registration-${reg.id}`}
-                              >
-                                <TableCell className="align-top font-medium">
-                                  <div className="max-w-[140px] truncate" title={reg.name}>{reg.name}</div>
-                                  {reg.nickname && reg.nickname !== reg.name && (
-                                    <div className="mt-1 text-xs text-muted-foreground">暱稱：{reg.nickname}</div>
-                                  )}
-                                </TableCell>
-                                <TableCell className="align-top">
-                                  <a href={`mailto:${reg.email}`} className="block max-w-[210px] truncate text-sm text-primary hover:underline" title={reg.email}>
-                                    {reg.email}
-                                  </a>
-                                  <div className="mt-1 text-xs text-muted-foreground">{reg.phone || "—"}</div>
-                                </TableCell>
-                                <TableCell className="align-top">
-                                  <Badge variant={reg.selectedSession ? "secondary" : "outline"}>
-                                    {reg.selectedSession ? "預約場次" : "隨到隨看"}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell className="align-top text-sm">
-                                  {reg.selectedSession
-                                    ? new Date(reg.selectedSession).toLocaleString(lang, {
-                                        timeZone: webinar.timezone || "Asia/Taipei",
-                                        year: "numeric",
-                                        month: "2-digit",
-                                        day: "2-digit",
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                      })
-                                    : "報名後立即觀看"}
-                                </TableCell>
-                                <TableCell className="align-top text-sm text-muted-foreground">
-                                  {reg.registeredAt ? new Date(reg.registeredAt).toLocaleString(lang) : "—"}
-                                </TableCell>
-                                <TableCell className="align-top">
-                                  <Badge variant={reg.attended ? "default" : "outline"} className="mb-1">
-                                    {reg.attended ? s.regAttended : "尚未觀看"}
-                                  </Badge>
-                                  <div className="text-xs text-muted-foreground">
-                                    觀看 {watchMinutes > 0 ? `${watchMinutes} 分` : ""}{watchSeconds} 秒
-                                  </div>
-                                </TableCell>
-                                <TableCell className="align-top">
-                                  <div className="flex flex-wrap gap-1">
-                                    {(reg.utmSource || reg.source) && (
-                                      <Badge variant="outline" className="text-xs">
-                                        {s.regSource} {reg.utmSource || reg.source}
-                                      </Badge>
-                                    )}
-                                    {reg.utmMedium && <Badge variant="outline" className="text-xs">{s.regMedium} {reg.utmMedium}</Badge>}
-                                    {reg.utmCampaign && <Badge variant="outline" className="text-xs">{s.regCampaign} {reg.utmCampaign}</Badge>}
-                                    {(reg.tags || []).map((tag, i) => (
-                                      <Badge key={i} className="text-xs" data-testid={`badge-tag-${reg.id}-${i}`}>{tag}</Badge>
-                                    ))}
-                                    {!reg.utmSource && !reg.source && !reg.utmMedium && !reg.utmCampaign && (reg.tags || []).length === 0 && (
-                                      <span className="text-sm text-muted-foreground">—</span>
-                                    )}
-                                  </div>
-                                  {editTagsRegId === reg.id && (
-                                    <div className="mt-2 flex min-w-[300px] items-center gap-1">
-                                      <Input
-                                        value={editTagsValue}
-                                        onChange={(e) => setEditTagsValue(e.target.value)}
-                                        placeholder={s.tagPlaceholder}
-                                        className="h-8 text-sm"
-                                        data-testid={`input-tags-${reg.id}`}
-                                      />
-                                      <Button
-                                        size="sm"
-                                        className="h-8"
-                                        disabled={saveRegTags.isPending}
-                                        onClick={() => saveRegTags.mutate({ regId: reg.id, tags: editTagsValue.split(",").map((t) => t.trim()).filter(Boolean) })}
-                                        data-testid={`button-save-tags-${reg.id}`}
-                                      >
-                                        {s.tagSave}
-                                      </Button>
-                                      <Button variant="ghost" size="sm" className="h-8" onClick={() => setEditTagsRegId(null)}>
-                                        {s.tagCancel}
-                                      </Button>
-                                    </div>
-                                  )}
-                                </TableCell>
-                                <TableCell className="align-top text-right">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-8 text-xs"
-                                    onClick={() => { setEditTagsRegId(reg.id); setEditTagsValue((reg.tags || []).join(", ")); }}
-                                    data-testid={`button-edit-tags-${reg.id}`}
-                                  >
-                                    {s.tagEdit}
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <p className="text-center text-muted-foreground py-8">{s.regNoRegistrations}</p>
-                )}
-              </CardContent>
               </Card>
             </div>
              </div>

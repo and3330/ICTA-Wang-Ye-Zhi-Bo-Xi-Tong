@@ -135,6 +135,13 @@ export default function EmbedRegister() {
   const registerMutation = useMutation({
     mutationFn: async (data: RegistrationForm) => {
       const urlParams = new URLSearchParams(window.location.search);
+      // Inside an iframe, the useful "where" is the host page, not this form.
+      // The install snippet passes host_page (origin + path); browsers usually
+      // send only the origin as referrer to another site.
+      const declaredHost = urlParams.get("host_page") || "";
+      const hostPage = window.parent !== window
+        ? (/^https:\/\/[^\s]+$/.test(declaredHost) ? declaredHost.slice(0, 500) : document.referrer || window.location.href)
+        : window.location.href;
       const payload: any = {
         ...data,
         webinarId: id,
@@ -145,7 +152,7 @@ export default function EmbedRegister() {
         utmCampaign: urlParams.get("utm_campaign") || undefined,
         utmTerm: urlParams.get("utm_term") || undefined,
         utmContent: urlParams.get("utm_content") || undefined,
-        landingUrl: window.location.href,
+        landingUrl: hostPage,
       };
       if (selectedSession && selectedSession !== ON_DEMAND_VALUE) {
         payload.selectedSession = selectedSession;
