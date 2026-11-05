@@ -86,6 +86,12 @@ test("viewer question heuristic keeps Chinese and English question detection", (
   assert.equal(looksLikeQuestion("請問價格多少"), true);
   assert.equal(looksLikeQuestion("How does this work"), true);
   assert.equal(looksLikeQuestion("大家好"), false);
+  // Cheers and agreement do not wake the AI (or spend points).
+  for (const cheer of ["可以可以 👍", "讚讚讚！！", "好喔 謝謝老師", "學到了 感謝老師", "thank you!!"]) {
+    assert.equal(looksLikeQuestion(cheer), false, cheer);
+  }
+  assert.equal(looksLikeQuestion("可以分期付款"), true);
+  assert.equal(looksLikeQuestion("有沒有回放"), true);
 });
 
 test("AI settings patch rejects whole-object replacement mistakes and unknown fields", () => {

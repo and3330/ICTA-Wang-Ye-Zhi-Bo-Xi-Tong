@@ -73,7 +73,7 @@ import { clerkClient, getAuth } from "@clerk/express";
 import { getUncachableStripeClient, getStripePublishableKey } from "./stripeClient";
 import { looksLikeQuestion } from "./aiAssistant";
 import { runAiReply } from "./aiReplyService";
-import { aiReplyAdmission, executeAdmittedAiReply, validateViewerChatContent } from "./aiReplyAdmission";
+import { AI_REPLY_QUEUE_WAIT_MS, aiReplyAdmission, executeAdmittedAiReply, validateViewerChatContent } from "./aiReplyAdmission";
 import { registerAiManagementRoutes } from "./aiManagementRoutes";
 import { activePublishingOverride, registerAdminManagementRoutes } from "./adminManagementRoutes";
 import {
@@ -1443,30 +1443,43 @@ export async function registerRoutes(
     const ai = webinar?.aiSettings;
     if (!webinar || !ai?.enabled) return;
     if (!looksLikeQuestion(viewerMessage)) return;
-    const admitted = await executeAdmittedAiReply(aiReplyAdmission, {
-      ownerId: webinar.userId || `unowned:${webinarId}`,
-      webinarId,
-      viewerId: verifiedViewerId,
-      question: viewerMessage,
-    }, () => runAiReply({
+    // The viewer sees "AI 助教思考中…" from now until the answer (or a refusal) arrives.
+    const tellViewer = (message: unknown) => {
+      const viewerWs = sessionConnections.get(sessionId) ?? viewerSocket;
+      if (viewerWs.readyState === WebSocket.OPEN) viewerWs.send(JSON.stringify(message));
+    };
+    let thinking = false;
+    const startThinking = () => {
+      if (thinking) return;
+      thinking = true;
+      tellViewer({ type: "aiThinking", data: { active: true } });
+    };
+    try {
+      const admitted = await executeAdmittedAiReply(aiReplyAdmission, {
+        ownerId: webinar.userId || `unowned:${webinarId}`,
         webinarId,
-        sessionId,
+        viewerId: verifiedViewerId,
         question: viewerMessage,
-        kind: "live",
-      }));
-    if (!admitted.accepted) {
-      if (viewerSocket.readyState === WebSocket.OPEN) {
-        viewerSocket.send(JSON.stringify({ type: "error", data: { message: admitted.message, code: "ai_busy" } }));
+      }, () => {
+        startThinking();
+        return runAiReply({
+          webinarId,
+          sessionId,
+          question: viewerMessage,
+          kind: "live",
+        });
+      }, { queueMs: AI_REPLY_QUEUE_WAIT_MS, onQueued: startThinking });
+      if (!admitted.accepted) {
+        tellViewer({ type: "error", data: { message: admitted.message, code: "ai_busy" } });
+        return;
       }
-      return;
-    }
-    const result = admitted.value;
-    if (result.chatMessage) {
-      const viewerWs = sessionConnections.get(sessionId);
-      if (viewerWs?.readyState === WebSocket.OPEN) {
-        viewerWs.send(JSON.stringify({ type: "chat", data: result.chatMessage }));
+      const result = admitted.value;
+      if (result.chatMessage) {
+        tellViewer({ type: "chat", data: result.chatMessage });
+        broadcastToHosts(webinarId, { type: "chat", data: { ...result.chatMessage, sessionId } });
       }
-      broadcastToHosts(webinarId, { type: "chat", data: { ...result.chatMessage, sessionId } });
+    } finally {
+      if (thinking) tellViewer({ type: "aiThinking", data: { active: false } });
     }
   }
 

@@ -1,3 +1,4 @@
+import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
 import { useState, useEffect, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -57,6 +58,7 @@ export default function WebinarRoom() {
   const [playerReady, setPlayerReady] = useState(false);
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [aiThinking, setAiThinking] = useAiThinking();
   const [messageInput, setMessageInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
   
@@ -330,6 +332,9 @@ export default function WebinarRoom() {
       const msg: WebSocketMessage = JSON.parse(event.data);
       
       switch (msg.type) {
+        case "aiThinking":
+          setAiThinking(!!msg.data?.active);
+          break;
         case "chat":
           setMessages((prev) => {
             const incoming = msg.data;
@@ -484,7 +489,7 @@ export default function WebinarRoom() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, aiThinking]);
 
   const handleJoin = () => {
     if (nicknameInput.trim().length < 2) {
@@ -1041,6 +1046,7 @@ export default function WebinarRoom() {
                   </div>
                 );
               })}
+              {aiThinking && <AiThinkingIndicator className="px-1 py-1" />}
               <div ref={chatEndRef} />
             </div>
           </ScrollArea>

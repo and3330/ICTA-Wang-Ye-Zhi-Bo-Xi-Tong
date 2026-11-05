@@ -27,10 +27,17 @@ export function setAiProviderForTests(provider?: AiProvider) {
   providerOverride = provider;
 }
 
+// A live viewer is waiting: give up after 15 s per try and retry once, so a
+// stuck provider never holds a question (and the room's queue) for minutes.
+export const AI_REPLY_TIMEOUT_MS = 15_000;
+export const AI_REPLY_MAX_RETRIES = 1;
+
 export const defaultAiProvider: AiProvider = async ({ model, systemPrompt, question }) => {
   const anthropic = new Anthropic({
     apiKey: process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY,
     baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,
+    timeout: AI_REPLY_TIMEOUT_MS,
+    maxRetries: AI_REPLY_MAX_RETRIES,
   });
   const response = await anthropic.messages.create({
     model,
@@ -46,10 +53,26 @@ export const defaultAiProvider: AiProvider = async ({ model, systemPrompt, quest
 };
 
 // 判斷一則訊息是否「看起來像問題」，避免對招呼語等浪費 API 呼叫
+// Cheers and agreement ("可以可以", "讚讚讚", "好喔 謝謝老師") are not questions.
+const CHEER_WORDS = [
+  "可以", "好", "讚", "棒", "對", "是", "哈", "嗯", "喔", "哦", "耶", "呀", "啊", "啦", "的",
+  "收到", "同意", "有道理", "真的", "太", "了", "厲害", "學到", "謝謝", "感謝", "老師",
+  "加油", "支持", "推", "沒錯", "確實", "超", "很", "好棒", "期待", "ok", "yes", "good", "nice", "great", "thanks", "thank", "you",
+];
+// Built with RegExp() because the TS target predates the "u" flag in literals.
+const NOT_WORDS = new RegExp("[\\s\\p{P}\\p{S}\\p{Extended_Pictographic}+0-9]", "gu");
+function isOnlyCheer(text: string): boolean {
+  let rest = text.toLowerCase().replace(NOT_WORDS, "");
+  if (!rest) return true;
+  for (const word of [...CHEER_WORDS].sort((a, b) => b.length - a.length)) rest = rest.split(word).join("");
+  return rest.length === 0;
+}
+
 export function looksLikeQuestion(text: string): boolean {
   const t = (text || "").trim();
   if (t.length < 3) return false;
   if (/[?？]/.test(t)) return true;
+  if (isOnlyCheer(t)) return false;
   const zhCues = [
     "嗎", "呢", "怎麼", "怎樣", "如何", "為什麼", "為何", "什麼", "甚麼",
     "哪", "多少", "可以", "能不能", "是否", "要不要", "請問", "有沒有",

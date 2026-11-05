@@ -1,3 +1,4 @@
+import { AiThinkingIndicator, useAiThinking } from "@/components/ai-thinking";
 import { useState, useEffect, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -48,6 +49,7 @@ export default function EmbedWebinar() {
   const [playError, setPlayError] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [aiThinking, setAiThinking] = useAiThinking();
   const [messageInput, setMessageInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -174,6 +176,9 @@ export default function EmbedWebinar() {
             );
           });
           if (msg.data?.likeCount) setLikeCount(msg.data.likeCount);
+          break;
+        case "aiThinking":
+          setAiThinking(!!msg.data?.active);
           break;
         case "chat":
           setMessages(prev => (msg.data?.id && prev.some(m => m.id === msg.data.id) ? prev : [...prev, msg.data]));
@@ -333,7 +338,7 @@ export default function EmbedWebinar() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, aiThinking]);
 
   const sendMessage = () => {
     const text = messageInput.trim();
@@ -601,6 +606,7 @@ export default function EmbedWebinar() {
                 <span className="text-foreground">{msg.message}</span>
               </div>
             ))}
+            {aiThinking && <AiThinkingIndicator />}
             <div ref={chatEndRef} />
           </div>
         </ScrollArea>

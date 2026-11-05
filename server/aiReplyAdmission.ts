@@ -3,8 +3,12 @@ const DUPLICATE_WINDOW_MS = 15_000;
 const STATE_TTL_MS = 10 * 60_000;
 const MAX_VIEWER_STATES = 10_000;
 const SESSION_RATE_LIMIT = 6;
-const WEBINAR_IN_FLIGHT_LIMIT = 3;
-const OWNER_IN_FLIGHT_LIMIT = 6;
+const WEBINAR_IN_FLIGHT_LIMIT = 8;
+const OWNER_IN_FLIGHT_LIMIT = 16;
+// When the room is busy a question waits its turn instead of being refused.
+export const AI_REPLY_QUEUE_WAIT_MS = 45_000;
+const QUEUE_POLL_MS = 250;
+const MAX_QUEUED_PER_WEBINAR = 40;
 export const VIEWER_CHAT_MAX_CHARS = 2_000;
 
 export type AiReplyAdmissionInput = {
@@ -69,11 +73,45 @@ export class AiReplyAdmissionController {
   private viewers = new Map<string, ViewerState>();
   private webinars = new Map<string, CounterState>();
   private owners = new Map<string, CounterState>();
+  /** Viewers with a question waiting in the queue, and how many wait per webinar. */
+  private queuedViewers = new Set<string>();
+  private queuedPerWebinar = new Map<string, number>();
+  private webinarLimit: number;
+  private ownerLimit: number;
 
-  acquire(input: AiReplyAdmissionInput): AiReplyAdmissionLease | AiReplyAdmissionDenied {
+  constructor(limits: { webinar?: number; owner?: number } = {}) {
+    this.webinarLimit = limits.webinar ?? WEBINAR_IN_FLIGHT_LIMIT;
+    this.ownerLimit = limits.owner ?? OWNER_IN_FLIGHT_LIMIT;
+  }
+
+  static viewerKey(input: AiReplyAdmissionInput) {
+    return `${input.ownerId}\0${input.webinarId}\0${input.viewerId}`;
+  }
+
+  /** Holds a queue place; false when this viewer already waits or the queue is full. */
+  enqueue(input: AiReplyAdmissionInput): boolean {
+    const key = AiReplyAdmissionController.viewerKey(input);
+    const waiting = this.queuedPerWebinar.get(input.webinarId) ?? 0;
+    if (this.queuedViewers.has(key) || waiting >= MAX_QUEUED_PER_WEBINAR) return false;
+    this.queuedViewers.add(key);
+    this.queuedPerWebinar.set(input.webinarId, waiting + 1);
+    return true;
+  }
+
+  dequeue(input: AiReplyAdmissionInput) {
+    const key = AiReplyAdmissionController.viewerKey(input);
+    if (!this.queuedViewers.delete(key)) return;
+    const waiting = (this.queuedPerWebinar.get(input.webinarId) ?? 1) - 1;
+    if (waiting > 0) this.queuedPerWebinar.set(input.webinarId, waiting);
+    else this.queuedPerWebinar.delete(input.webinarId);
+  }
+
+  acquire(input: AiReplyAdmissionInput, fromQueue = false): AiReplyAdmissionLease | AiReplyAdmissionDenied {
     const now = input.now ?? Date.now();
     this.cleanup(now);
-    const viewerKey = `${input.ownerId}\0${input.webinarId}\0${input.viewerId}`;
+    const viewerKey = AiReplyAdmissionController.viewerKey(input);
+    // A viewer whose question is waiting asks again: same as "still working on it".
+    if (!fromQueue && this.queuedViewers.has(viewerKey)) return this.denied("viewer_busy");
     const question = normalizedQuestion(input.question);
     let viewer = this.viewers.get(viewerKey);
     if (!viewer) {
@@ -92,8 +130,8 @@ export class AiReplyAdmissionController {
 
     const webinar = this.webinars.get(input.webinarId) || { inFlight: 0, touchedAt: now };
     const owner = this.owners.get(input.ownerId) || { inFlight: 0, touchedAt: now };
-    if (webinar.inFlight >= WEBINAR_IN_FLIGHT_LIMIT) return this.denied("webinar_busy");
-    if (owner.inFlight >= OWNER_IN_FLIGHT_LIMIT) return this.denied("owner_busy");
+    if (webinar.inFlight >= this.webinarLimit) return this.denied("webinar_busy");
+    if (owner.inFlight >= this.ownerLimit) return this.denied("owner_busy");
 
     viewer.inFlight = true;
     viewer.attempts.push(now);
@@ -156,8 +194,24 @@ export async function executeAdmittedAiReply<T>(
   controller: AiReplyAdmissionController,
   input: AiReplyAdmissionInput,
   work: () => Promise<T>,
+  options: { queueMs?: number; onQueued?: () => void } = {},
 ): Promise<{ accepted: true; value: T } | AiReplyAdmissionDenied> {
-  const admission = controller.acquire(input);
+  let admission = controller.acquire(input);
+  const roomBusy = (result: typeof admission) =>
+    !result.accepted && (result.reason === "webinar_busy" || result.reason === "owner_busy");
+  // Only a full room waits; a viewer's own limits (duplicate, too fast) never queue.
+  if (roomBusy(admission) && (options.queueMs ?? 0) > 0 && controller.enqueue(input)) {
+    options.onQueued?.();
+    const deadline = Date.now() + options.queueMs!;
+    try {
+      while (roomBusy(admission) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, QUEUE_POLL_MS));
+        admission = controller.acquire({ ...input, now: undefined }, true);
+      }
+    } finally {
+      controller.dequeue(input);
+    }
+  }
   if (!admission.accepted) return admission;
   try {
     return { accepted: true, value: await work() };
