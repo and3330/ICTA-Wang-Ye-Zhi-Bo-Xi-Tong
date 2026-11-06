@@ -38,3 +38,15 @@ Refund webhooks must be durable before their matching payment arrives, and cumul
 **Why:** Payment providers may deliver retries, concurrent partial refunds, or a refund before checkout completion. Treating delivery order as guaranteed can lose refunds or reverse revenue more than once.
 
 **How to apply:** Persist unmatched verified refunds, lock reconciliation by payment identity, and derive one delta from the provider's maximum cumulative refunded amount rather than summing webhook payloads.
+
+Event identity and business-order identity serve different purposes: every state transition/click has its own stable event ID, while an external order's paid amount is confirmed once regardless of how many different event IDs report it.
+
+**Why:** Deduplicating only event IDs still lets retries with fresh IDs inflate revenue. Conversely, sharing one event ID across pending, paid and refund suppresses legitimate state changes.
+
+**How to apply:** Keep order-level monetary idempotency alongside event replay checks. Pending/failed are not paid, refunds are separate cumulative events, and merchant authentication must never be relabelled as provider verification.
+
+New measured watch duration means unique observed content coverage, not playhead position or elapsed time since entering the room; historical position-based values cannot be retroactively certified.
+
+**Why:** Seeking, replay and overlapping devices otherwise inflate completion and lead scores without evidence of viewing.
+
+**How to apply:** Preserve the distinction between legacy/unmeasured and heartbeat-measured records in external contracts. Do not silently reinterpret old seconds as measured coverage.

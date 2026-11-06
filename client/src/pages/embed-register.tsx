@@ -331,7 +331,7 @@ export default function EmbedRegister() {
     const tracking = webinar as Webinar & TrackingWebinar;
     return (
       <div className="p-6 text-center">
-        <WebinarTrackingProvider webinarId={id} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
+        <WebinarTrackingProvider webinarId={id} isTest={tracking.isTest} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
         <div className="w-14 h-14 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
           <CheckCircle className="h-7 w-7 text-green-600" />
         </div>
@@ -400,6 +400,7 @@ export default function EmbedRegister() {
     <div className="p-4">
       <WebinarTrackingProvider
         webinarId={id}
+        isTest={webinar.isTest}
         metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
         gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
       />

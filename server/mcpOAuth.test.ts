@@ -8,6 +8,8 @@ import { db, pool, runAppMigrations } from "./db";
 import { users, webinars, webinarSessions, registrations, registrationIdentityKeys, webinarLandingPages, externalJourneySettings,
   mcpOAuthClients, mcpOAuthRequests, mcpOAuthGrants, mcpOAuthCodes, mcpOAuthTokens, mcpOAuthAudit, rateLimitBuckets } from "@shared/schema";
 import { registerMcpRoutes } from "./mcp/routes";
+import { recordViewerProgress } from "./viewerMeasurements";
+import { ctaButtons, viewerProgress, webinarFunnelEvents } from "@shared/schema";
 import { publicBaseUrl, registrationLink, validateScopes, validRedirect, maskEmail, maskPhone, hash, opaque } from "./mcp/policy";
 
 test("MCP policy: fixed HTTPS origin, safe redirects, scopes and contact masking", () => {
@@ -71,6 +73,9 @@ test("OAuth and Streamable HTTP: consent, tenant isolation, PKCE, rotation and r
   const host = `http://127.0.0.1:${address.port}`;
   t.after(async () => {
     await new Promise<void>(resolve => server.close(() => resolve()));
+      await db.delete(viewerProgress).where(inArray(viewerProgress.webinarId, [selected, unselected, foreign]));
+      await db.delete(webinarFunnelEvents).where(inArray(webinarFunnelEvents.webinarId, [selected, unselected, foreign]));
+      await db.delete(ctaButtons).where(inArray(ctaButtons.webinarId, [selected, unselected, foreign]));
     await db.delete(mcpOAuthRequests).where(inArray(mcpOAuthRequests.clientId, clientIds));
     await db.delete(registrationIdentityKeys).where(inArray(registrationIdentityKeys.webinarId, [selected, unselected, foreign]));
     await db.delete(registrations).where(inArray(registrations.webinarId, [selected, unselected, foreign]));
@@ -208,7 +213,7 @@ test("OAuth and Streamable HTTP: consent, tenant isolation, PKCE, rotation and r
     assert.equal((await rpc(issued.access_token, "tools/list")).status, 200);
   });
   const issued = await issue();
-  await t.test("MCP initialize, six read-only tools, selected-webinar isolation and masked pagination", async () => {
+  await t.test("MCP initialize, eight read-only tools, selected-webinar isolation and masked pagination", async () => {
     const unauthenticated = await rpc(undefined, "tools/list");
     assert.equal(unauthenticated.status, 401);
     assert.match(unauthenticated.headers.get("www-authenticate")!, /resource_metadata/);
@@ -217,7 +222,7 @@ test("OAuth and Streamable HTTP: consent, tenant isolation, PKCE, rotation and r
     })).json() as any;
     assert.equal(init.result.serverInfo.name, "SellCase");
     const list = await (await rpc(issued.access_token, "tools/list")).json() as any;
-    assert.equal(list.result.tools.length, 6);
+    assert.equal(list.result.tools.length, 8);
     assert.ok(list.result.tools.every((tool: any) => tool.annotations.readOnlyHint && !tool.annotations.destructiveHint));
     const ownList = JSON.parse((await call(issued.access_token, "list_webinars")).content[0].text);
     assert.deepEqual(ownList.webinars.map((w: any) => w.id), [selected]);
@@ -237,6 +242,74 @@ test("OAuth and Streamable HTTP: consent, tenant isolation, PKCE, rotation and r
     const sessions = JSON.parse((await call(issued.access_token, "list_sessions", { webinar_id: selected })).content[0].text);
     assert.equal(sessions.sessions.length, 1);
     assert.equal((await call(issued.access_token, "delete_webinar", { webinar_id: selected })).isError, true);
+  });
+  await t.test("personal funnel uses measured coverage, rejects forged timing, and excludes test/deleted data over real OAuth HTTP", async () => {
+    const [viewer] = await db.select().from(registrations).where(eq(registrations.webinarId, selected));
+    const [foreignViewer] = await db.select().from(registrations).where(eq(registrations.webinarId, foreign));
+    const [testViewer] = await db.insert(registrations).values({
+      webinarId: selected, name: "test-only", email: "test-only@example.invalid", isTest: true,
+      attended: true, watchDuration: 99999, watchMeasurementVersion: 2,
+    }).returning();
+    await db.insert(registrations).values({
+      webinarId: selected, name: "deleted-only", email: "deleted-only@example.invalid", deletedAt: new Date(),
+      attended: true, watchDuration: 99999, watchMeasurementVersion: 2,
+    });
+    const [cta] = await db.insert(ctaButtons).values({ webinarId: selected, text: "Fixture sales CTA",
+      url: "https://example.invalid/sale", startTime: 300, ctaKey: crypto.randomUUID() }).returning();
+    const now = new Date();
+    const measurement = crypto.randomUUID();
+    const report = { viewerSessionId: measurement, lastPosition: 10, totalWatched: 10,
+      measurementVersion: 2 as const, watchedRanges: [{ start: 0, end: 10 }] };
+    await recordViewerProgress(selected, viewer.id, report, now);
+    await recordViewerProgress(selected, viewer.id, report, now); // exact retry
+    await recordViewerProgress(selected, viewer.id, { ...report, lastPosition: 600 }, now); // seek alone
+    await assert.rejects(recordViewerProgress(selected, viewer.id, { ...report, viewerSessionId: crypto.randomUUID(),
+      watchedRanges: [{ start: 100, end: 110 }] }, now), /Combined device playback/);
+    let detail = JSON.parse((await call(issued.access_token, "get_registration_insights",
+      { webinar_id: selected, registration_id: viewer.id })).content[0].text);
+    assert.equal(detail.watchDurationSeconds, 10);
+    assert.equal(detail.salesSegmentReached, false);
+    const sales = { ...report, lastPosition: 610, totalWatched: 20, watchedRanges: [{ start: 0, end: 10 }, { start: 600, end: 610 }] };
+    await recordViewerProgress(selected, viewer.id, sales, new Date(now.getTime() + 11000));
+    await recordViewerProgress(selected, viewer.id, sales, new Date(now.getTime() + 12000));
+    const salesEvidence = await db.select().from(webinarFunnelEvents).where(eq(webinarFunnelEvents.registrationId, viewer.id));
+    assert.equal(salesEvidence.filter(e => e.eventType === "sales_segment_reached").length, 1, "measured progress must persist one sales event before MCP aggregation");
+    await recordViewerProgress(selected, viewer.id, { ...report, viewerSessionId: crypto.randomUUID() }, new Date(now.getTime() + 13000));
+    await assert.rejects(recordViewerProgress(selected, viewer.id, { ...report, viewerSessionId: crypto.randomUUID(),
+      totalWatched: 1000, watchedRanges: [{ start: 0, end: 1000 }] }, now), /heartbeat/);
+    await assert.rejects(recordViewerProgress(selected, foreignViewer.id, report, now), /unavailable/);
+    await db.insert(webinarFunnelEvents).values([
+      { webinarId: selected, registrationId: viewer.id, eventType: "webinar_enter", dedupeKey: hash(`enter:${viewer.id}`) },
+      { webinarId: selected, registrationId: viewer.id, ctaId: cta.id, eventType: "cta_click", dedupeKey: hash(`click:${viewer.id}`) },
+      // Flag intentionally false to prove the linked registration exclusion too.
+      { webinarId: selected, registrationId: testViewer.id, eventType: "cta_click", dedupeKey: hash(`test-click:${testViewer.id}`) },
+    ]);
+    detail = JSON.parse((await call(issued.access_token, "get_registration_insights",
+      { webinar_id: selected, registration_id: viewer.id })).content[0].text);
+    assert.equal(detail.watchDurationSeconds, 20, "seeks and overlapping playback devices never inflate measured coverage");
+    assert.equal(detail.salesSegmentReached, true, `safe fixture insight: ${JSON.stringify(detail)}`);
+    assert.equal(detail.salesCtaClicks, 1);
+    assert.ok(!("email" in detail) && !("phone" in detail));
+    const events = JSON.parse((await call(issued.access_token, "list_funnel_events",
+      { webinar_id: selected, registration_id: viewer.id })).content[0].text).events;
+    assert.equal(events.filter((e: any) => e.eventType === "sales_segment_reached").length, 1);
+    assert.equal(new Set(events.map((e: any) => e.eventId)).size, events.length, "different event instances have different IDs");
+    assert.ok(!JSON.stringify(events).includes("watchToken"));
+    const stats = JSON.parse((await call(issued.access_token, "get_registration_stats", { webinar_id: selected })).content[0].text);
+    assert.equal(stats.registered, 3, "production-style aggregation excludes test and deleted registrations");
+    assert.equal(stats.watchDurationSeconds, 20, "99999 test seconds never leak into the aggregate");
+    assert.equal(stats.salesCtaClicks, 1);
+    const page = JSON.parse((await call(issued.access_token, "list_registrations", { webinar_id: selected })).content[0].text);
+    assert.equal(page.registrations.length, 3);
+    const allEvents = JSON.parse((await call(issued.access_token, "list_funnel_events", { webinar_id: selected })).content[0].text);
+    assert.ok(allEvents.events.every((e: any) => e.registrationId !== testViewer.id));
+    for (const registrationId of [testViewer.id, foreignViewer.id]) {
+      assert.equal((await call(issued.access_token, "get_registration_insights", { webinar_id: selected, registration_id: registrationId })).isError, true);
+    }
+    const limited = await issue("webinars:read");
+    for (const name of ["list_funnel_events", "get_registration_insights"]) {
+      assert.equal((await call(limited.access_token, name, { webinar_id: selected, registration_id: viewer.id })).isError, true);
+    }
   });
   await t.test("registration links follow publication snapshots and fixed PUBLIC_BASE_URL", async () => {
     async function link() {

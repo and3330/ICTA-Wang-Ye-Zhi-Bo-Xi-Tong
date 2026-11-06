@@ -1,4 +1,5 @@
 import { WaitingLobby } from "@/components/waiting-lobby";
+import { PlaybackMeasurement, watchedSeconds } from "@shared/watch-measurement";
 import { pickResumePosition, resumeStorageKey } from "@/lib/resume-position";
 import { useRoomOpenSoon } from "@/lib/room-open";
 import { ctaButtonAppearance } from "@/lib/cta-style";
@@ -97,7 +98,9 @@ export default function WebinarRoom() {
 
   const progressSaveRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentTimeRef = useRef(0);
-  const saveProgressMutationRef = useRef<(data: { viewerSessionId: string; lastPosition: number; totalWatched: number }) => void>(() => {});
+  const playbackMeasurement = useRef(new PlaybackMeasurement());
+  const measurementSessionId = useRef(crypto.randomUUID());
+  const saveProgressMutationRef = useRef<(data: ReturnType<PlaybackMeasurement["report"]>) => void>(() => {});
 
   const { data: webinar, isLoading } = useQuery<Webinar>({
     queryKey: ["/api/webinars", id],
@@ -111,6 +114,10 @@ export default function WebinarRoom() {
     refetchInterval: isJoined ? 30_000 : 5_000,
     retry: false,
   });
+  useEffect(() => {
+    playbackMeasurement.current = new PlaybackMeasurement();
+    measurementSessionId.current = crypto.randomUUID();
+  }, [id, watchState?.registrationId]);
   const accessKind = resolveViewerAccessState({
     hasToken: !!watchToken,
     watchState,
@@ -160,7 +167,7 @@ export default function WebinarRoom() {
 
 
   const saveProgressMutation = useMutation({
-    mutationFn: async (data: { viewerSessionId: string; lastPosition: number; totalWatched: number }) => {
+    mutationFn: async (data: ReturnType<PlaybackMeasurement["report"]>) => {
       // Only registered viewers have progress; without a token there is nothing to save.
       if (!watchToken) return null;
       return apiRequest("POST", `/api/webinars/${id}/progress`, { ...data, watchToken });
@@ -172,7 +179,7 @@ export default function WebinarRoom() {
     registrationId: watchState?.registrationId,
     watchToken,
     enabled: isJoined && canWatch,
-    currentPosition: currentTime,
+    currentPosition: Math.floor(watchedSeconds(playbackMeasurement.current.ranges)),
   });
 
   // A viewer who came from the registration email already gave a name.
@@ -262,7 +269,7 @@ export default function WebinarRoom() {
             keepalive: true,
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ viewerSessionId: sessionId, lastPosition: currentTime, totalWatched: currentTime, watchToken }),
+            body: JSON.stringify({ ...playbackMeasurement.current.report(measurementSessionId.current, currentTimeRef.current), watchToken }),
           }).catch(() => {});
         } catch {}
       }
@@ -276,11 +283,7 @@ export default function WebinarRoom() {
 
     progressSaveRef.current = setInterval(() => {
       const latestPosition = currentTimeRef.current;
-      saveProgressMutationRef.current({
-        viewerSessionId: sessionId,
-        lastPosition: latestPosition,
-        totalWatched: latestPosition,
-      });
+      saveProgressMutationRef.current(playbackMeasurement.current.report(measurementSessionId.current, latestPosition));
     }, 10000);
 
     return () => {
@@ -468,11 +471,7 @@ export default function WebinarRoom() {
       document.removeEventListener("visibilitychange", reconnectNow);
       window.removeEventListener("online", reconnectNow);
       if (currentTime > 0) {
-        saveProgressMutation.mutate({
-          viewerSessionId: sessionId,
-          lastPosition: currentTime,
-          totalWatched: currentTime,
-        });
+        saveProgressMutationRef.current(playbackMeasurement.current.report(measurementSessionId.current, currentTimeRef.current));
       }
       const socket = wsRef.current;
       wsRef.current = null;
@@ -614,6 +613,7 @@ export default function WebinarRoom() {
   };
 
   const handlePlayerPlay = () => {
+    playbackMeasurement.current.sample(currentTimeRef.current, performance.now(), false);
     setIsPlaying(true);
   };
 
@@ -659,6 +659,7 @@ export default function WebinarRoom() {
   const trackingProvider = (
     <WebinarTrackingProvider
       webinarId={id}
+      isTest={tracking.isTest}
       metaPixelId={tracking.metaPixelId}
       gtmContainerId={tracking.gtmContainerId}
     />
@@ -795,12 +796,20 @@ export default function WebinarRoom() {
               } : undefined}
               className="absolute inset-0 w-full h-full"
               onReady={handlePlayerReady}
-              onTimeUpdate={(seconds, duration) => { setCurrentTime(Math.floor(seconds)); if (duration) setVideoDuration(duration); }}
+              onTimeUpdate={(seconds, duration) => {
+                playbackMeasurement.current.sample(seconds, performance.now(), isPlaying && canWatch && document.visibilityState === "visible");
+                setCurrentTime(Math.floor(seconds)); if (duration) setVideoDuration(duration);
+              }}
               onPlay={handlePlayerPlay}
-              onPause={() => setIsPlaying(false)}
+              onPause={() => {
+                playbackMeasurement.current.sample(currentTimeRef.current, performance.now(), false);
+                setIsPlaying(false);
+                saveProgressMutationRef.current(playbackMeasurement.current.report(measurementSessionId.current, currentTimeRef.current));
+              }}
               onEnded={() => {
                 setVideoEnded(true);
                 setIsPlaying(false);
+                saveProgressMutationRef.current(playbackMeasurement.current.report(measurementSessionId.current, currentTimeRef.current));
                 trackWebinarEvent(id, "video_progress", { positionSeconds: videoDuration || currentTime, metadata: { progressPercent: 100 } });
                 if (feedbackSurvey?.isActive && !surveySubmitted) setShowSurvey(true);
               }}

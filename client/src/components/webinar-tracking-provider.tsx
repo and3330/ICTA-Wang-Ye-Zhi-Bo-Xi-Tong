@@ -8,6 +8,7 @@ import {
 import { useMarketingConsent } from "@/components/marketing-consent";
 
 export type TrackingWebinar = {
+  isTest?: boolean;
   metaPixelId?: string | null;
   gtmContainerId?: string | null;
 };
@@ -110,9 +111,10 @@ export function WebinarTrackingProvider({
   webinarId,
   metaPixelId,
   gtmContainerId,
+  isTest = false,
 }: TrackingWebinar & { webinarId?: string }) {
-  const safePixelId = metaPixelId?.trim() || "";
-  const safeGtmId = gtmContainerId?.trim().toUpperCase() || "";
+  const safePixelId = isTest ? "" : metaPixelId?.trim() || "";
+  const safeGtmId = isTest ? "" : gtmContainerId?.trim().toUpperCase() || "";
   const marketingConsent = useMarketingConsent();
   const webinarPixelAllowed = isValidMetaPixelId(safePixelId) && safePixelId !== RESERVED_PLATFORM_PIXEL_ID;
 
@@ -128,7 +130,7 @@ export function WebinarTrackingProvider({
   useEffect(() => {
     const completedRegistration = (event: Event) => {
       const detail = (event as CustomEvent<{ webinarId: string; registrationId: string }>).detail;
-      if (!detail || detail.webinarId !== webinarId || marketingConsent !== "granted") return;
+      if (isTest || !detail || detail.webinarId !== webinarId || marketingConsent !== "granted") return;
       const eventId = `registration_${detail.registrationId}`;
       const payload = { webinar_id: detail.webinarId, registration_id: detail.registrationId, event_id: eventId };
       if (webinarPixelAllowed) {
@@ -148,25 +150,27 @@ export function WebinarTrackingProvider({
     };
     window.addEventListener(WEBINAR_REGISTRATION_EVENT, completedRegistration);
     return () => window.removeEventListener(WEBINAR_REGISTRATION_EVENT, completedRegistration);
-  }, [webinarId, safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent]);
+  }, [webinarId, safePixelId, safeGtmId, webinarPixelAllowed, marketingConsent, isTest]);
 
   useEffect(() => {
     const forward = (event: Event) => {
       const detail = (event as CustomEvent<{
         webinarId: string;
         eventType: WebinarEventType;
-        data: WebinarEventData;
+        data: WebinarEventData & { dedupeKey?: string };
       }>).detail;
-      if (!detail || detail.webinarId !== webinarId) return;
+      if (isTest || !detail || detail.webinarId !== webinarId) return;
       const payload = {
         webinar_id: detail.webinarId,
+        ...(detail.data.dedupeKey ? { event_id: detail.data.dedupeKey } : {}),
         ...(detail.data.ctaId ? { cta_id: detail.data.ctaId } : {}),
         ...(detail.data.ctaKey ? { cta_key: detail.data.ctaKey } : {}),
         ...(detail.data.positionSeconds === undefined ? {} : { position_seconds: detail.data.positionSeconds }),
         ...detail.data.metadata,
       };
       if (marketingConsent === "granted" && webinarPixelAllowed) {
-        window.fbq?.("trackSingle", safePixelId, metaEventMap[detail.eventType], payload);
+        window.fbq?.("trackSingle", safePixelId, metaEventMap[detail.eventType], payload,
+          detail.data.dedupeKey ? { eventID: detail.data.dedupeKey } : {});
       }
       if (marketingConsent === "granted" && isValidGtmContainerId(safeGtmId)) {
         window.dataLayer?.push({ event: `webinar_${detail.eventType}`, ...payload });
@@ -174,7 +178,7 @@ export function WebinarTrackingProvider({
     };
     window.addEventListener(WEBINAR_TRACKING_EVENT, forward);
     return () => window.removeEventListener(WEBINAR_TRACKING_EVENT, forward);
-  }, [webinarId, safePixelId, safeGtmId, marketingConsent]);
+  }, [webinarId, safePixelId, safeGtmId, marketingConsent, isTest]);
 
   return null;
 }

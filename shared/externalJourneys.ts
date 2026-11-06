@@ -93,14 +93,22 @@ export const externalHandoffExchangeSchema = z.object({
 }).strict();
 
 export const externalMerchantEventSchema = z.object({
+  webinarId: z.string().uuid().optional(),
   eventId: z.string().trim().min(1).max(160),
   orderId: z.string().trim().min(1).max(160),
-  type: z.enum(["purchase", "refund"]),
+  type: z.enum(["purchase", "refund", "pending", "failed"]).optional(),
+  status: z.enum(["paid", "pending", "failed", "refunded"]).optional(),
   amountMinor: z.number().int().min(0).max(2_000_000_000),
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform(value => value.toUpperCase()),
   scRef: z.string().regex(/^[A-Za-z0-9_-]{24,128}$/).optional(),
   occurredAt: z.string().datetime({ offset: true }).optional(),
-}).strict();
+  isTest: z.boolean().optional(),
+}).strict().superRefine((value, ctx) => {
+  const mapped = value.status === "paid" ? "purchase" : value.status === "refunded" ? "refund" : value.status;
+  if (!value.type && !mapped) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "type or status is required" });
+  if (value.type && mapped && value.type !== mapped) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "type and status disagree" });
+  if (value.status && !value.webinarId && !value.scRef) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Status reports require a signed webinarId or scRef binding" });
+});
 
 export const externalOrderListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(10_000).default(1),

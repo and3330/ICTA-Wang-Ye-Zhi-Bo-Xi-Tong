@@ -282,7 +282,7 @@ export default function Registration() {
     const tracking = webinar as Webinar & TrackingWebinar;
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={brandGradient}>
-        <WebinarTrackingProvider webinarId={id} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
+        <WebinarTrackingProvider webinarId={id} isTest={tracking.isTest} metaPixelId={tracking.metaPixelId} gtmContainerId={tracking.gtmContainerId} />
         <Card className="max-w-lg w-full">
           <CardContent className="pt-8 pb-8 text-center">
             {brandSettings?.logo && (
@@ -359,6 +359,7 @@ export default function Registration() {
     <div className={`registration-page min-h-screen ${hasStickyCta ? "has-sticky-cta" : ""}`} style={{ ...brandGradient, background: brandSettings?.backgroundColor || brandGradient.background }}>
       <WebinarTrackingProvider
         webinarId={id}
+        isTest={webinar.isTest}
         metaPixelId={(webinar as Webinar & TrackingWebinar).metaPixelId}
         gtmContainerId={(webinar as Webinar & TrackingWebinar).gtmContainerId}
       />

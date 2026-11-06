@@ -151,6 +151,7 @@ const funnelStageLabels: Record<string, string> = {
   landing_view: "落地頁",
   registration: "報名",
   webinar_enter: "進入直播",
+  sales_segment_reached: "到達銷售段",
   cta_view: "看到 CTA",
   cta_click: "點擊 CTA",
   checkout_start: "開始結帳",

@@ -36,3 +36,4 @@
 - [Repeat registration policy](repeat-registration-policy.md) — 同一 Email 可再次報名同一直播間；Email 是聯絡資料，不是單次報名唯一性限制。
 - [Pinned DNS lookup contract](pinned-dns-lookup-contract.md) — Node HTTPS 的 all-address lookup 需要陣列格式；格式不符會誤報 Invalid IP address: undefined。
 - [Build-time assets](build-time-assets.md) — small built-in brand assets must be tracked; uploaded attachments are globally ignored and may disappear during merges.
+- [Correlated SELECT expressions](drizzle-correlated-selects.md) — Drizzle can strip outer-column qualification inside projected scalar subqueries; verify correlations against real rows.

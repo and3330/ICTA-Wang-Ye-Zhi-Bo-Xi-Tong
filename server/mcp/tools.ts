@@ -6,10 +6,13 @@ import { db } from "../db";
 import { webinars, webinarSessions, registrations, webinarLandingPages, externalJourneySettings, users, mcpOAuthGrants, mcpOAuthTokens, type User } from "@shared/schema";
 import { liveGrant, recordAudit, type Tx, type Grant } from "./oauthProvider";
 import { hash, maskEmail, maskPhone, registrationLink } from "./policy";
+import { realRegistration } from "../analyticsIsolation";
+import { listFunnelEvents, measuredRegistrationColumns, registrationInsight, outerRegistrationId, outerWebinarId } from "./funnelRead";
 
 export const TOOL_SCOPES: Record<string, string> = {
   list_webinars: "webinars:read", get_webinar: "webinars:read", get_registration_link: "webinars:read",
   list_sessions: "sessions:read", list_registrations: "registrations:read", get_registration_stats: "registrations:read",
+  get_registration_insights: "registrations:read", list_funnel_events: "registrations:read",
 };
 const webinarDto = (w: typeof webinars.$inferSelect) => ({
   id: w.id, title: w.title, description: w.description, coverImage: w.coverImage,
@@ -54,6 +57,10 @@ async function readTool(tx: Tx, grant: Grant, base: string, name: string, args: 
   hasEntitlement: (user: User | undefined) => Promise<boolean>) {
   const [webinar] = await tx.select().from(webinars).where(and(eq(webinars.id, grant.webinarId), eq(webinars.userId, grant.userId)));
   if (!webinar) throw new Error("直播間不存在或不在本次授權範圍");
+  if (webinar.isTest) {
+    if (name === "list_webinars") return { webinars: [], selectedWebinarId: grant.webinarId };
+    throw new Error("測試資料不提供外部分析");
+  }
   if (name === "list_webinars") return { webinars: [webinarDto(webinar)], selectedWebinarId: grant.webinarId };
   if (name === "get_webinar") return { webinar: webinarDto(webinar) };
   if (name === "get_registration_link") {
@@ -82,19 +89,32 @@ async function readTool(tx: Tx, grant: Grant, base: string, name: string, args: 
     const rows = await tx.select({
       id: registrations.id, name: registrations.name, email: registrations.email, phone: registrations.phone,
       registeredAt: registrations.registeredAt, selectedSession: registrations.selectedSession, attended: registrations.attended,
-    }).from(registrations).where(eq(registrations.webinarId, webinar.id))
+      ...measuredRegistrationColumns,
+    }).from(registrations).where(and(eq(registrations.webinarId, webinar.id), realRegistration))
       .orderBy(asc(registrations.registeredAt), asc(registrations.id)).limit(limit + 1).offset(offset);
     return {
-      registrations: rows.slice(0, limit).map(row => ({ ...row, email: maskEmail(row.email), phone: maskPhone(row.phone) })),
+      registrations: rows.slice(0, limit).map(row => ({ ...row, salesSegmentReached: row.salesSegmentReachedAt != null, email: maskEmail(row.email), phone: maskPhone(row.phone) })),
       nextOffset: rows.length > limit ? offset + limit : null, contactsMasked: true,
     };
+  }
+  if (name === "get_registration_insights") return registrationInsight(tx, webinar.id, z.string().uuid().parse(args.registration_id));
+  if (name === "list_funnel_events") {
+    const { limit, offset } = z.object(paging).parse(args);
+    const registrationId = z.string().uuid().optional().parse(args.registration_id);
+    if (registrationId) await registrationInsight(tx, webinar.id, registrationId);
+    return listFunnelEvents(tx, webinar.id, limit, offset, registrationId);
   }
   if (name === "get_registration_stats") {
     const [stats] = await tx.select({
       registered: sql<number>`count(*)::int`,
       attended: sql<number>`count(*) filter (where ${registrations.attended} = true)::int`,
       totalWatchSeconds: sql<number>`coalesce(sum(${registrations.watchDuration}), 0)::float8`,
-    }).from(registrations).where(eq(registrations.webinarId, webinar.id));
+      watchDurationSeconds: sql<number>`coalesce(sum(CASE WHEN ${registrations.watchMeasurementVersion} = 2 THEN ${registrations.watchDuration} ELSE 0 END),0)::float8`,
+      measuredRegistrations: sql<number>`count(*) filter (where ${registrations.watchMeasurementVersion} = 2)::int`,
+      salesSegmentReached: sql<number>`count(*) filter (where EXISTS (SELECT 1 FROM webinar_funnel_events e
+        WHERE e.registration_id = ${outerRegistrationId} AND e.webinar_id = ${outerWebinarId} AND e.event_type = 'sales_segment_reached' AND e.is_test = false))::int`,
+      salesCtaClicks: sql<number>`coalesce(sum(${measuredRegistrationColumns.salesCtaClicks}),0)::int`,
+    }).from(registrations).where(and(eq(registrations.webinarId, webinar.id), realRegistration));
     return { webinarId: webinar.id, ...stats };
   }
   throw new Error("不支援的唯讀工具");
@@ -110,6 +130,8 @@ export function createMcpServer(info: AuthInfo, base: string, hasEntitlement: (u
     ["list_sessions", "分頁讀取授權直播間的場次", { ...scopedId, ...paging }],
     ["list_registrations", "分頁讀取報名名單；Email 與電話一律遮罩，不提供解遮罩參數", { ...scopedId, ...paging }],
     ["get_registration_stats", "取得授權直播間的報名及出席統計", scopedId],
+    ["get_registration_insights", "讀取一筆有效非測試報名的入房、實測觀看秒數、銷售段與 CTA 點擊；不回傳聯絡資料", { ...scopedId, registration_id: z.string().uuid() }],
+    ["list_funnel_events", "分頁讀取非測試行為事件，不回傳聯絡資料、觀看憑證、scRef 或營收明細", { ...scopedId, ...paging, registration_id: z.string().uuid().optional() }],
   ] as const;
   for (const [name, description, inputSchema] of definitions) {
     server.registerTool(name, {

@@ -110,6 +110,58 @@ has gross 1000, refund 1000, net 0. Re-sending the same cumulative value or
 receiving a refund before the purchase is harmless; each order is serialized
 and net is never negative.
 
+### 開發版強化契約（尚未 Publish）
+
+保留原路徑、會員級整合密鑰、HMAC-SHA256 與五分鐘 timestamp 規則，不需輪替密鑰。
+新呼叫可使用 `status:"paid"|"pending"|"failed"|"refunded"` 代替 `type`。
+舊 `type:"purchase"|"refund"` 仍相容，另接受 pending／failed。
+同時傳 type/status 時須一致。使用 status 時必須有簽章 body 內的 `webinarId`
+或 `scRef` 綁定；webinarId 必須與路徑完全一致。
+
+```json
+{
+  "webinarId": "11111111-1111-4111-8111-111111111111",
+  "eventId": "fixture-order-001-paid",
+  "orderId": "fixture-order-001",
+  "status": "paid",
+  "amountMinor": 12345,
+  "currency": "USD",
+  "scRef": "<opaque attribution placeholder>",
+  "isTest": true
+}
+```
+
+以上 token 僅是說明用占位符，不能直接執行；所有金額仍為 minor units。
+每個狀態轉換／退款實例使用各自穩定 eventId；同一事件重試保留完全相同原始 body，
+並可重算新的 timestamp／簽章。不得將 pending、paid、refund 共用 eventId。
+
+除事件去重外，現在同 owner+webinar+orderId 的 purchase 僅確認一次金額。
+改 eventId 重報相同金額會存獨立收據但不再加營收，回應增加 `orderDeduplicated:true`；
+更換已確認實付金額回 409。要調整訂單須另外訂立契約，不能用重送購買充當加款。
+同會員重用同一事件 ID 到另一個 webinar 會回 409；新 status 的已簽章 webinarId
+與路徑不符回 403。會員仍共用自己的一把整合密鑰，並未引入每直播間新密鑰。
+
+有傳 scRef 時必須存在且屬於同會員、同 webinar，否則 403，不再默默當成無歸因；
+未傳 scRef 的 legacy 回報仍可接受但不保證個人／場次歸因。
+
+pending／failed 不產生已付款收入，後到的 pending／failed 不覆蓋既有 paid。
+`external_orders.payment_status` 使用 pending、failed、paid、partially_refunded、
+refunded、refund_pending。refund_pending 表示只有退款證據而尚無購買。
+累計退款語意不變。外部訂單始終是 merchant_reported／browser_reported，
+不寫入 provider-verified purchase/refund 漏斗、不混入金流已驗證營收。
+
+簽章回報可設定 `isTest:true`，也自動繼承測試 webinar／scRef／報名。
+訂單測試分類建立後不得改變（409）。外部訂單清單、CSV 與 summary 預設排除
+測試資料。一般 order detail／安裝收據是會員私有除錯入口，不等同公開統計；
+不要把除錯收據直接作營收。
+
+符合條件且已選擇歸因的外部 CTA，建立 scRef 失敗後只允許重試或顯示失敗，
+不再無聲繞過追蹤打開原網址；未加入 approvedOrigins 的目標維持普通連結。
+外部目的地拒絕 email／phone／name／watchToken／access_token 等聯絡或憑證 query
+參數，不自動將聯絡資料或觀看憑證帶到外站。
+
+測試與發布前事項見 [觀看與成交驗收契約](funnel-measurement-contract.md)。
+
 Browser and merchant event ID namespaces are separate. An unverified browser
 report cannot reserve an order ID, currency, webinar, or merchant idempotency
 key: a later valid merchant purchase supersedes the provisional aggregate while

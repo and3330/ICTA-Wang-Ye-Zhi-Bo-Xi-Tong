@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, bigint, boolean, jsonb, real, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, bigint, boolean, jsonb, real, numeric, uniqueIndex, index, check } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { WebinarLandingBlock as WebinarLandingBlockType } from "./webinarLanding";
@@ -76,6 +76,7 @@ export type {
 
 // Webinars (直播間) - 擴展版
 export const webinars = pgTable("webinars", {
+  isTest: boolean("is_test").notNull().default(false),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id"),
   title: text("title").notNull(),
@@ -240,7 +241,7 @@ export const webinarTrackingSettingsSchema = z.object({
   gtmContainerId: gtmContainerIdSchema.optional(),
 }).strict();
 
-export const insertWebinarSchema = createInsertSchema(webinars).omit({ id: true, createdAt: true, deletedAt: true }).extend({
+export const insertWebinarSchema = createInsertSchema(webinars).omit({ id: true, createdAt: true, deletedAt: true, isTest: true }).extend({
   startTime: z.coerce.date(),
   metaPixelId: metaPixelIdSchema.optional(),
   gtmContainerId: gtmContainerIdSchema.optional(),
@@ -250,6 +251,8 @@ export type Webinar = typeof webinars.$inferSelect;
 
 // Registrations (報名) - 擴展版
 export const registrations = pgTable("registrations", {
+  isTest: boolean("is_test").notNull().default(false),
+  watchMeasurementVersion: integer("watch_measurement_version").notNull().default(1),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
   name: text("name").notNull(),
@@ -301,7 +304,8 @@ export const registrationIdentityKeys = pgTable("registration_identity_keys", {
 }));
 
 export const insertRegistrationSchema = createInsertSchema(registrations).omit({ 
-  id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true, archivedAt: true, deletedAt: true 
+  id: true, registeredAt: true, attended: true, attendedAt: true, leftAt: true, watchDuration: true, archivedAt: true, deletedAt: true,
+  isTest: true, watchMeasurementVersion: true
 }).extend({
   viewerTimezone: z.string().trim().min(1).max(100).refine((value) => {
     try {
@@ -460,6 +464,7 @@ export const externalHandoffs = pgTable("external_handoffs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({ expiresIndex: index("external_handoffs_expires_idx").on(table.expiresAt) }));
 export const externalReferrals = pgTable("external_referrals", {
+  isTest: boolean("is_test").notNull().default(false),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
@@ -474,6 +479,8 @@ export const externalReferrals = pgTable("external_referrals", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 export const externalOrders = pgTable("external_orders", {
+  isTest: boolean("is_test").notNull().default(false),
+  paymentStatus: text("payment_status").notNull().default("pending"),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
@@ -496,6 +503,7 @@ export const externalOrders = pgTable("external_orders", {
   ownerCreatedIndex: index("external_orders_owner_created_idx").on(table.ownerId, table.createdAt),
 }));
 export const externalOrderEvents = pgTable("external_order_events", {
+  isTest: boolean("is_test").notNull().default(false),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   ownerId: varchar("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
@@ -664,6 +672,8 @@ export type FeedbackResponse = typeof feedbackResponses.$inferSelect;
 
 // Viewer Progress (觀看進度)
 export const viewerProgress = pgTable("viewer_progress", {
+  measurementVersion: integer("measurement_version").notNull().default(1),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
   registrationId: varchar("registration_id").references(() => registrations.id),
@@ -726,6 +736,7 @@ export const webinarFunnelEventTypes = [
   "registration",
   "webinar_enter",
   "video_progress",
+  "sales_segment_reached",
   "dropoff",
   "cta_view",
   "cta_click",
@@ -751,6 +762,7 @@ export type WebinarFunnelMetadata = {
 
 // Append-only event stream. Application code intentionally exposes insert/read only.
 export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
+  isTest: boolean("is_test").notNull().default(false),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "restrict" }),
   webinarId: varchar("webinar_id").references(() => webinars.id, { onDelete: "set null" }),
@@ -770,6 +782,8 @@ export const webinarFunnelEvents = pgTable("webinar_funnel_events", {
   metadata: jsonb("metadata").$type<WebinarFunnelMetadata>().notNull().default({}),
   occurredAt: timestamp("occurred_at").notNull().defaultNow(),
 }, (table) => ({
+  eventTypeCheck: check("webinar_funnel_events_event_type_check",
+    sql`${table.eventType} IN ('landing_view','registration','webinar_enter','video_progress','sales_segment_reached','dropoff','cta_view','cta_click','checkout_start','purchase','refund')`),
   dedupeUnique: uniqueIndex("webinar_funnel_events_webinar_dedupe_uniq").on(table.webinarId, table.dedupeKey),
   offerDedupeUnique: uniqueIndex("webinar_funnel_events_offer_dedupe_uniq")
     .on(table.offerId, table.dedupeKey)

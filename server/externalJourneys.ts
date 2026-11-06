@@ -80,6 +80,9 @@ export async function assertExternalJourneyUrl(value: string, requestHost?: stri
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || isUnsafeHost(parsed.hostname)) {
     throw new Error("External URL is unsafe");
   }
+  if (Array.from(parsed.searchParams.keys()).some(key => /^(email|phone|mobile|name|full_name|fullname|token|watch_?token|access_token|refresh_token|authorization|secret)$/i.test(key))) {
+    throw new Error("External destination must not contain contact or credential parameters");
+  }
   const platformHosts = [configuredPlatformHost(), requestHost?.toLowerCase()].filter(Boolean);
   if (INTERNAL_PATH.test(parsed.pathname) && platformHosts.includes(parsed.host.toLowerCase())) {
     throw new Error("External URL loops back into a platform journey");
@@ -164,6 +167,9 @@ function externalOrderDto(order: any) {
   const unresolved = !order.purchaseObserved;
   return {
     ...order,
+    paymentStatus: order.purchaseObserved
+      ? order.refundedMinor > 0 ? order.refundedMinor >= order.grossPaidMinor ? "refunded" : "partially_refunded" : "paid"
+      : order.refundedMinor > 0 ? "refund_pending" : order.paymentStatus,
     grossPaidMinor: unresolved ? null : order.grossPaidMinor,
     netMinor: unresolved ? null : order.netMinor,
     selectedSession: order.selectedSession?.toISOString?.() || null,
@@ -196,6 +202,7 @@ export async function externalThankYouForRegistration(registration: { id: string
       sessionId = session?.id || null;
     }
     await db.insert(externalReferrals).values({
+      isTest: webinar.isTest || !!(await db.query.registrations.findFirst({ where: eq(registrations.id, registration.id), columns: { isTest: true } }))?.isTest,
       tokenHash: digest(scRef), webinarId: registration.webinarId, ownerId: webinar.userId,
       targetUrl: settings.thankYouUrl, registrationId: registration.id, sessionId,
       selectedSession: registration.selectedSession || null, sessionProvenance: "registration_success",
@@ -217,17 +224,20 @@ export async function externalThankYouForRegistration(registration: { id: string
 }
 
 async function applyExternalEvent(tx: any, input: {
-  ownerId: string; webinarId: string; orderId: string; eventId: string; eventType: "purchase" | "refund";
+  ownerId: string; webinarId: string; orderId: string; eventId: string; eventType: "purchase" | "refund" | "pending" | "failed";
+  isTest?: boolean;
   sourceTrust: "browser_reported" | "merchant_reported"; amountMinor: number; currency: string; fingerprint: string; referralId?: string | null; sessionId?: string | null; selectedSession?: Date | null; occurredAt?: Date;
 }) {
   // Serialise every aggregate transition, including the first event for an
   // order where there is no row yet to lock.
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`external-event:${input.ownerId}:${input.eventId}`}))`);
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.ownerId}:${input.webinarId}:${input.orderId}`}))`);
   const [known] = await tx.select().from(externalOrderEvents).where(and(
-    eq(externalOrderEvents.ownerId, input.ownerId), eq(externalOrderEvents.webinarId, input.webinarId),
+    eq(externalOrderEvents.ownerId, input.ownerId),
     eq(externalOrderEvents.eventId, input.eventId),
   )).limit(1);
   if (known) {
+    if (known.webinarId !== input.webinarId) throw Object.assign(new Error("Event belongs to another webinar"), { status: 409 });
     if (known.payloadFingerprint !== input.fingerprint) throw Object.assign(new Error("Event ID was already used with a different payload"), { status: 409 });
     return { replayed: true, orderId: known.orderId };
   }
@@ -243,10 +253,18 @@ async function applyExternalEvent(tx: any, input: {
   if (existing && existing.currency !== input.currency && existing.sourceTrust === "merchant_reported" && input.sourceTrust === "merchant_reported") {
     throw Object.assign(new Error("An order cannot mix currencies"), { status: 409 });
   }
+  if (existing && existing.isTest !== !!input.isTest) {
+    throw Object.assign(new Error("Order test classification cannot change"), { status: 409 });
+  }
+  const sameLedger = existing?.sourceTrust === input.sourceTrust;
+  if (sameLedger && existing.purchaseObserved && input.eventType === "purchase" && existing.grossPaidMinor !== input.amountMinor) {
+    throw Object.assign(new Error("Paid order amount is immutable"), { status: 409 });
+  }
   const inserted = await tx.insert(externalOrderEvents).values({
     ownerId: input.ownerId, webinarId: input.webinarId, orderId: input.orderId, eventId: input.eventId, eventType: input.eventType,
     sourceTrust: input.sourceTrust, amountMinor: input.amountMinor, currency: input.currency, payloadFingerprint: input.fingerprint,
     referralId: input.referralId || null, sessionId: input.sessionId || null, selectedSession: input.selectedSession || null, occurredAt: input.occurredAt || new Date(),
+    isTest: !!input.isTest,
   }).onConflictDoNothing().returning({ id: externalOrderEvents.id });
   if (!inserted.length) {
     const [replayed] = await tx.select().from(externalOrderEvents).where(and(
@@ -262,18 +280,22 @@ async function applyExternalEvent(tx: any, input: {
   const base = !existing || (existing.sourceTrust === "browser_reported" && input.sourceTrust === "merchant_reported")
     ? { gross: 0, refunded: 0, purchaseObserved: false }
     : { gross: existing.grossPaidMinor, refunded: existing.refundedMinor, purchaseObserved: existing.purchaseObserved };
-  const gross = base.gross + (input.eventType === "purchase" ? input.amountMinor : 0);
+  const gross = input.eventType === "purchase" && !base.purchaseObserved ? input.amountMinor : base.gross;
   // Merchant refund values are cumulative refund-to-date, not deltas. A late
   // or duplicate-equivalent refund therefore cannot push net below zero.
   const refunded = input.eventType === "refund" ? Math.max(base.refunded, input.amountMinor) : base.refunded;
+  const purchaseObserved = base.purchaseObserved || input.eventType === "purchase";
+  const paymentStatus = purchaseObserved
+    ? refunded > 0 ? (refunded >= gross ? "refunded" : "partially_refunded") : "paid"
+    : refunded > 0 ? "refund_pending" : input.eventType === "failed" ? "failed" : "pending";
   const values = {
     webinarId: input.webinarId, currency: input.currency, sourceTrust: input.sourceTrust,
-    purchaseObserved: base.purchaseObserved || input.eventType === "purchase", grossPaidMinor: gross,
+    purchaseObserved, grossPaidMinor: gross, paymentStatus, isTest: !!input.isTest,
     refundedMinor: refunded, netMinor: Math.max(0, gross - refunded), referralId: input.referralId || existing?.referralId || null, sessionId: input.sessionId || existing?.sessionId || null, selectedSession: input.selectedSession || existing?.selectedSession || null, updatedAt: new Date(),
   };
   if (existing) await tx.update(externalOrders).set(values).where(eq(externalOrders.id, existing.id));
   else await tx.insert(externalOrders).values({ ownerId: input.ownerId, orderId: input.orderId, ...values });
-  return { replayed: false, orderId: existing?.id };
+  return { replayed: false, orderId: existing?.id, orderDeduplicated: !!(sameLedger && existing?.purchaseObserved && input.eventType === "purchase") };
 }
 
 export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (user: any) => Promise<boolean>) {
@@ -398,6 +420,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
       if (token?.webinarId === available.webinar.id) {
         [registration] = await db.select().from(registrations).where(and(eq(registrations.id, token.registrationId), eq(registrations.webinarId, available.webinar.id), isNull(registrations.deletedAt))).limit(1);
       }
+      if (req.get("X-Watch-Token") && !registration) return res.status(401).json({ message: "Invalid attribution identity" });
       let declaredSession: any;
       let selectedSession: Date | null = registration?.selectedSession || null;
       if (!registration && input.sessionId) {
@@ -416,6 +439,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
         sessionId: declaredSession?.id || null, selectedSession,
         sessionProvenance: registration ? "registered_watch_token" : declaredSession ? "declared_session" : "anonymous",
         visitHash: digest(visitId),
+        isTest: available.webinar.isTest || !!registration?.isTest,
       } as any).returning();
       res.status(201).json({ scRef, visitId, redirectUrl: `/r/${scRef}`, referralId: row.id });
     } catch (error: any) { res.status(400).json({ message: error.message }); }
@@ -457,7 +481,7 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
       const origins = externalJourneySettingsSchema.parse(available.settings.publishedSettings!).approvedOrigins;
       if (!setOriginCors(req, res, origins)) return res.status(403).json({ message: "Origin is not approved" });
       const fingerprint = digest(JSON.stringify(input));
-      const result = await db.transaction(tx => applyExternalEvent(tx, { ownerId: referral.ownerId, webinarId: referral.webinarId, orderId: input.orderId, eventId: `browser:${input.scRef}:${input.orderId}`, eventType: "purchase", sourceTrust: "browser_reported", amountMinor: input.amountMinor, currency: input.currency, fingerprint, referralId: referral.id, sessionId: referral.sessionId, selectedSession: referral.selectedSession }));
+      const result = await db.transaction(tx => applyExternalEvent(tx, { ownerId: referral.ownerId, webinarId: referral.webinarId, orderId: input.orderId, eventId: `browser:${digest(input.scRef)}:${digest(input.orderId)}`, eventType: "purchase", sourceTrust: "browser_reported", amountMinor: input.amountMinor, currency: input.currency, fingerprint, referralId: referral.id, sessionId: referral.sessionId, selectedSession: referral.selectedSession, isTest: referral.isTest || available.webinar.isTest }));
       res.status(result.replayed ? 200 : 201).json({ accepted: true, unverified: true, replayed: result.replayed });
     } catch (error: any) { res.status(error?.status || 400).json({ message: error.message }); }
   });
@@ -474,19 +498,30 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
       const expected = crypto.createHmac("sha256", secret).update(`${timestamp}.`).update(raw).digest("hex");
       if (!/^[a-f0-9]{64}$/i.test(signature) || !safeEqual(signature.toLowerCase(), expected)) return res.status(401).json({ message: "Invalid signature" });
       const input = externalMerchantEventSchema.parse(JSON.parse(raw.toString("utf8")));
+      if (input.webinarId && input.webinarId !== webinar.id) return res.status(403).json({ message: "Signed webinar does not match request" });
       let referral: any;
-      if (input.scRef) [referral] = await db.select().from(externalReferrals).where(and(eq(externalReferrals.tokenHash, digest(input.scRef)), eq(externalReferrals.webinarId, webinar.id))).limit(1);
+      if (input.scRef) {
+        [referral] = await db.select().from(externalReferrals).where(and(
+          eq(externalReferrals.tokenHash, digest(input.scRef)), eq(externalReferrals.webinarId, webinar.id), eq(externalReferrals.ownerId, webinar.userId),
+        )).limit(1);
+        if (!referral) return res.status(403).json({ message: "Attribution does not belong to this webinar" });
+      }
+      const linkedRegistration = referral?.registrationId
+        ? await db.query.registrations.findFirst({ where: eq(registrations.id, referral.registrationId), columns: { isTest: true } }) : undefined;
       const fingerprint = digest(raw);
+      const eventType = input.type || (input.status === "paid" ? "purchase" : input.status === "refunded" ? "refund" : input.status!);
       const result = await db.transaction(tx => applyExternalEvent(tx, {
         ownerId: webinar.userId!, webinarId: webinar.id, orderId: input.orderId,
         // Keep untrusted and merchant event-id spaces disjoint. A public
         // report can never consume a merchant's idempotency key.
-        eventId: `merchant:${input.eventId}`, eventType: input.type, sourceTrust: "merchant_reported",
+        eventId: `merchant:${input.eventId}`, eventType, sourceTrust: "merchant_reported",
         amountMinor: input.amountMinor, currency: input.currency, fingerprint, referralId: referral?.id,
         sessionId: referral?.sessionId, selectedSession: referral?.selectedSession,
         occurredAt: input.occurredAt ? new Date(input.occurredAt) : undefined,
+        isTest: !!(input.isTest || webinar.isTest || referral?.isTest || linkedRegistration?.isTest),
       }));
-      res.status(result.replayed ? 200 : 201).json({ accepted: true, sourceTrust: "merchant_reported", replayed: result.replayed });
+      res.status(result.replayed ? 200 : 201).json({ accepted: true, sourceTrust: "merchant_reported", replayed: result.replayed,
+        orderDeduplicated: "orderDeduplicated" in result ? result.orderDeduplicated : false });
     } catch (error: any) { res.status(error?.status || 400).json({ message: error.message }); }
   });
   app.post("/api/external/handoffs/exchange", async (req, res) => {
@@ -512,7 +547,11 @@ export function registerExternalJourneyRoutes(app: Express, hasEntitlement: (use
       });
     } catch (error: any) { res.status(400).json({ message: error.message }); }
   });
-  const listConditions = (ownerId: string, q: any) => [eq(externalOrders.ownerId, ownerId), ...(q.sourceTrust ? [eq(externalOrders.sourceTrust, q.sourceTrust)] : []), ...(q.sessionId ? [eq(externalOrders.sessionId, q.sessionId)] : []), ...(q.currency ? [eq(externalOrders.currency, q.currency)] : []), ...(q.q ? [ilike(externalOrders.orderId, `%${q.q}%`)] : []), ...(q.from ? [sql`${externalOrders.createdAt} >= ${new Date(q.from)}`] : []), ...(q.to ? [sql`${externalOrders.createdAt} <= ${new Date(q.to)}`] : [])];
+  const listConditions = (ownerId: string, q: any) => [eq(externalOrders.ownerId, ownerId), eq(externalOrders.isTest, false),
+    sql`NOT EXISTS (SELECT 1 FROM webinars w WHERE w.id = ${externalOrders.webinarId} AND w.is_test = true)`,
+    sql`NOT EXISTS (SELECT 1 FROM external_referrals f LEFT JOIN registrations r ON r.id = f.registration_id
+      WHERE f.id = ${externalOrders.referralId} AND (f.is_test = true OR r.is_test = true))`,
+    ...(q.sourceTrust ? [eq(externalOrders.sourceTrust, q.sourceTrust)] : []), ...(q.sessionId ? [eq(externalOrders.sessionId, q.sessionId)] : []), ...(q.currency ? [eq(externalOrders.currency, q.currency)] : []), ...(q.q ? [ilike(externalOrders.orderId, `%${q.q}%`)] : []), ...(q.from ? [sql`${externalOrders.createdAt} >= ${new Date(q.from)}`] : []), ...(q.to ? [sql`${externalOrders.createdAt} <= ${new Date(q.to)}`] : [])];
   app.get("/api/member/external-orders/summary", async (req, res) => {
     try { const ownerId = await requireMember(req, res); if (!ownerId) return; const q = externalOrderListQuerySchema.parse({ ...req.query, page: 1, pageSize: 1 }); const rows = await db.select({ currency: externalOrders.currency, trust: externalOrders.sourceTrust, gross: sql<number>`coalesce(sum(${externalOrders.grossPaidMinor}) filter (where ${externalOrders.purchaseObserved}), 0)`, refunded: sql<number>`coalesce(sum(${externalOrders.refundedMinor}) filter (where ${externalOrders.purchaseObserved}), 0)`, net: sql<number>`coalesce(sum(${externalOrders.netMinor}) filter (where ${externalOrders.purchaseObserved}), 0)`, count: sql<number>`count(*) filter (where ${externalOrders.purchaseObserved})`, pending: sql<number>`count(*) filter (where not ${externalOrders.purchaseObserved})` }).from(externalOrders).where(and(...listConditions(ownerId, q))).groupBy(externalOrders.currency, externalOrders.sourceTrust); res.json({ labelled: "External reports; not provider-verified revenue", currencies: rows.map(x => ({ currency: x.currency, sourceTrust: x.trust, grossPaidMinor: Number(x.gross), refundedMinor: Number(x.refunded), netMinor: Number(x.net), count: Number(x.count), pendingCount: Number(x.pending) })) }); } catch (error: any) { res.status(400).json({ message: error.message }); }
   });

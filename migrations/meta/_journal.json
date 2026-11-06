@@ -281,6 +281,20 @@
       "when": 1794002000000,
       "tag": "0040_manual_session_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794003000000,
+      "tag": "0041_funnel_measurements",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794004000000,
+      "tag": "0042_sales_segment_event_type",
+      "breakpoints": true
     }
   ]
 }

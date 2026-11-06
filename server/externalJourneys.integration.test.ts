@@ -4,9 +4,10 @@ import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import express from "express";
 import { createServer } from "node:http";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db, pool } from "./db";
 import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
+import { createWatchToken } from "./watchTokens";
 import {
   ctaButtons, externalHandoffs, externalJourneySettings, externalOrderEvents,
   externalOrders, externalReferrals, memberIntegrationSecrets, registrations,
@@ -259,6 +260,74 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     );
   });
 
+  await t.test("paid-only revenue: spoof/tamper/tenant failures, order-level idempotency, status transitions and test exclusion", async () => {
+    const tracked = await responseJson(await request(`/api/webinars/${webinarId}/external-referrals`, {
+      method: "POST", body: { targetKind: "cta", ctaId, targetUrl },
+      headers: { "x-watch-token": createWatchToken(registrationId, webinarId, Date.now() + 60_000) },
+    }), 201);
+    const [trackedRow] = await db.select().from(externalReferrals).where(eq(externalReferrals.id, tracked.referralId));
+    assert.equal(trackedRow.registrationId, registrationId);
+    assert.equal(trackedRow.sessionId, sessionId);
+    assert.equal(trackedRow.sessionProvenance, "registered_watch_token");
+    assert.equal(trackedRow.tokenHash, crypto.createHash("sha256").update(tracked.scRef).digest("hex"));
+    const redirect = await request(tracked.redirectUrl, { redirect: "manual" });
+    assert.equal(redirect.status, 302);
+    const target = new URL(redirect.headers.get("location")!);
+    assert.equal(target.searchParams.get("sc_ref"), tracked.scRef);
+    assert.equal(target.searchParams.has("email"), false);
+    assert.equal(target.searchParams.has("watchToken"), false);
+    const payload = { webinarId, eventId: "status-pending", orderId: "status-order", status: "pending", amountMinor: 1500, currency: "USD" };
+    assert.equal((await merchant(webinarId, currentSecret, payload)).status, 201);
+    let page = await responseJson(await request("/api/member/external-orders?q=status-order", { actor: ownerId }));
+    assert.equal(page.items[0].purchaseObserved, false);
+    assert.equal(page.items[0].netMinor, null);
+    assert.equal(page.items[0].paymentStatus, "pending");
+    assert.equal((await merchant(webinarId, currentSecret, { ...payload, eventId: "status-failed", status: "failed" })).status, 201);
+    page = await responseJson(await request("/api/member/external-orders?q=status-order", { actor: ownerId }));
+    assert.equal(page.items[0].paymentStatus, "failed");
+    assert.equal(page.items[0].grossPaidMinor, null);
+    const paid = { ...payload, eventId: "status-paid", status: "paid" };
+    assert.equal((await merchant(webinarId, currentSecret, paid)).status, 201);
+    assert.equal((await merchant(webinarId, currentSecret, paid)).status, 200);
+    const duplicates = await Promise.all(["duplicate-paid-a", "duplicate-paid-b"].map(eventId => merchant(webinarId, currentSecret, { ...paid, eventId })));
+    assert.ok(duplicates.every(r => r.status === 201));
+    for (const response of duplicates) assert.equal((await response.json() as any).orderDeduplicated, true);
+    assert.equal((await merchant(webinarId, currentSecret, { ...paid, eventId: "paid-wrong-amount", amountMinor: 1700 })).status, 409);
+    // Fresh signatures on retry headers are allowed; mutation under an old signature is not.
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = crypto.createHmac("sha256", currentSecret).update(`${timestamp}.${JSON.stringify(paid)}`).digest("hex");
+    const tampered = await request(`/api/external/merchant-events/${webinarId}`, {
+      method: "POST", body: { ...paid, amountMinor: 9000 },
+      headers: { "x-external-timestamp": timestamp, "x-external-signature": signature },
+    });
+    assert.equal(tampered.status, 401);
+    assert.equal((await merchant(otherWebinarId, currentSecret, paid)).status, 401);
+    assert.equal((await merchant(secondWebinarId, currentSecret, paid)).status, 403, "signed webinar binding prevents same-owner path substitution");
+    assert.equal((await merchant(secondWebinarId, currentSecret, { ...paid, webinarId: secondWebinarId })).status, 409, "an event instance cannot be reused across webinars");
+    assert.equal((await merchant(webinarId, currentSecret, { ...paid, eventId: "foreign-referral", scRef: crypto.randomBytes(32).toString("base64url") })).status, 403);
+    await merchant(webinarId, currentSecret, { ...payload, eventId: "late-pending", status: "pending" });
+    page = await responseJson(await request("/api/member/external-orders?q=status-order", { actor: ownerId }));
+    assert.equal(page.items[0].grossPaidMinor, 1500);
+    assert.equal(page.items[0].paymentStatus, "paid", "late pending cannot downgrade a paid order");
+    const refund = { ...payload, eventId: "status-refund-part", status: "refunded", amountMinor: 400 };
+    await merchant(webinarId, currentSecret, refund);
+    await merchant(webinarId, currentSecret, { ...refund, eventId: "same-cumulative-refund" });
+    page = await responseJson(await request("/api/member/external-orders?q=status-order", { actor: ownerId }));
+    assert.equal(page.items[0].netMinor, 1100);
+    assert.equal(page.items[0].paymentStatus, "partially_refunded");
+    await merchant(webinarId, currentSecret, { ...refund, eventId: "status-refund-full", amountMinor: 1500 });
+    page = await responseJson(await request("/api/member/external-orders?q=status-order", { actor: ownerId }));
+    assert.equal(page.items[0].netMinor, 0);
+    assert.equal(page.items[0].paymentStatus, "refunded");
+    const before = await responseJson(await request("/api/member/external-orders/summary?currency=USD", { actor: ownerId }));
+    await merchant(webinarId, currentSecret, { ...paid, eventId: "isolated-test-paid", orderId: `TEST-${suffix}`, amountMinor: 999999, isTest: true });
+    const after = await responseJson(await request("/api/member/external-orders/summary?currency=USD", { actor: ownerId }));
+    assert.deepEqual(after, before, "test revenue never enters production-style summary");
+    assert.equal((await responseJson(await request(`/api/member/external-orders?q=TEST-${suffix}`, { actor: ownerId }))).total, 0);
+    const [testOrder] = await db.select().from(externalOrders).where(eq(externalOrders.orderId, `TEST-${suffix}`));
+    assert.equal(testOrder.isTest, true);
+    assert.equal(testOrder.grossPaidMinor, 999999, "test receipt is persisted separately, not silently discarded");
+  });
   await t.test("the same owner order ID is independently scoped to its webinar and signed refunds survive unpublish", async () => {
     const shared = { orderId: "same-owner-order", type: "purchase", amountMinor: 700, currency: "USD" };
     await merchant(webinarId, currentSecret, { ...shared, eventId: "first-webinar" });
@@ -282,7 +351,9 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     assert.ok(token);
     assert.ok(handoffUrl.searchParams.get("sc_ref"), "registration success should issue automatic verified attribution");
     assert.equal(handoff!.redirectUrl.includes("attendee-"), false, "contact data must never appear in a redirect URL");
-    const [automaticReferral] = await db.select().from(externalReferrals).where(eq(externalReferrals.registrationId, registrationId));
+    const [automaticReferral] = await db.select().from(externalReferrals).where(and(
+      eq(externalReferrals.registrationId, registrationId), eq(externalReferrals.sessionProvenance, "registration_success"),
+    ));
     assert.deepEqual(
       { target: automaticReferral.targetUrl, session: automaticReferral.sessionId, provenance: automaticReferral.sessionProvenance },
       { target: publishedSettings.thankYouUrl, session: sessionId, provenance: "registration_success" },
@@ -316,8 +387,8 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     assert.equal(list.items.every((item: any) => item.webinarId !== otherWebinarId && item.sourceTrust === "merchant_reported"), true);
     const summary: any = await responseJson(await request("/api/member/external-orders/summary?currency=USD", { actor: ownerId }));
     assert.deepEqual(summary.currencies, [{
-      currency: "USD", sourceTrust: "merchant_reported", grossPaidMinor: 1401, refundedMinor: 700,
-      netMinor: 701, count: 3, pendingCount: 0,
+      currency: "USD", sourceTrust: "merchant_reported", grossPaidMinor: 2901, refundedMinor: 2200,
+      netMinor: 701, count: 4, pendingCount: 0,
     }]);
     const detailId = list.items[0].id;
     assert.equal((await request(`/api/member/external-orders/${detailId}`, { actor: rootId })).status, 404);

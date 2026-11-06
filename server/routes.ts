@@ -146,6 +146,9 @@ import { getBatchSessionRegistrationCounts, getSessionRegistrationCounts } from 
 import { registerCourseMarketplaceRoutes } from "./courseMarketplaceRoutes";
 import type { SessionRegistrationCountsDto } from "@shared/sessionRegistrationCounts";
 import { assertSafeWebhookUrl, deliverWebhook, WEBHOOK_LEASE_MS } from "./webhookDelivery";
+import { progressReportSchema, recordViewerProgress } from "./viewerMeasurements";
+import { realRegistration } from "./analyticsIsolation";
+import { registrations as registrationsTableForAnalytics, webinarSessions as webinarSessionsTableForAnalytics } from "@shared/schema";
 import { externalThankYouForRegistration, registerExternalJourneyRoutes } from "./externalJourneys";
 import { optionalRegistrationEnrichment } from "./externalJourneySafety";
 import { externalJourneySettings, type Webinar } from "@shared/schema";
@@ -305,6 +308,7 @@ function publicWebinar(webinar: Webinar) {
   // here. In particular, host notification/campaign settings are never public.
   return {
     id: safe.id,
+    isTest: safe.isTest,
     title: safe.title,
     description: safe.description,
     videoProvider: safe.videoProvider,
@@ -4380,11 +4384,6 @@ export async function registerRoutes(
     const registration = await storage.getRegistration(token.registrationId);
     return registration?.webinarId === req.params.id ? registration : undefined;
   };
-  const progressReportSchema = z.object({
-    viewerSessionId: z.string().trim().min(1).max(200),
-    lastPosition: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
-    totalWatched: z.number().finite().min(0).max(24 * 60 * 60).transform(Math.floor),
-  });
 
   // Where this registration stopped watching, from whichever device saved last.
   app.get("/api/webinars/:id/progress", requirePublishedOrOwner, async (req, res) => {
@@ -4408,19 +4407,10 @@ export async function registerRoutes(
       const registration = await progressViewer(req);
       if (!registration) return res.status(401).json({ message: "Invalid or expired watch token" });
       const report = progressReportSchema.parse(req.body);
-      const existing = await storage.getViewerProgress(req.params.id as string, report.viewerSessionId);
-      if (existing && existing.registrationId && existing.registrationId !== registration.id) {
-        return res.status(409).json({ message: "Progress session belongs to another viewer" });
-      }
-      const data = insertViewerProgressSchema.parse({
-        ...report,
-        webinarId: req.params.id,
-        registrationId: registration.id,
-      });
-      const progress = await storage.upsertViewerProgress(data);
+      const progress = await recordViewerProgress(req.params.id as string, registration.id, report);
       res.json(progress);
     } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      res.status(error.status || 400).json({ message: error.message });
     }
   });
 
@@ -4435,13 +4425,27 @@ export async function registerRoutes(
       }
       const input = funnelEventInputSchema.parse(req.body);
       // A valid watch token names the registration; it wins over anything else sent.
+      let verifiedViewer: Awaited<ReturnType<typeof storage.getRegistration>> = undefined;
       if (input.watchToken) {
         const token = verifyWatchToken(input.watchToken);
-        if (token && token.webinarId === webinarId) input.registrationId = token.registrationId;
+        if (!token || token.webinarId !== webinarId) return res.status(401).json({ message: "Invalid watch token" });
+        verifiedViewer = await storage.getRegistration(token.registrationId);
+        if (!verifiedViewer || verifiedViewer.webinarId !== webinarId) return res.status(401).json({ message: "Invalid watch token" });
+        input.registrationId = token.registrationId;
         delete input.watchToken;
       }
-      if (input.eventType === "purchase" || input.eventType === "refund") {
+      if (input.eventType === "purchase" || input.eventType === "refund" || input.eventType === "sales_segment_reached") {
         return res.status(403).json({ message: "Payment events must be recorded by a verified server-side payment integration" });
+      }
+      if (input.registrationId && !verifiedViewer) return res.status(401).json({ message: "A bound watch token is required" });
+      if (verifiedViewer) {
+        const [session] = verifiedViewer.selectedSession ? await db.select({ id: webinarSessionsTableForAnalytics.id }).from(webinarSessionsTableForAnalytics)
+          .where(and(eq(webinarSessionsTableForAnalytics.webinarId, webinarId), eq(webinarSessionsTableForAnalytics.scheduledStart, verifiedViewer.selectedSession))).limit(1) : [];
+        input.sessionId = session?.id;
+      } else if (input.sessionId) {
+        const [session] = await db.select({ id: webinarSessionsTableForAnalytics.id }).from(webinarSessionsTableForAnalytics)
+          .where(and(eq(webinarSessionsTableForAnalytics.webinarId, webinarId), eq(webinarSessionsTableForAnalytics.id, input.sessionId))).limit(1);
+        if (!session) return res.status(400).json({ message: "Session does not belong to webinar" });
       }
 
       if (input.registrationId) {
@@ -4487,6 +4491,7 @@ export async function registerRoutes(
       const dedupeKey = funnelDedupeKey(input.eventType, input.dedupeKey, input.registrationId);
       const result = await storage.createFunnelEvent({
         webinarId,
+        isTest: webinar.isTest || !!verifiedViewer?.isTest,
         eventType: input.eventType,
         registrationId: input.registrationId,
         sessionId: input.sessionId,
@@ -4551,7 +4556,8 @@ export async function registerRoutes(
     if (await denyAdvancedTrialOnly(res, webinar.userId)) return;
 
     const analytics = await storage.getWebinarAnalytics(webinarId);
-    const registrations = await storage.getRegistrationsByWebinar(webinarId);
+    const registrations = await db.select().from(registrationsTableForAnalytics)
+      .where(and(eq(registrationsTableForAnalytics.webinarId, webinarId), realRegistration));
     
     // Calculate summary stats
     const totalRegistrations = registrations.length;
@@ -5028,7 +5034,7 @@ export async function registerRoutes(
           .where(eq(registrations.id, authorized.id)).for("update");
         if (!current) return undefined;
         const previousDuration = current.watchDuration || 0;
-        const nextDuration = Math.max(previousDuration, watchDuration);
+        const nextDuration = current.watchMeasurementVersion === 2 ? previousDuration : Math.max(previousDuration, watchDuration);
         const [changed] = await tx.update(registrations).set({
           leftAt: new Date(),
           watchDuration: nextDuration,
@@ -5037,7 +5043,9 @@ export async function registerRoutes(
         const completionThreshold = webinar.videoDuration
           ? Math.max(1, Math.floor(webinar.videoDuration * 0.95))
           : Number.POSITIVE_INFINITY;
-        if (previousDuration >= completionThreshold || nextDuration < completionThreshold) {
+        // v2 heartbeats already update duration before leave. The delivery
+        // unique event key, not the previous duration, provides idempotency.
+        if (nextDuration < completionThreshold) {
           return changed;
         }
         const hooksForEvent = await tx.select().from(webhooks).where(and(

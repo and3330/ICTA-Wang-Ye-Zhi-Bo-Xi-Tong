@@ -28,10 +28,16 @@ export type WebinarEventData = {
 
 export const WEBINAR_TRACKING_EVENT = "livecast:webinar-event";
 export const WEBINAR_REGISTRATION_EVENT = "livecast:webinar-registration";
+const eventJourneys = new Map<string, string>();
+function eventJourney(webinarId: string) {
+  if (!eventJourneys.has(webinarId)) eventJourneys.set(webinarId, crypto.randomUUID());
+  return eventJourneys.get(webinarId)!;
+}
 
 /** Call only with the ID returned by a successful persisted registration. */
 export function trackCompletedWebinarRegistration(webinarId: string | undefined, registrationId: unknown) {
   if (!isUuid(webinarId) || typeof registrationId !== "string" || !isUuid(registrationId)) return;
+  eventJourneys.set(webinarId, crypto.randomUUID());
   window.dispatchEvent(new CustomEvent(WEBINAR_REGISTRATION_EVENT, {
     detail: { webinarId, registrationId },
   }));
@@ -104,7 +110,11 @@ export function trackWebinarEvent(
   if ((eventType === "video_progress" || eventType === "dropoff") && data.positionSeconds === undefined) return false;
 
   const visitorToken = getWebinarVisitorToken(webinarId);
-  const dedupeKey = `${visitorToken}.${eventType}.${eventSuffix(eventType, data)}`.slice(0, 128);
+  // Each actual click/exit/checkout is a distinct instance. Checkpoints/views
+  // dedupe within this page journey, not forever across every registration.
+  const suffix = ["cta_click", "checkout_start", "dropoff"].includes(eventType)
+    ? crypto.randomUUID() : eventSuffix(eventType, data);
+  const dedupeKey = `${eventJourney(webinarId)}.${eventType}.${suffix}`.slice(0, 128);
   const memoryKey = `${webinarId}:${dedupeKey}`;
   if (sentEvents.has(memoryKey)) return false;
   sentEvents.add(memoryKey);
@@ -179,9 +189,12 @@ export async function openTrackedExternalUrl(
   const popup = window.open("", "_blank");
   // Keep the anchor's native click when popup reservation is blocked. Retrying
   // window.open after await would lose the browser's user activation.
-  if (!popup && nativeClick) return;
   nativeClick?.preventDefault();
   try { if (popup) popup.opener = null; } catch {}
+  const failAttribution = () => {
+    try { popup?.close(); } catch {}
+    window.alert("暫時無法建立安全歸因連結，請稍後重新點擊。尚未開啟外部頁面。");
+  };
   const openDirectly = () => {
     if (popup && !popup.closed) popup.location.replace(url);
     else window.open(url, "_blank", "noopener,noreferrer");
@@ -189,14 +202,14 @@ export async function openTrackedExternalUrl(
   let publicSettings: { approvedOrigins?: string[] };
   try {
     const settingsResponse = await fetch(`/api/webinars/${encodeURIComponent(webinarId)}/external-journey/public`, { credentials: "same-origin", signal: AbortSignal.timeout(3000) });
-    if (!settingsResponse.ok) return openDirectly();
+    if (!settingsResponse.ok) return failAttribution();
     publicSettings = await settingsResponse.json() as { approvedOrigins?: string[] };
     const targetOrigin = new URL(url).origin;
     // An absent approved target means attribution is not opted in. Never make
     // historical CTA links depend on a new integration configuration.
     if (!publicSettings.approvedOrigins?.includes(targetOrigin)) return openDirectly();
   } catch {
-    return openDirectly();
+    return failAttribution();
   }
 
   const createReferral = async (): Promise<boolean> => {
@@ -222,20 +235,18 @@ export async function openTrackedExternalUrl(
       const destination = new URL(result.redirectUrl, window.location.origin);
       if (destination.origin !== window.location.origin) throw new Error("Invalid attributed referral");
       if (popup && !popup.closed) popup.location.replace(destination.toString());
-      else window.open(destination.toString(), "_blank", "noopener,noreferrer");
+      else window.location.assign(destination.toString());
       return true;
     } catch {
       return false;
     }
   };
   if (await createReferral()) return;
-  // Tracking was explicitly enabled for this target, so surface a retry rather
-  // than silently dropping the referral. The CTA still opens its original URL
-  // if the viewer declines or the retry also fails.
+  // An opted-in sales CTA must never silently bypass its attribution token.
   if (window.confirm("無法建立歸因連結。要重試嗎？")) {
     if (await createReferral()) return;
   }
-  openDirectly();
+  failAttribution();
 }
 
 export async function openOfferCheckout(

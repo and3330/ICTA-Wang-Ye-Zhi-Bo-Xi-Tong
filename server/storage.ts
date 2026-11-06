@@ -1,3 +1,4 @@
+import { realFunnelEvent } from "./analyticsIsolation";
 import { db } from "./db";
 import crypto from "node:crypto";
 import { EMAIL_CLAIM_BATCH_SIZE, EMAIL_LEASE_MS } from "./emailDeliveryPolicy";
@@ -1721,10 +1722,11 @@ export class DatabaseStorage implements IStorage {
       // Email is contact information, not a registration identity. Each signup
       // gets its own ID, watch access, email jobs, and attribution event.
       await this.releaseLegacyEmailLock(tx, data.webinarId, data.email);
-      const result = await tx.insert(registrations).values(data).returning();
+      const [context] = await tx.select({ isTest: webinars.isTest }).from(webinars).where(eq(webinars.id, data.webinarId));
+      const result = await tx.insert(registrations).values({ ...data, isTest: !!context?.isTest }).returning();
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
-        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
+        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken, registration.isTest),
       ).onConflictDoNothing({
         target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
       });
@@ -1755,10 +1757,11 @@ export class DatabaseStorage implements IStorage {
       if (Number(totals[0]?.value || 0) >= monthlyLimit) return null;
 
       await this.releaseLegacyEmailLock(tx, data.webinarId, data.email);
-      const result = await tx.insert(registrations).values(data).returning();
+      const [context] = await tx.select({ isTest: webinars.isTest }).from(webinars).where(eq(webinars.id, data.webinarId));
+      const result = await tx.insert(registrations).values({ ...data, isTest: !!context?.isTest }).returning();
       const registration = result[0];
       await tx.insert(webinarFunnelEvents).values(
-        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken),
+        authoritativeRegistrationFunnelEvent(registration.webinarId, registration.id, analyticsVisitorToken, registration.isTest),
       ).onConflictDoNothing({
         target: [webinarFunnelEvents.webinarId, webinarFunnelEvents.dedupeKey],
       });
@@ -2364,7 +2367,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getFunnelEvents(webinarId: string, from?: Date, to?: Date): Promise<WebinarFunnelEvent[]> {
-    const conditions = [eq(webinarFunnelEvents.webinarId, webinarId)];
+    const conditions = [eq(webinarFunnelEvents.webinarId, webinarId), realFunnelEvent];
     if (from) conditions.push(gte(webinarFunnelEvents.occurredAt, from));
     if (to) conditions.push(lte(webinarFunnelEvents.occurredAt, to));
     return db.select().from(webinarFunnelEvents)
@@ -2377,6 +2380,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(
         eq(webinarFunnelEvents.webinarId, webinarId),
         eq(webinarFunnelEvents.registrationId, registrationId),
+        realFunnelEvent,
       ))
       .orderBy(asc(webinarFunnelEvents.occurredAt), asc(webinarFunnelEvents.id));
   }
@@ -2387,6 +2391,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(
         eq(webinarFunnelEvents.webinarId, webinarId),
         inArray(webinarFunnelEvents.registrationId, registrationIds),
+        realFunnelEvent,
       ))
       .orderBy(asc(webinarFunnelEvents.occurredAt), asc(webinarFunnelEvents.id));
   }

@@ -67,9 +67,10 @@ export function funnelDedupeKey(eventType: WebinarFunnelEventType, clientKey: st
 }
 
 /** Server-only event payload used in the registration transaction; raw tokens never leave this function. */
-export function authoritativeRegistrationFunnelEvent(webinarId: string, registrationId: string, analyticsVisitorToken?: string) {
+export function authoritativeRegistrationFunnelEvent(webinarId: string, registrationId: string, analyticsVisitorToken?: string, isTest = false) {
   return {
     webinarId,
+    isTest,
     eventType: "registration" as const,
     registrationId,
     visitorTokenHash: analyticsVisitorToken ? sha256(analyticsVisitorToken) : null,
@@ -113,6 +114,7 @@ function personKeyResolver(events: WebinarFunnelEvent[]) {
 }
 
 export function aggregateFunnelEvents(events: WebinarFunnelEvent[], videoDuration: number) {
+  events = events.filter(event => !event.isTest);
   const personKey = personKeyResolver(events);
   const counts = Object.fromEntries(webinarFunnelEventTypes.map(type => [type, 0])) as Record<WebinarFunnelEventType, number>;
   const uniqueByType = Object.fromEntries(webinarFunnelEventTypes.map(type => [type, new Set<string>()])) as Record<WebinarFunnelEventType, Set<string>>;

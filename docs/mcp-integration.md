@@ -44,9 +44,55 @@
 | list_sessions | webinar_id、limit、offset | 場次分頁 |
 | list_registrations | webinar_id、limit、offset | 報名分頁；Email、電話一律遮罩 |
 | get_registration_stats | webinar_id | 報名、出席、觀看秒數統計 |
+| get_registration_insights | webinar_id、registration_id | 個人入房、v2 實測觀看秒數、銷售段到達、CTA 點擊數；不含聯絡資料 |
+| list_funnel_events | webinar_id、registration_id（選填）、limit、offset | 個人／直播間非財務行為事件，穩定事件 ID 與分頁 |
 
 分頁 limit 預設 25、上限 100；offset 上限 100000，nextOffset 為 null 時結束。
 沒有任何寫入工具，也沒有解遮罩參數。
+
+### 個人漏斗擴充（開發版，尚未 Publish）
+
+新增工具沿用 `registrations:read`；每次仍重驗 OAuth token、會員與單一直播間授權。
+`list_registrations` 額外回傳 `watchDurationSeconds`、`watchMeasurementVersion`、
+`lastPositionSeconds`、`enteredAt`、`salesSegmentReachedAt`、`salesSegmentReached`、
+`salesCtaClicks`。Email／電話依舊固定遮罩。
+
+呼叫範例（MCP 初始化後的 tools/call 參數，ID 均為虛構）：
+
+```json
+{
+  "name": "get_registration_insights",
+  "arguments": {
+    "webinar_id": "11111111-1111-4111-8111-111111111111",
+    "registration_id": "33333333-3333-4333-8333-333333333333"
+  }
+}
+```
+
+結果位於 `content[0].text` 的 JSON：
+`registrationId,webinarId,attended,enteredAt,watchDurationSeconds,watchMeasurementVersion,
+lastPositionSeconds,salesSegmentReachedAt,salesSegmentReached,salesCtaClicks,watchDurationDefinition`。
+`enteredAt` 可為 null，不將進房視為聽完。
+
+`watchDurationSeconds` 是 v2 心跳驗證後「觀看區間聯集」的秒數；重看／多裝置
+重疊不重複加算，暫停、跳轉、背景頁面不獲得觀看秒數。
+舊資料無法反推有效秒數，版本 1 回傳 0，**不是已證實觀看 0 秒**；
+須搭配 `watchMeasurementVersion` 判讀。
+
+`get_registration_stats` 保留舊 `totalWatchSeconds`（含未重新測量的歷史值），另加
+`watchDurationSeconds`（只加總 v2）、`measuredRegistrations`、
+`salesSegmentReached`（報名筆數）、`salesCtaClicks`（事件數）。
+新串接請優先使用 v2 指標。
+
+`list_funnel_events` 回傳 `{events,nextOffset}`。每列僅含
+`eventId,eventType,webinarId,registrationId,sessionId,ctaId,positionSeconds,occurredAt`；
+事件類型為 registration、webinar_enter、video_progress、sales_segment_reached、
+dropoff、cta_view、cta_click、checkout_start。不回傳金額、財務事件、metadata、
+聯絡資料、URL、watch token 或 scRef。事件 ID 是每個事件列自己的 UUID，不是旅程 ID。
+
+所有工具預設排除 `is_test` 直播間／報名／事件，以及軟刪除報名；不提供對外解除排除
+參數。測試直播間的 list_webinars 為空，其餘資料工具拒絕讀取。
+詳見 [觀看與成交驗收契約](funnel-measurement-contract.md)。
 
 ## 報名連結
 
