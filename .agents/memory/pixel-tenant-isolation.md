@@ -20,3 +20,9 @@ Development GTM isolation must not be presented as a blanket block of all advert
 **Why:** The platform Pixel's default-on policy remains separate from a scoped production-GTM denylist. Opening an ordinary preview page to test that denylist could itself send unrelated live advertising traffic.
 
 **How to apply:** Install third-party network interception before browser navigation and exercise the real tracking components in an isolated harness when proving zero tracking egress. Keep production behavior and the existing consent policy outside that change's scope.
+
+Treat server redirects as separate egress boundaries during browser acceptance tests.
+
+**Why:** A permitted development URL can redirect to a real checkout; Playwright may follow that request's redirect chain without re-running the route handler for the new host. Blocking later advertising assets does not undo visiting the external HTML.
+
+**How to apply:** Capture and validate redirect responses without following them when proving attribution. A first-party allowlist alone is not sufficient evidence that the browser never contacted a real destination.

@@ -330,6 +330,55 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     assert.equal(testOrder.isTest, true);
     assert.equal(testOrder.grossPaidMinor, 999999, "test receipt is persisted separately, not silently discarded");
   });
+  await t.test("first paid race: ten concurrent events transition one pending order and book its amount once", async () => {
+    const orderId = `TEST-first-paid-race-${suffix}`;
+    const pending = { webinarId, orderId, eventId: `race-pending-${suffix}`,
+      status: "pending", amountMinor: 1500, currency: "USD", isTest: true };
+    const summaryBefore = await responseJson(await request("/api/member/external-orders/summary?currency=USD", { actor: ownerId }));
+    assert.equal((await merchant(webinarId, currentSecret, pending)).status, 201);
+    const condition = and(eq(externalOrders.ownerId, ownerId), eq(externalOrders.webinarId, webinarId), eq(externalOrders.orderId, orderId));
+    const [before] = await db.select().from(externalOrders).where(condition);
+    assert.equal(before.purchaseObserved, false);
+    assert.equal(before.paymentStatus, "pending");
+    assert.equal(before.grossPaidMinor, 0);
+    // There is deliberately no successful paid call before this Promise.all.
+    const events = Array.from({ length: 10 }, (_, i) => ({
+      webinarId, orderId, eventId: `first-paid-${suffix}-${i}`, amountMinor: 1500, currency: "USD", isTest: true,
+      ...(i % 2 === 0 ? { status: "paid" } : { type: "purchase" }),
+    }));
+    const responses = await Promise.all(events.map(event => merchant(webinarId, currentSecret, event)));
+    const receipts = await Promise.all(responses.map(response => responseJson(response, 201)));
+    assert.equal(receipts.filter(receipt => receipt.orderDeduplicated === false).length, 1);
+    assert.equal(receipts.filter(receipt => receipt.orderDeduplicated === true).length, 9);
+    const orders = await db.select().from(externalOrders).where(condition);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].purchaseObserved, true);
+    assert.equal(orders[0].paymentStatus, "paid");
+    assert.equal(orders[0].grossPaidMinor, 1500, "ten first-paid events must not book 15000");
+    assert.equal(orders[0].netMinor, 1500);
+    const savedEvents = await db.select().from(externalOrderEvents).where(and(
+      eq(externalOrderEvents.ownerId, ownerId), eq(externalOrderEvents.webinarId, webinarId),
+      eq(externalOrderEvents.orderId, orderId), eq(externalOrderEvents.eventType, "purchase")));
+    assert.equal(savedEvents.length, 10);
+    assert.equal(new Set(savedEvents.map(event => event.eventId)).size, 10);
+    assert.ok(savedEvents.every(event => event.isTest));
+    assert.deepEqual(await responseJson(await request("/api/member/external-orders/summary?currency=USD", { actor: ownerId })), summaryBefore);
+  });
+  await t.test("timestamp boundaries use an exact frozen server clock for the five-minute window", async clockTest => {
+    const nowMs = Math.floor(Date.now() / 1000) * 1000;
+    clockTest.mock.method(Date, "now", () => nowMs);
+    for (const [offset, expected] of [[-300, 201], [300, 201], [-301, 401], [301, 401]]) {
+      await clockTest.test(`timestamp ${offset >= 0 ? "+" : ""}${offset}s returns HTTP ${expected}`, async () => {
+        const event = { webinarId, orderId: `TEST-clock-${suffix}-${offset}`, eventId: `clock-${suffix}-${offset}`,
+          status: "paid", amountMinor: 1500, currency: "USD", isTest: true };
+        const response = await merchant(webinarId, currentSecret, event, nowMs / 1000 + offset);
+        assert.equal(response.status, expected);
+        if (expected === 401) assert.equal((await response.json() as any).message, "Invalid signature timestamp");
+        const rows = await db.select().from(externalOrders).where(eq(externalOrders.orderId, event.orderId));
+        assert.equal(rows.length, expected === 201 ? 1 : 0);
+      });
+    }
+  });
   // Server fixtures bypass only referral admission, not merchant verification.
   // No existing webinar, CTA URL or approvedOrigins value is changed.
   const fixtureScRef = crypto.randomBytes(32).toString("base64url");

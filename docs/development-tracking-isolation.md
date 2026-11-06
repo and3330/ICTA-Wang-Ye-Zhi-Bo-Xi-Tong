@@ -28,6 +28,8 @@ webinar_* 轉送數及追蹤請求嘗試數。這不是登入正式 GTM 或 GA �
 
 本次不修改其設定，也不修改任何既有直播間的 approvedOrigins。
 該正式直播間的已發佈白名單為空，因此真實 CTA 自動建立／附加 sc_ref 仍受阻塞。
+以上為最初驗收時的狀態，不代表永久設定。後續已核對正式白名單包含 noncodingai；
+開發庫沒有該正式直播間，實測改用獨立 UUID 測試直播間，不複製或改寫正式資料。
 不可用任意隨機字串、watch token 或個資替代有效 scRef。
 
 測試在 UUID 隔離的開發資料夾具中，以伺服器直接插入有效 opaque token 的 SHA-256
@@ -66,3 +68,30 @@ npm run build
 
 Playwright 必須指向已有的開發工作流程；測試會拒絕非開發 hostname。
 不需要啟動另一個服務，也不需要任何正式帳號、密鑰或測試扣款。
+
+## 補充覆核：首次付款併發、精確邊界與實際頁面
+
+- 首次付款測試先確認訂單為 pending／purchaseObserved=false，再 Promise.all
+  同時送 10 個不同 eventId（paid 與 purchase 交錯）。斷言恰一個首次入帳、
+  九個訂單去重、十份獨立收據、單筆訂單 gross/net 仍為 1500；測試收入不進正常摘要。
+- timestamp 子測固定 Date.now 至整秒，−300/+300 回 201，−301/+301 回 401。
+  不更改正式五分鐘判斷，也不以請求耗時猜測邊界。
+- 新增 `e2e/gtm-live-pages-local.spec.ts`：載入真正 App 的 `/form/{id}` 與
+  `/webinar/{id}`，使用真正開發 API／開發 DB，不使用隔離 HTML 頁。
+- 夾具限目前已驗證的 heliumdb 開發庫，所有 webinar／registration／referral
+  保持 is_test=true。為測到一般 GTM 分支，僅在瀏覽器攔截 webinar JSON 時將
+  isTest 改 false、替換測試容器 ID／清除會員 Pixel；不更改資料庫分類或正式頁面。
+- GTM-DEVTEST1 是合法格式的測試 ID，腳本由測試攔截器提供無追蹤內容。
+  證明 loader 與 Set 去重，不等於驗證 Google 後台實際存在的容器或標籤設定。
+- 正式 GTM 與 Google/Meta 追蹤請求不放行；影片 SDK/iframe 使用不連外的
+  測試回應。不提交報名、不觸發 attend 寄信／Webhook、不開啟真實外站付款。
+- 實際滑鼠點擊房間 CTA，呼叫真正 dev external-referrals；讀取真正 `/r/` 的
+  302 Location 驗證 sc_ref。以 `maxRedirects:0` 擷取，不跟隨到外站。
+  不能僅依賴初始 host 判斷：Playwright 的 redirect chain 可能不重新經過 route handler。
+- 對照組把「此開發夾具」白名單改空，確認同 CTA 不帶 sc_ref 且不新增 referral。
+  所有夾具結束清除，實測 URL 是歷史證據，不是保留中的可用直播間。
+
+```sh
+NODE_ENV=test E2E_MODE=staging E2E_BASE_URL=https://YOUR-DEVELOPMENT-HOST.replit.dev \
+  NODE_OPTIONS='--import=tsx' npx playwright test e2e/gtm-live-pages-local.spec.ts --reporter=line
+```
