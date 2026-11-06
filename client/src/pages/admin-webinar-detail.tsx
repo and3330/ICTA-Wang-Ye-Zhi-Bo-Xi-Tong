@@ -52,6 +52,7 @@ import { SalesTemplateChooser, type SalesTemplate } from "@/components/sales-tem
 import { createSalesPageTemplate } from "@shared/salesPageTemplates";
 import { ExternalJourneyPanel } from "@/components/external-journey-panel";
 import { SessionRegistrationCounts, type SessionRegistrationCountsDto } from "@/components/session-registration-counts";
+import { SessionNotificationDialog } from "@/components/session-notification-dialog";
 import { SalesScriptGenerator } from "@/components/sales-script-generator";
 
 function toLocalDateTimeInput(value: Date | string) {
@@ -1351,6 +1352,7 @@ export default function AdminWebinarDetail() {
   const [brandBackgroundColor, setBrandBackgroundColor] = useState("#1a1a2e");
 
   const [emailConfirmation, setEmailConfirmation] = useState(true);
+  const [noticeSession, setNoticeSession] = useState<{ id: string; scheduledStart: string } | null>(null);
   const [emailReminder24h, setEmailReminder24h] = useState(true);
   const [emailReminder1h, setEmailReminder1h] = useState(true);
   const [emailReminder5m, setEmailReminder5m] = useState(true);
@@ -3276,6 +3278,7 @@ export default function AdminWebinarDetail() {
                           </Button>
                         </div>
 
+                        {noticeSession && <SessionNotificationDialog webinarId={id!} session={noticeSession} onClose={() => setNoticeSession(null)} />}
                         {webinarSessions && webinarSessions.some(session => session.status !== "cancelled") ? (
                           <div className="space-y-2">
                             {webinarSessions.filter(session => session.status !== "cancelled").map((session) => (
@@ -3293,6 +3296,10 @@ export default function AdminWebinarDetail() {
                                   }>
                                     {new Date(session.scheduledStart) > new Date() ? s.schedSessionUpcoming : s.schedSessionExpired}
                                   </Badge>
+                                  <Button size="sm" variant="outline" disabled={webinar?.publishStatus !== "published"}
+                                    onClick={() => setNoticeSession(session)} data-testid={`button-session-notice-${session.id}`}>
+                                    <Mail className="h-4 w-4 mr-1" />補發上線通知
+                                  </Button>
                                 </div>
                                 {editingSessionId === session.id ? (
                                   <div className="flex items-center gap-1 flex-wrap">

@@ -5,6 +5,7 @@ import { createWatchToken, watchTokenExpiry } from "./watchTokens";
 import crypto from "node:crypto";
 import { appBaseUrl } from "./mail";
 import { START_REMINDERS, startReminderEnabled, hasAttendance, canSendNoShowReminder } from "@shared/email-reminders";
+import { shouldDeliverManualSessionNotice } from "./sessionNotifications";
 import { scoreLeadInsight } from "./leadInsights";
 import {
   isAcceptingWork,
@@ -39,7 +40,7 @@ function getEmailHtml(type: string, name: string, webinarTitle: string, startTim
       .footer { text-align: center; color: #666; font-size: 14px; margin-top: 20px; }
     </style>`;
 
-  if (customSubject && customTemplate) {
+  if (customSubject && customTemplate && type !== "manual_session_notice") {
     const filledSubject = customSubject
       .replace(/\{\{name\}\}/g, name)
       .replace(/\{\{title\}\}/g, webinarTitle)
@@ -147,6 +148,21 @@ function getEmailHtml(type: string, name: string, webinarTitle: string, startTim
               <p><strong>開播時間：</strong>${formattedDate}（${timezone}）</p>
               <p>點擊您的專屬連結，立即進入直播間：</p>
               <p><a href="${webinarUrl}" class="button">現在加入直播間</a></p>
+            </div>
+            <div class="footer"><p>此郵件由系統自動發送，請勿直接回覆。</p></div>
+          </div></body></html>`,
+      };
+    case "manual_session_notice":
+      return {
+        subject: `【要上線囉】${webinarTitle}`,
+        html: `<!DOCTYPE html><html><head><meta charset="utf-8">${baseStyle}</head><body>
+          <div class="container">
+            <div class="header"><h1>要上線囉！</h1></div>
+            <div class="content">
+              <p>親愛的 ${name}，</p>
+              <p>您報名的「${webinarTitle}」即將與您見面，點擊您的專屬觀看連結，進入直播間！</p>
+              <p><strong>場次時間：</strong>${formattedDate}（${timezone}）</p>
+              <p><a href="${webinarUrl}" class="button">進入直播間</a></p>
             </div>
             <div class="footer"><p>此郵件由系統自動發送，請勿直接回覆。</p></div>
           </div></body></html>`,
@@ -291,7 +307,7 @@ export function registrationWebinarUrl(
   return `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(token)}`;
 }
 
-export type EmailKind = "confirmation" | "reminder_24h" | "reminder_1h" | "reminder_5m" | "reminder_start" | "reminder_no_show_10m" | "followup" | "sequence";
+export type EmailKind = "confirmation" | "reminder_24h" | "reminder_1h" | "reminder_5m" | "reminder_start" | "reminder_no_show_10m" | "manual_session_notice" | "followup" | "sequence";
 
 /**
  * The one place an email is put together, used both for sending and for the
@@ -477,6 +493,10 @@ export function startEmailScheduler(): { stop: () => Promise<void> } {
           }
 
           if (subject && html) {
+            if (reminder.reminderType === "manual_session_notice" && !(await shouldDeliverManualSessionNotice(reminder))) {
+              await finish({ status: "cancelled", errorMessage: "Manual notice no longer eligible", leaseToken: null, leaseExpiresAt: null });
+              return;
+            }
             // Re-read attendance immediately before calling the provider, not
             // merely when the reminder was queued (which can be days earlier).
             if (reminder.reminderType === "reminder_no_show_10m" &&

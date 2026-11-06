@@ -788,12 +788,24 @@ export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
   eventType: text("event_type").notNull(),
   processedAt: timestamp("processed_at").notNull().defaultNow(),
 });
+export const sessionNotificationBatches = pgTable("session_notification_batches", {
+  id: varchar("id").primaryKey(),
+  webinarId: varchar("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id").notNull().references(() => webinarSessions.id, { onDelete: "cascade" }),
+  scheduledStart: timestamp("scheduled_start").notNull(),
+  audience: text("audience").notNull(),
+  recipientCount: integer("recipient_count").notNull(),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const emailReminders = pgTable("email_reminders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   webinarId: varchar("webinar_id").notNull().references(() => webinars.id),
   registrationId: varchar("registration_id").notNull().references(() => registrations.id),
   reminderType: text("reminder_type").notNull(), // confirmation, reminder_24h, reminder_1h, followup, sequence
   sequenceId: varchar("sequence_id"), // 若為追蹤序列郵件，指向 emailSequences.id
+  notificationBatchId: varchar("notification_batch_id").references(() => sessionNotificationBatches.id, { onDelete: "cascade" }),
   scheduledFor: timestamp("scheduled_for").notNull(),
   sentAt: timestamp("sent_at"),
   status: text("status").notNull().default("pending"), // pending, sent, failed
@@ -805,6 +817,9 @@ export const emailReminders = pgTable("email_reminders", {
   regSeqUniq: uniqueIndex("email_reminders_reg_seq_uniq")
     .on(table.registrationId, table.sequenceId)
     .where(sql`sequence_id IS NOT NULL`),
+  manualNoticeUniq: uniqueIndex("email_reminders_manual_notice_uniq")
+    .on(table.registrationId, table.notificationBatchId)
+    .where(sql`notification_batch_id IS NOT NULL`),
   startReminderUniq: uniqueIndex("email_reminders_start_uniq")
     .on(table.registrationId, table.reminderType)
     .where(sql`reminder_type IN ('reminder_5m', 'reminder_start')`),

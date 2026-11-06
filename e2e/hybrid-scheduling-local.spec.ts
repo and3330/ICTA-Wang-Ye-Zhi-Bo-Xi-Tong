@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { WebSocket } from "ws";
 import { expect, test } from "@playwright/test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db, pool } from "../server/db";
 import * as schema from "../shared/schema";
 import { storage } from "../server/storage";
@@ -196,6 +196,62 @@ test("five-minute and starting email reminders save, preview and enqueue for the
       reminderNoShow10mEnabled: false,
       followUpEnabled: false, customSubject: "", customTemplate: "",
     } } });
+  }
+});
+
+test("manual session notification confirms audience and count before enqueue, with a fresh choice each time", async ({ page }) => {
+  // Preview is real; the send action is intercepted so browser tests never
+  // create immediately-sendable jobs for the real development mail worker.
+  // Real HTTP enqueue/delivery eligibility is covered with a far-future clock
+  // in sessionNotifications.integration.test.ts.
+  const noticeSessionId = randomUUID();
+  const noticeStart = new Date(new Date(future).getTime() + 2 * 86_400_000);
+  await db.insert(schema.webinarSessions).values({ id: noticeSessionId, webinarId, scheduledStart: noticeStart });
+  const fixtureRows = await db.insert(schema.registrations).values([
+    { name: "Manual notice absent", email: `notice-absent-${ownerId}@example.test`, attended: false },
+    { name: "Manual notice attended", email: `notice-attended-${ownerId}@example.test`, attended: true },
+    { name: "Another session", email: `notice-other-${ownerId}@example.test`, attended: false, selectedSession: new Date(Date.now() + 4 * 86_400_000) },
+  ].map(row => ({ webinarId, phone: "", selectedSession: noticeStart, ...row }))).returning({ id: schema.registrations.id });
+  try {
+  const sent: any[] = [];
+  const path = `/api/webinars/${webinarId}/sessions/${noticeSessionId}/notifications`;
+  await page.route(`**${path}`, async route => {
+    const body = route.request().postDataJSON();
+    sent.push(body);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      batchId: body.requestId, queuedCount: body.expectedCount, replayed: false,
+    }) });
+  });
+  await page.goto("/");
+  await page.locator("h1").first().waitFor();
+  expect((await page.request.post("/api/admin/login", { data: { username, password } })).status()).toBe(200);
+  await page.evaluate(path => {
+    history.pushState({}, "", path); dispatchEvent(new PopStateEvent("popstate"));
+  }, `/admin/webinar/${webinarId}`);
+  await page.getByTestId("tab-schedule").click();
+  await page.getByRole("button", { name: "場次管理", exact: true }).click();
+  const button = page.getByTestId(`button-session-notice-${noticeSessionId}`);
+  await button.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByTestId("session-notice-recipient-count")).toContainText("1 位");
+  expect(sent).toHaveLength(0);
+  await page.getByTestId("select-session-notice-audience").click();
+  await page.getByRole("option", { name: "該場次全部報名者", exact: true }).click();
+  await expect(page.getByTestId("session-notice-recipient-count")).toContainText("2 位");
+  await page.getByTestId("button-confirm-session-notice").click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ audience: "all", expectedCount: 2 });
+  await button.click();
+  await expect(page.getByTestId("session-notice-recipient-count")).toContainText("1 位");
+  await page.getByTestId("button-confirm-session-notice").click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toMatchObject({ audience: "absent", expectedCount: 1 });
+  expect(sent[1].requestId).not.toBe(sent[0].requestId);
+  } finally {
+    await db.delete(schema.registrations).where(inArray(schema.registrations.id, fixtureRows.map(row => row.id)));
+    await db.delete(schema.webinarSessions).where(eq(schema.webinarSessions.id, noticeSessionId));
   }
 });
 

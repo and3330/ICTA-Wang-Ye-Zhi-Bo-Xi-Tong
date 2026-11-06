@@ -11,6 +11,7 @@ import { NO_CARD_TRIAL_AI_CALL_LIMIT, NO_CARD_TRIAL_DAYS } from "@shared/noCardT
 import { storage } from "./storage";
 import { sendQuestionNotificationEmail } from "./gmail";
 import { createEmailRemindersForRegistration, renderEmail, startEmailScheduler, webinarSalesUrl } from "./email-scheduler";
+import { registerSessionNotificationRoutes } from "./sessionNotifications";
 import { generateRecurringSessions, getAvailableSessions, normalizeSelectedSession, scheduleDateBounds } from "./webinarScheduling";
 import { createJitSelectionToken, createWatchToken, verifyJitSelectionToken, verifyWatchToken, verifyWatchTokenFor, watchTokenExpiry, viewerChatSessionId } from "./watchTokens";
 import crypto from "crypto";
@@ -4574,6 +4575,7 @@ export async function registerRoutes(
   });
 
   // ============ Webinar Sessions Routes ============
+  registerSessionNotificationRoutes(app, requireWebinarOwner);
   app.get("/api/webinars/:id/sessions", requirePublishedOrOwner, async (req, res) => {
     const sessions = await storage.getWebinarSessions(req.params.id as string);
     res.json(sessions);
