@@ -260,6 +260,20 @@
       "when": 1793990000000,
       "tag": "0037_registration_archive_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794000000000,
+      "tag": "0038_start_reminders",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794001000000,
+      "tag": "0039_no_show_reminder",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import type { Webinar, Registration, EmailSequence, EmailReminder } from "@share
 import { createWatchToken, watchTokenExpiry } from "./watchTokens";
 import crypto from "node:crypto";
 import { appBaseUrl } from "./mail";
+import { START_REMINDERS, startReminderEnabled, hasAttendance, canSendNoShowReminder } from "@shared/email-reminders";
 import { scoreLeadInsight } from "./leadInsights";
 import {
   isAcceptingWork,
@@ -116,6 +117,40 @@ function getEmailHtml(type: string, name: string, webinarTitle: string, startTim
             <div class="footer"><p>此郵件由系統自動發送，請勿直接回覆。</p></div>
           </div></body></html>`
       };
+    case "reminder_5m":
+    case "reminder_start": {
+      const starting = type === "reminder_start";
+      return {
+        subject: `【${starting ? "現在開播" : "5 分鐘後開播"}】${webinarTitle}`,
+        html: `<!DOCTYPE html><html><head><meta charset="utf-8">${baseStyle}</head><body>
+          <div class="container">
+            <div class="header"><h1>${starting ? "直播現在開始！" : "再過 5 分鐘就開播！"}</h1></div>
+            <div class="content">
+              <p>親愛的 ${name}，</p>
+              <p>${starting ? "您報名的線上研討會現在開始，歡迎立即加入！" : "您報名的線上研討會將於 5 分鐘後開始，請準備入場。"}</p>
+              <div class="info"><h3>${webinarTitle}</h3><p><strong>直播時間：</strong>${formattedDate}（${timezone}）</p></div>
+              <p><a href="${webinarUrl}" class="button">立即進入直播間</a></p>
+            </div>
+            <div class="footer"><p>此郵件由系統自動發送，請勿直接回覆。</p></div>
+          </div></body></html>`,
+      };
+    }
+    case "reminder_no_show_10m":
+      return {
+        subject: `【現在加入還來得及】${webinarTitle}`,
+        html: `<!DOCTYPE html><html><head><meta charset="utf-8">${baseStyle}</head><body>
+          <div class="container">
+            <div class="header"><h1>現在加入還來得及！</h1></div>
+            <div class="content">
+              <p>親愛的 ${name}，</p>
+              <p>您報名的「${webinarTitle}」已經開始 10 分鐘，還沒看到您入場，現在加入還來得及！</p>
+              <p><strong>開播時間：</strong>${formattedDate}（${timezone}）</p>
+              <p>點擊您的專屬連結，立即進入直播間：</p>
+              <p><a href="${webinarUrl}" class="button">現在加入直播間</a></p>
+            </div>
+            <div class="footer"><p>此郵件由系統自動發送，請勿直接回覆。</p></div>
+          </div></body></html>`,
+      };
     case "followup":
       return {
         subject: `【感謝參與】${webinarTitle}`,
@@ -169,6 +204,16 @@ export async function createEmailRemindersForRegistration(
     const t = new Date(startTime.getTime() - 60 * 60 * 1000);
     if (t > now) {
       remindersToCreate.push({ type: "reminder_1h", scheduledFor: t, enabled: true });
+    }
+  }
+
+  for (const reminder of START_REMINDERS) {
+    if (!startTime || !startReminderEnabled(emailSettings, reminder.setting)) continue;
+    if (reminder.kind === "reminder_no_show_10m" &&
+        (hasAttendance(registration) || (webinar.videoDuration || 3600) <= 600)) continue;
+    const scheduledFor = new Date(startTime.getTime() - reminder.minutesBefore * 60_000);
+    if (scheduledFor >= now) {
+      remindersToCreate.push({ type: reminder.kind, scheduledFor, enabled: true });
     }
   }
 
@@ -246,7 +291,7 @@ export function registrationWebinarUrl(
   return `${baseUrl}/webinar/${webinar.id}?watchToken=${encodeURIComponent(token)}`;
 }
 
-export type EmailKind = "confirmation" | "reminder_24h" | "reminder_1h" | "followup" | "sequence";
+export type EmailKind = "confirmation" | "reminder_24h" | "reminder_1h" | "reminder_5m" | "reminder_start" | "reminder_no_show_10m" | "followup" | "sequence";
 
 /**
  * The one place an email is put together, used both for sending and for the
@@ -347,6 +392,12 @@ async function enqueueSequenceEmails() {
   }
 }
 
+export async function shouldDeliverNoShowReminder(registrationId: string, webinar: Webinar, now = new Date()): Promise<boolean> {
+  const latest = await storage.getRegistration(registrationId);
+  return !!latest && latest.webinarId === webinar.id &&
+    canSendNoShowReminder(latest, webinar, now) && !(await storage.hasAttendedSession(latest));
+}
+
 export function startEmailScheduler(): { stop: () => Promise<void> } {
   console.log("Email scheduler started - checking every 60 seconds");
   const active = new Set<Promise<unknown>>();
@@ -364,6 +415,7 @@ export function startEmailScheduler(): { stop: () => Promise<void> } {
   const deliveryTimer = setInterval(() => run(async () => {
     schedulerAttempt("email_delivery");
     try {
+      await storage.enqueueUpcomingStartReminders(new Date());
       // Drain multiple bounded batches per tick. Each batch sends concurrently,
       // so 25 provider calls bounded at 15s remain safely inside the 45s lease.
       for (let batch = 0; batch < EMAIL_MAX_BATCHES_PER_TICK; batch += 1) {
@@ -395,6 +447,11 @@ export function startEmailScheduler(): { stop: () => Promise<void> } {
             await finish({ status: "failed", errorMessage: "Webinar is not published", leaseToken: null, leaseExpiresAt: null });
             return;
           }
+          const startReminder = START_REMINDERS.find(item => item.kind === reminder.reminderType);
+          if (startReminder && !startReminderEnabled(webinar.emailSettings, startReminder.setting)) {
+            await finish({ status: "cancelled", errorMessage: "Reminder disabled", leaseToken: null, leaseExpiresAt: null });
+            return;
+          }
 
           const baseUrl = appBaseUrl();
           let subject = "";
@@ -420,6 +477,13 @@ export function startEmailScheduler(): { stop: () => Promise<void> } {
           }
 
           if (subject && html) {
+            // Re-read attendance immediately before calling the provider, not
+            // merely when the reminder was queued (which can be days earlier).
+            if (reminder.reminderType === "reminder_no_show_10m" &&
+                !(await shouldDeliverNoShowReminder(reminder.registrationId, webinar))) {
+              await finish({ status: "cancelled", errorMessage: "Already attended, registration unavailable, or session no longer live", leaseToken: null, leaseExpiresAt: null });
+              return;
+            }
             const renewed = await storage.renewClaimedEmailReminder(
               reminder.id,
               leaseToken,

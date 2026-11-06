@@ -1353,6 +1353,9 @@ export default function AdminWebinarDetail() {
   const [emailConfirmation, setEmailConfirmation] = useState(true);
   const [emailReminder24h, setEmailReminder24h] = useState(true);
   const [emailReminder1h, setEmailReminder1h] = useState(true);
+  const [emailReminder5m, setEmailReminder5m] = useState(true);
+  const [emailReminderStart, setEmailReminderStart] = useState(true);
+  const [emailReminderNoShow10m, setEmailReminderNoShow10m] = useState(true);
   const [emailFollowUp, setEmailFollowUp] = useState(true);
   const [emailCustomSubject, setEmailCustomSubject] = useState("");
   const [emailCustomTemplate, setEmailCustomTemplate] = useState("");
@@ -1807,6 +1810,9 @@ export default function AdminWebinarDetail() {
         setEmailConfirmation(es.confirmationEnabled ?? true);
         setEmailReminder24h(es.reminder24hEnabled ?? true);
         setEmailReminder1h(es.reminder1hEnabled ?? true);
+        setEmailReminder5m(es.reminder5mEnabled ?? es.reminder1hEnabled ?? true);
+        setEmailReminderStart(es.reminderStartEnabled ?? es.reminder1hEnabled ?? true);
+        setEmailReminderNoShow10m(es.reminderNoShow10mEnabled ?? es.reminder1hEnabled ?? true);
         setEmailFollowUp(es.followUpEnabled ?? true);
         setEmailCustomSubject(es.customSubject || "");
         setEmailCustomTemplate(es.customTemplate || "");
@@ -3478,6 +3484,33 @@ export default function AdminWebinarDetail() {
                       />
                     </div>
                     <div className="flex items-center justify-between gap-2">
+                      <Label htmlFor="email-reminder-5m" className="flex-1">開播前 5 分鐘提醒</Label>
+                      <Button type="button" size="sm" variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "reminder_5m", title: "開播前 5 分鐘提醒", customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-reminder_5m">
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
+                      <Switch id="email-reminder-5m" checked={emailReminder5m} onCheckedChange={setEmailReminder5m} data-testid="switch-email-5m" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label htmlFor="email-reminder-start" className="flex-1">開播當下提醒</Label>
+                      <Button type="button" size="sm" variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "reminder_start", title: "開播當下提醒", customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-reminder_start">
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
+                      <Switch id="email-reminder-start" checked={emailReminderStart} onCheckedChange={setEmailReminderStart} data-testid="switch-email-start" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label htmlFor="email-reminder-no-show" className="flex-1">開播後 10 分鐘未出席提醒</Label>
+                      <Button type="button" size="sm" variant="ghost"
+                        onClick={() => setEmailPreview({ kind: "reminder_no_show_10m", title: "開播後 10 分鐘未出席提醒", customSubject: emailCustomSubject, customTemplate: emailCustomTemplate })}
+                        data-testid="button-preview-email-reminder_no_show_10m">
+                        <Eye className="h-4 w-4 mr-1" />{s.btnPreview}
+                      </Button>
+                      <Switch id="email-reminder-no-show" checked={emailReminderNoShow10m} onCheckedChange={setEmailReminderNoShow10m} data-testid="switch-email-no-show-10m" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
                       <Label className="flex-1">{s.notifEmailFollowUp}</Label>
                       <Button
                         type="button"
@@ -3522,6 +3555,9 @@ export default function AdminWebinarDetail() {
                           confirmationEnabled: emailConfirmation,
                           reminder24hEnabled: emailReminder24h,
                           reminder1hEnabled: emailReminder1h,
+                          reminder5mEnabled: emailReminder5m,
+                          reminderStartEnabled: emailReminderStart,
+                          reminderNoShow10mEnabled: emailReminderNoShow10m,
                           followUpEnabled: emailFollowUp,
                           customSubject: emailCustomSubject,
                           customTemplate: emailCustomTemplate,

@@ -38,6 +38,7 @@ import {
   courseMarketplaceListings,
 } from "@shared/schema";
 import type { SalesScriptOutput } from "@shared/salesScript";
+import { START_REMINDERS } from "@shared/email-reminders";
 
 export class SalesScriptIdempotencyConflictError extends Error {
   constructor() {
@@ -306,6 +307,8 @@ export interface IStorage {
   
   // Email Reminders
   createEmailReminder(data: InsertEmailReminder): Promise<EmailReminder>;
+  enqueueUpcomingStartReminders(now: Date): Promise<number>;
+  hasAttendedSession(registration: Registration): Promise<boolean>;
   getPendingEmailReminders(before: Date): Promise<EmailReminder[]>;
   claimPendingEmailReminders(before: Date, leaseToken: string, limit?: number): Promise<EmailReminder[]>;
   updateEmailReminder(id: string, data: Partial<EmailReminder>): Promise<void>;
@@ -2390,8 +2393,74 @@ export class DatabaseStorage implements IStorage {
 
   // Email Reminders
   async createEmailReminder(data: InsertEmailReminder): Promise<EmailReminder> {
-    const result = await db.insert(emailReminders).values(data).returning();
+    const insert = db.insert(emailReminders).values(data);
+    const isStartReminder = START_REMINDERS.some(item => item.kind === data.reminderType);
+    const result = await (isStartReminder ? insert.onConflictDoNothing() : insert).returning();
+    if (!result.length && isStartReminder) {
+      const [existing] = await db.select().from(emailReminders).where(and(
+        eq(emailReminders.registrationId, data.registrationId),
+        eq(emailReminders.reminderType, data.reminderType),
+      ));
+      return existing;
+    }
     return result[0];
+  }
+
+  async enqueueUpcomingStartReminders(now: Date): Promise<number> {
+    // Also cover bookings made before these reminders existed. The partial
+    // unique index fences registration requests, restarts and multiple workers.
+    const result = await db.execute(sql`
+      INSERT INTO email_reminders
+        (id, webinar_id, registration_id, reminder_type, scheduled_for, status)
+      SELECT gen_random_uuid(), w.id, r.id, timing.kind,
+        r.selected_session - timing.minutes_before * interval '1 minute', 'pending'
+      FROM registrations r JOIN webinars w ON w.id = r.webinar_id
+      CROSS JOIN (VALUES
+        ('reminder_5m', 'reminder5mEnabled', 5),
+        ('reminder_start', 'reminderStartEnabled', 0),
+        ('reminder_no_show_10m', 'reminderNoShow10mEnabled', -10)
+      ) AS timing(kind, setting, minutes_before)
+      WHERE w.publish_status = 'published' AND r.deleted_at IS NULL
+        AND r.selected_session - timing.minutes_before * interval '1 minute' >= ${now.toISOString()}::timestamp
+        AND r.selected_session <= ${now.toISOString()}::timestamp + interval '24 hours'
+        AND COALESCE(w.email_settings ->> timing.setting,
+          w.email_settings ->> 'reminder1hEnabled', 'true') = 'true'
+        AND (timing.kind <> 'reminder_no_show_10m' OR (
+          COALESCE(NULLIF(w.video_duration, 0), 3600) > 600
+          AND NOT EXISTS (
+            SELECT 1 FROM registrations a WHERE a.webinar_id = r.webinar_id
+              AND a.selected_session = r.selected_session AND a.deleted_at IS NULL
+              AND lower(trim(a.email)) = lower(trim(r.email))
+              AND (a.attended IS TRUE OR a.attended_at IS NOT NULL OR a.watch_duration > 0)
+          )
+        ))
+        AND NOT EXISTS (
+          SELECT 1 FROM webinar_sessions s
+          WHERE s.webinar_id = w.id AND s.scheduled_start = r.selected_session AND s.status = 'cancelled'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM email_reminders e
+          WHERE e.registration_id = r.id AND e.status = 'cancelled'
+            AND e.reminder_type IN ('reminder_24h', 'reminder_1h', 'reminder_5m', 'reminder_start', 'reminder_no_show_10m')
+        )
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    `);
+    return result.rows.length;
+  }
+
+  async hasAttendedSession(registration: Registration): Promise<boolean> {
+    if (!registration.selectedSession) return false;
+    const result = await db.execute(sql`
+      SELECT 1 FROM registrations
+      WHERE webinar_id = ${registration.webinarId}
+        AND selected_session = ${new Date(registration.selectedSession).toISOString()}::timestamp
+        AND lower(trim(email)) = lower(trim(${registration.email}))
+        AND deleted_at IS NULL
+        AND (attended IS TRUE OR attended_at IS NOT NULL OR watch_duration > 0)
+      LIMIT 1
+    `);
+    return result.rows.length > 0;
   }
 
   async getPendingEmailReminders(before: Date): Promise<EmailReminder[]> {

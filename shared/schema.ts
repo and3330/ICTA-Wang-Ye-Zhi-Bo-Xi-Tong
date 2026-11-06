@@ -176,6 +176,9 @@ export const webinars = pgTable("webinars", {
     confirmationEnabled: boolean;
     reminder24hEnabled: boolean;
     reminder1hEnabled: boolean;
+    reminder5mEnabled?: boolean;
+    reminderStartEnabled?: boolean;
+    reminderNoShow10mEnabled?: boolean;
     followUpEnabled: boolean;
     customSubject: string;
     customTemplate: string;
@@ -802,6 +805,12 @@ export const emailReminders = pgTable("email_reminders", {
   regSeqUniq: uniqueIndex("email_reminders_reg_seq_uniq")
     .on(table.registrationId, table.sequenceId)
     .where(sql`sequence_id IS NOT NULL`),
+  startReminderUniq: uniqueIndex("email_reminders_start_uniq")
+    .on(table.registrationId, table.reminderType)
+    .where(sql`reminder_type IN ('reminder_5m', 'reminder_start')`),
+  noShowReminderUniq: uniqueIndex("email_reminders_no_show_uniq")
+    .on(table.registrationId)
+    .where(sql`reminder_type = 'reminder_no_show_10m'`),
   dueIndex: index("email_reminders_due_idx").on(table.status, table.scheduledFor),
   leaseIndex: index("email_reminders_lease_idx").on(table.status, table.leaseExpiresAt),
 }));

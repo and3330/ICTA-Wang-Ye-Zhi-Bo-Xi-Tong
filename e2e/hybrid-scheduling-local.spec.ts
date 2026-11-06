@@ -141,6 +141,64 @@ test("owner can create, persist, edit and delete timed assistant materials in th
   expect(rows).toHaveLength(0);
 });
 
+test("five-minute and starting email reminders save, preview and enqueue for the selected session", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("h1").first().waitFor();
+  expect((await page.request.post("/api/admin/login", { data: { username, password } })).status()).toBe(200);
+  await page.evaluate(path => {
+    history.pushState({}, "", path); dispatchEvent(new PopStateEvent("popstate"));
+  }, `/admin/webinar/${webinarId}`);
+  await page.getByTestId("tab-notifications").click();
+  const five = page.getByRole("switch", { name: "開播前 5 分鐘提醒", exact: true });
+  const starting = page.getByRole("switch", { name: "開播當下提醒", exact: true });
+  const noShow = page.getByRole("switch", { name: "開播後 10 分鐘未出席提醒", exact: true });
+  await expect(five).not.toBeChecked();
+  await expect(starting).not.toBeChecked();
+  await expect(noShow).not.toBeChecked();
+  await five.click();
+  await starting.click();
+  await noShow.click();
+  const save = page.waitForResponse(r => r.url().endsWith(`/api/webinars/${webinarId}`) && r.request().method() === "PATCH");
+  await page.getByTestId("button-save-email").click();
+  expect((await save).status()).toBe(200);
+  try {
+    const saved = await (await page.request.get(`/api/webinars/${webinarId}`)).json();
+    expect(saved.emailSettings.reminder5mEnabled).toBe(true);
+    expect(saved.emailSettings.reminderStartEnabled).toBe(true);
+    expect(saved.emailSettings.reminderNoShow10mEnabled).toBe(true);
+    expect(saved.emailSettings.reminder1hEnabled).toBe(false);
+    for (const [kind, subject] of [["reminder_5m", "5 分鐘後開播"], ["reminder_start", "現在開播"], ["reminder_no_show_10m", "現在加入還來得及"]]) {
+      const preview = page.waitForResponse(r => r.url().includes("/email-preview") && r.request().method() === "POST");
+      await page.getByTestId(`button-preview-email-${kind}`).click();
+      const response = await preview;
+      expect(response.status()).toBe(200);
+      const email = await response.json();
+      expect(email.subject).toContain(subject);
+      expect(email.html).toContain(kind === "reminder_no_show_10m" ? "現在加入直播間" : "進入直播間");
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+    const registration = await page.request.post("/api/registrations", { data: {
+      webinarId, name: "Reminder fixture", email: "reminder-fixture@example.test",
+      phone: "0912345678", selectedSession: future,
+    } });
+    expect(registration.status()).toBe(200);
+    const { id } = await registration.json();
+    const rows = await db.select().from(schema.emailReminders).where(eq(schema.emailReminders.registrationId, id));
+    expect(rows.map(row => row.reminderType).sort()).toEqual(["reminder_5m", "reminder_no_show_10m", "reminder_start"]);
+    expect(rows.find(row => row.reminderType === "reminder_5m")!.scheduledFor.getTime()).toBe(new Date(future).getTime() - 300_000);
+    expect(rows.find(row => row.reminderType === "reminder_start")!.scheduledFor.getTime()).toBe(new Date(future).getTime());
+    expect(rows.find(row => row.reminderType === "reminder_no_show_10m")!.scheduledFor.getTime()).toBe(new Date(future).getTime() + 600_000);
+  } finally {
+    await page.request.patch(`/api/webinars/${webinarId}`, { data: { emailSettings: {
+      confirmationEnabled: false, reminder24hEnabled: false, reminder1hEnabled: false,
+      reminder5mEnabled: false, reminderStartEnabled: false,
+      reminderNoShow10mEnabled: false,
+      followUpEnabled: false, customSubject: "", customTemplate: "",
+    } } });
+  }
+});
+
 test("tracking settings save, normalize, validate and clear IDs on an isolated webinar", async ({ page }) => {
   await page.goto("/");
   await page.locator("h1").first().waitFor();

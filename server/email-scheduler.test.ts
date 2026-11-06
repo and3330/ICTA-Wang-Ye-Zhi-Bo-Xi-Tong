@@ -56,6 +56,9 @@ test("reminders are based on the registration's selected session", async (t) => 
 
   assert.equal(created.find((item) => item.reminderType === "reminder_24h").scheduledFor.getTime(), selected.getTime() - 24 * 60 * 60 * 1000);
   assert.equal(created.find((item) => item.reminderType === "reminder_1h").scheduledFor.getTime(), selected.getTime() - 60 * 60 * 1000);
+  assert.equal(created.find((item) => item.reminderType === "reminder_5m").scheduledFor.getTime(), selected.getTime() - 5 * 60 * 1000);
+  assert.equal(created.find((item) => item.reminderType === "reminder_start").scheduledFor.getTime(), selected.getTime());
+  assert.equal(created.find((item) => item.reminderType === "reminder_no_show_10m").scheduledFor.getTime(), selected.getTime() + 10 * 60 * 1000);
   assert.equal(created.find((item) => item.reminderType === "followup").scheduledFor.getTime(), selected.getTime() + 90 * 60 * 1000);
 });
 
@@ -82,6 +85,65 @@ function tokenFromHtml(html: string): string {
   assert.ok(match, "email HTML should contain a watch token");
   return decodeURIComponent(match[1]);
 }
+
+test("late registrations get only the remaining start reminders and respect opt-outs", async (t) => {
+  const original = storage.createEmailReminder;
+  const created: any[] = [];
+  storage.createEmailReminder = async value => { created.push(value); return value as any; };
+  t.after(() => { storage.createEmailReminder = original; });
+  const registration = {
+    id: "late", name: "Viewer", email: "viewer@example.test",
+    selectedSession: new Date(Date.now() + 120_000),
+  } as Registration;
+  const w = webinar();
+  w.emailSettings = { ...w.emailSettings!, followUpEnabled: false, reminderNoShow10mEnabled: false };
+  await createEmailRemindersForRegistration(registration, w, "https://example.com", "test-only");
+  assert.deepEqual(created.map(item => item.reminderType), ["reminder_start"]);
+
+  created.length = 0;
+  registration.selectedSession = new Date(Date.now() - 11 * 60_000);
+  await createEmailRemindersForRegistration(registration, w, "https://example.com", "test-only");
+  assert.deepEqual(created, [], "past reminder times must never be sent retrospectively");
+
+  registration.selectedSession = new Date(Date.now() + 600_000);
+  w.emailSettings.reminder1hEnabled = false;
+  await createEmailRemindersForRegistration(registration, w, "https://example.com", "test-only");
+  assert.deepEqual(created, [], "legacy timed-reminder opt-out remains effective");
+
+  w.emailSettings.reminder5mEnabled = true;
+  w.emailSettings.reminderStartEnabled = false;
+  await createEmailRemindersForRegistration(registration, w, "https://example.com", "test-only");
+  assert.deepEqual(created.map(item => item.reminderType), ["reminder_5m"]);
+  created.length = 0;
+  w.emailSettings.reminder5mEnabled = false;
+  w.emailSettings.reminderStartEnabled = true;
+  await createEmailRemindersForRegistration(registration, w, "https://example.com", "test-only");
+  assert.deepEqual(created.map(item => item.reminderType), ["reminder_start"]);
+});
+
+test("five-minute and starting emails have distinct text, Taipei time and scoped watch links", () => {
+  const previous = process.env.SESSION_SECRET;
+  process.env.SESSION_SECRET = "start-reminder-test-only-secret";
+  try {
+    const w = { ...webinar(), timezone: "Asia/Taipei" };
+    const registration = {
+      id: "start-registration", name: "Viewer", email: "viewer@example.test",
+      selectedSession: new Date("2030-01-01T11:30:00.000Z"),
+    } as Registration;
+    for (const kind of ["reminder_5m", "reminder_start"]) {
+      const built = buildDeferredEmail({ reminderType: kind } as EmailReminder, registration, w, "https://example.com");
+      assert.match(built.subject, kind === "reminder_5m" ? /5 分鐘後開播/ : /現在開播/);
+      assert.match(built.html, /Asia\/Taipei/);
+      assert.match(built.html, /07:30|19:30/);
+      const token = tokenFromHtml(built.html);
+      assert.ok(verifyWatchTokenFor(token, registration.id, w.id));
+      assert.equal(verifyWatchTokenFor(token, "another-registration", w.id), null);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.SESSION_SECRET;
+    else process.env.SESSION_SECRET = previous;
+  }
+});
 
 test("deferred standard reminder contains a registration-scoped watch URL", () => {
   const previous = process.env.SESSION_SECRET;

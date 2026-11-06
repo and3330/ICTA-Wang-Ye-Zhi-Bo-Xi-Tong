@@ -5414,7 +5414,7 @@ export async function registerRoutes(
   // Shows an email exactly as a viewer would get it, with a sample name and
   // a placeholder for the per-viewer link. Unsaved custom text can be passed in.
   const emailPreviewSchema = z.object({
-    kind: z.enum(["confirmation", "reminder_24h", "reminder_1h", "followup", "sequence"]),
+    kind: z.enum(["confirmation", "reminder_24h", "reminder_1h", "reminder_5m", "reminder_start", "reminder_no_show_10m", "followup", "sequence"]),
     sequenceId: z.string().max(100).optional(),
     customSubject: z.string().max(500).optional(),
     customTemplate: z.string().max(50_000).optional(),

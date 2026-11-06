@@ -5,7 +5,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { apiErrorMessage } from "@/lib/viewer-messages";
 
 export type EmailPreviewRequest = {
-  kind: "confirmation" | "reminder_24h" | "reminder_1h" | "followup" | "sequence";
+  kind: "confirmation" | "reminder_24h" | "reminder_1h" | "reminder_5m" | "reminder_start" | "reminder_no_show_10m" | "followup" | "sequence";
   sequenceId?: string;
   /** Unsaved text from the settings form, so the preview matches what is typed. */
   customSubject?: string;
