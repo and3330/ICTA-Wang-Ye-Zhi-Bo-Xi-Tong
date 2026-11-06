@@ -9,6 +9,14 @@ SellCase 要一起串接 LINE Flex、簡訊及 WhatsApp，使用者選擇「全�
 
 **How to apply:** 服務帳號由站長統一設定，仍保留直播間、客人綁定、收件同意及發送對象的隔離。主辦人不可取得共用憑證；不要擅自改成各主辦人自行申請服務。
 
+## 簡訊服務商
+
+使用者指定既有簡訊商為 Twilio API；WhatsApp 可透過 Twilio 或 Zernio 串接。
+
+**Why:** 使用者回覆簡訊服務商為「twillo api」，並提到 WhatsApp 可串接 Twilio 或 Zernio。
+
+**How to apply:** 優先評估沿用既有 Twilio 同時處理簡訊與 WhatsApp，不要自行換成其他簡訊商；若使用 Zernio，也不能假設免除 WhatsApp 商業帳號及範本審核。
+
 ## 台灣簡訊的觀看連結
 
 選擇簡訊商前確認台灣帶連結簡訊的品牌登記及網址審核要求，不能假設接好 API 就能送達。
