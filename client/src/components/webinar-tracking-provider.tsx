@@ -6,6 +6,8 @@ import {
   type WebinarEventData,
 } from "@/lib/webinar-tracking";
 import { useMarketingConsent } from "@/components/marketing-consent";
+import { loadGtm, isValidGtmContainerId, canForwardGtmEvents, clearLoadedGtmContainers } from "@/lib/gtm-runtime";
+export { loadGtm, isValidGtmContainerId } from "@/lib/gtm-runtime";
 
 export type TrackingWebinar = {
   isTest?: boolean;
@@ -14,7 +16,6 @@ export type TrackingWebinar = {
 };
 
 export const isValidMetaPixelId = (value: string): boolean => /^\d{5,32}$/.test(value);
-export const isValidGtmContainerId = (value: string): boolean => value.length >= 8 && value.length <= 24 && /^GTM-[A-Z0-9]+$/.test(value);
 // The platform pixel is reserved for explicitly authorized platform
 // conversions. A member webinar must never route its funnel events to it,
 // even if an old webinar record contains the same numeric ID.
@@ -43,7 +44,6 @@ const loadedPixels = new Set<string>(
     ? [window.__SELLCASE_PLATFORM_PIXEL_ID__]
     : [],
 );
-const loadedGtmContainers = new Set<string>();
 const completedRegistrationEvents = new Set<string>();
 const metaEventMap: Record<WebinarEventType, string> = {
   landing_view: "ViewContent",
@@ -81,18 +81,6 @@ export function loadMetaPixel(id: string, automaticEvents = false) {
   window.fbq?.("init", id);
 }
 
-function loadGtm(id: string) {
-  if (loadedGtmContainers.has(id)) return;
-  loadedGtmContainers.add(id);
-  window.dataLayer ||= [];
-  window.dataLayer.push({ "gtm.start": Date.now(), event: "gtm.js" });
-  const script = document.createElement("script");
-  script.async = true;
-  script.src = `https://www.googletagmanager.com/gtm.js?id=${encodeURIComponent(id)}`;
-  script.dataset.livecastTracking = "gtm";
-  document.head.appendChild(script);
-}
-
 // Withdrawing consent stops member GTM containers and all member pixel
 // events. The Meta SDK itself stays loaded because the platform pixel in
 // index.html runs on every page regardless of consent, so the global
@@ -104,7 +92,7 @@ export function revokeMarketingTracking() {
     analytics_storage: "denied",
   });
   document.querySelectorAll<HTMLScriptElement>('script[data-livecast-tracking="gtm"]').forEach((script) => script.remove());
-  loadedGtmContainers.clear();
+  clearLoadedGtmContainers();
 }
 
 export function WebinarTrackingProvider({
@@ -140,7 +128,7 @@ export function WebinarTrackingProvider({
           window.fbq?.("trackSingle", safePixelId, "CompleteRegistration", payload, { eventID: eventId });
         }
       }
-      if (isValidGtmContainerId(safeGtmId)) {
+      if (canForwardGtmEvents(safeGtmId)) {
         const key = `gtm:${safeGtmId}:${eventId}`;
         if (!completedRegistrationEvents.has(key)) {
           completedRegistrationEvents.add(key);
@@ -172,7 +160,7 @@ export function WebinarTrackingProvider({
         window.fbq?.("trackSingle", safePixelId, metaEventMap[detail.eventType], payload,
           detail.data.dedupeKey ? { eventID: detail.data.dedupeKey } : {});
       }
-      if (marketingConsent === "granted" && isValidGtmContainerId(safeGtmId)) {
+      if (marketingConsent === "granted" && canForwardGtmEvents(safeGtmId)) {
         window.dataLayer?.push({ event: `webinar_${detail.eventType}`, ...payload });
       }
     };

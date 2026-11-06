@@ -31,6 +31,8 @@ test("external journeys: published boundaries, attribution, signed receipts, and
   const ctaId = crypto.randomUUID();
   const sessionId = crypto.randomUUID();
   const registrationId = crypto.randomUUID();
+  const isolatedRegistrationId = crypto.randomUUID();
+  const isolatedSessionId = crypto.randomUUID();
   t.mock.method(dns, "lookup", async (hostname: string) => {
     if (hostname === "journey.example.test" || hostname === "embed.example.test") {
       return [{ address: "93.184.216.34", family: 4 }];
@@ -93,8 +95,8 @@ test("external journeys: published boundaries, attribution, signed receipts, and
       await db.delete(externalJourneySettings).where(inArray(externalJourneySettings.webinarId, [webinarId, secondWebinarId, otherWebinarId]));
       await db.delete(ctaButtons).where(eq(ctaButtons.webinarId, webinarId));
       await db.delete(registrationIdentityKeys).where(eq(registrationIdentityKeys.registrationId, registrationId));
-      await db.delete(registrations).where(eq(registrations.id, registrationId));
-      await db.delete(webinarSessions).where(eq(webinarSessions.id, sessionId));
+      await db.delete(registrations).where(inArray(registrations.id, [registrationId, isolatedRegistrationId]));
+      await db.delete(webinarSessions).where(inArray(webinarSessions.id, [sessionId, isolatedSessionId]));
       await db.delete(webinars).where(inArray(webinars.id, [webinarId, secondWebinarId, otherWebinarId]));
       await db.delete(memberIntegrationSecrets).where(inArray(memberIntegrationSecrets.userId, [ownerId, otherId, rootId]));
       await db.delete(users).where(inArray(users.id, [ownerId, otherId, rootId]));
@@ -327,6 +329,79 @@ test("external journeys: published boundaries, attribution, signed receipts, and
     const [testOrder] = await db.select().from(externalOrders).where(eq(externalOrders.orderId, `TEST-${suffix}`));
     assert.equal(testOrder.isTest, true);
     assert.equal(testOrder.grossPaidMinor, 999999, "test receipt is persisted separately, not silently discarded");
+  });
+  // Server fixtures bypass only referral admission, not merchant verification.
+  // No existing webinar, CTA URL or approvedOrigins value is changed.
+  const fixtureScRef = crypto.randomBytes(32).toString("base64url");
+  const otherWebinarScRef = crypto.randomBytes(32).toString("base64url");
+  const otherOwnerScRef = crypto.randomBytes(32).toString("base64url");
+  const fixtureOrder = {
+    webinarId: secondWebinarId, eventId: `fixture-paid-${suffix}`, orderId: `TEST-scRef-${suffix}`,
+    status: "paid", amountMinor: 1500, currency: "USD", scRef: fixtureScRef, isTest: true,
+  };
+  let fixtureReferralId: string;
+  await t.test("server-created opaque scRef binds registration/session and accepts signed paid with empty approvedOrigins", async () => {
+    const before = await responseJson(await request(`/api/webinars/${secondWebinarId}/external-journey/public`));
+    assert.deepEqual(before.approvedOrigins, []);
+    await db.insert(webinarSessions).values({ id: isolatedSessionId, webinarId: secondWebinarId, scheduledStart: new Date("2030-01-02T10:00:00Z") });
+    await db.insert(registrations).values({ id: isolatedRegistrationId, webinarId: secondWebinarId,
+      name: "Isolated server fixture", email: `fixture-${suffix}@example.test`, isTest: true,
+      selectedSession: new Date("2030-01-02T10:00:00Z") });
+    const [created] = await db.insert(externalReferrals).values({
+      tokenHash: crypto.createHash("sha256").update(fixtureScRef).digest("hex"),
+      webinarId: secondWebinarId, ownerId, registrationId: isolatedRegistrationId, sessionId: isolatedSessionId,
+      selectedSession: new Date("2030-01-02T10:00:00Z"), sessionProvenance: "registered_watch_token",
+      targetUrl: "https://noncodingai.com/physical-classes/checkout/", visitHash: crypto.createHash("sha256").update(suffix).digest("hex"), isTest: true,
+    }).returning({ id: externalReferrals.id });
+    fixtureReferralId = created.id;
+    await db.insert(externalReferrals).values([
+      { tokenHash: crypto.createHash("sha256").update(otherWebinarScRef).digest("hex"), webinarId, ownerId,
+        targetUrl: "https://noncodingai.com/physical-classes/checkout/", visitHash: crypto.createHash("sha256").update(suffix).digest("hex"), isTest: true },
+      { tokenHash: crypto.createHash("sha256").update(otherOwnerScRef).digest("hex"), webinarId: otherWebinarId, ownerId: otherId,
+        targetUrl: "https://noncodingai.com/physical-classes/checkout/", visitHash: crypto.createHash("sha256").update(suffix).digest("hex"), isTest: true },
+    ]);
+    assert.equal((await merchant(secondWebinarId, currentSecret, fixtureOrder)).status, 201);
+    const [order] = await db.select().from(externalOrders).where(eq(externalOrders.orderId, fixtureOrder.orderId));
+    assert.equal(order.referralId, fixtureReferralId);
+    assert.equal(order.sessionId, isolatedSessionId);
+    assert.equal(order.grossPaidMinor, 1500);
+    assert.equal(order.paymentStatus, "paid");
+    assert.equal(order.isTest, true);
+    const after = await responseJson(await request(`/api/webinars/${secondWebinarId}/external-journey/public`));
+    assert.deepEqual(after, before, "server fixture never enables or changes approvedOrigins");
+    assert.equal((await responseJson(await request(`/api/member/external-orders?q=TEST-scRef-${suffix}`, { actor: ownerId }))).total, 0);
+  });
+  await t.test("opaque scRef receiver rejects amount tampering under the original HMAC", async () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = crypto.createHmac("sha256", currentSecret).update(`${timestamp}.${JSON.stringify(fixtureOrder)}`).digest("hex");
+    assert.equal((await request(`/api/external/merchant-events/${secondWebinarId}`, { method: "POST",
+      body: { ...fixtureOrder, amountMinor: 9999 }, headers: { "x-external-timestamp": timestamp, "x-external-signature": signature } })).status, 401);
+  });
+  await t.test("opaque scRef receiver rejects a wrong signature and expired timestamp", async () => {
+    assert.equal((await request(`/api/external/merchant-events/${secondWebinarId}`, { method: "POST", body: fixtureOrder,
+      headers: { "x-external-timestamp": String(Math.floor(Date.now() / 1000)), "x-external-signature": "0".repeat(64) } })).status, 401);
+    assert.equal((await merchant(secondWebinarId, currentSecret, fixtureOrder, Math.floor(Date.now() / 1000) - 600)).status, 401);
+  });
+  await t.test("opaque scRef receiver rejects nonexistent, existing cross-webinar and existing cross-owner tokens", async () => {
+    for (const [caseName, scRef] of [
+      ["nonexistent", crypto.randomBytes(32).toString("base64url")],
+      ["other-webinar", otherWebinarScRef], ["other-owner", otherOwnerScRef],
+    ]) {
+      const response = await merchant(secondWebinarId, currentSecret, { ...fixtureOrder, eventId: `fixture-${caseName}-${suffix}`, scRef });
+      assert.equal(response.status, 403, caseName);
+      assert.equal((await response.json() as any).message, "Attribution does not belong to this webinar");
+    }
+  });
+  await t.test("opaque scRef receiver replays one event idempotently and never increments the paid order", async () => {
+    assert.equal((await merchant(secondWebinarId, currentSecret, fixtureOrder)).status, 200);
+    const changedId = await merchant(secondWebinarId, currentSecret, { ...fixtureOrder, eventId: `fixture-second-paid-${suffix}` });
+    assert.equal(changedId.status, 201);
+    assert.equal((await changedId.json() as any).orderDeduplicated, true);
+    assert.equal((await merchant(secondWebinarId, currentSecret, { ...fixtureOrder, eventId: `fixture-wrong-amount-${suffix}`, amountMinor: 9999 })).status, 409);
+    const [order] = await db.select().from(externalOrders).where(eq(externalOrders.orderId, fixtureOrder.orderId));
+    assert.equal(order.grossPaidMinor, 1500);
+    assert.equal(order.netMinor, 1500);
+    assert.equal(order.referralId, fixtureReferralId);
   });
   await t.test("the same owner order ID is independently scoped to its webinar and signed refunds survive unpublish", async () => {
     const shared = { orderId: "same-owner-order", type: "purchase", amountMinor: 700, currency: "USD" };

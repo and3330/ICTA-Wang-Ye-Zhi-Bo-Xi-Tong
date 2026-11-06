@@ -14,3 +14,9 @@ Deferred platform conversions must use the freshly authenticated account, not a 
 **Why:** SPA logout/login can retain the previous account's cached identity, causing a later conversion flush to report the previous person's conversion.
 
 **How to apply:** Clear account-scoped caches at authentication boundaries and test account switching without a page reload, including queued or retried conversions after switching.
+
+Development GTM isolation must not be presented as a blanket block of all advertising traffic.
+
+**Why:** The platform Pixel's default-on policy remains separate from a scoped production-GTM denylist. Opening an ordinary preview page to test that denylist could itself send unrelated live advertising traffic.
+
+**How to apply:** Install third-party network interception before browser navigation and exercise the real tracking components in an isolated harness when proving zero tracking egress. Keep production behavior and the existing consent policy outside that change's scope.

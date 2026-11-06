@@ -1,5 +1,8 @@
 # 個人漏斗與外部成交驗收契約
 
+後續開發 GTM 隔離及伺服器 scRef 夾具驗收，見
+[開發追蹤隔離文件](development-tracking-isolation.md)；真實 CTA 歸因仍不得繞過 approvedOrigins。
+
 本次僅為「開賣啦 SellCase」的開發變更；未 Publish、未修改 Production 資料、
 商店設定或密鑰，未呼叫外部扣款／廣告服務。
 
