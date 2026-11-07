@@ -14,6 +14,7 @@ import {
   Loader2, Radio, BarChart, User, MessageCircle, Clock, Languages, X, Search, ArrowDown
 } from "lucide-react";
 import type { Webinar, ChatMessage, Poll } from "@shared/schema";
+import { appendViewerConversation, groupViewerConversations } from "@/lib/viewer-conversations";
 
 /** Same name, same color: makes it easy to follow one viewer down the chat. */
 function viewerTone(name: string | null | undefined): string {
@@ -314,26 +315,8 @@ export default function AdminControl() {
             return [...prev, chatMsg];
           });
           
-          if (chatMsg.sessionId && (chatMsg.senderType === "viewer" || chatMsg.senderType === "host")) {
-            setViewerSessions((prev) => {
-              const updated = new Map(prev);
-              const existing = updated.get(chatMsg.sessionId!) || {
-                sessionId: chatMsg.sessionId!,
-                nickname: chatMsg.senderType === "viewer" ? chatMsg.senderName : "觀眾",
-                messages: [],
-                lastActivity: new Date()
-              };
-              if (chatMsg.id && existing.messages.some((m) => m.id === chatMsg.id)) {
-                return prev;
-              }
-              existing.messages = [...existing.messages, chatMsg];
-              existing.lastActivity = new Date();
-              if (chatMsg.senderType === "viewer") {
-                existing.nickname = chatMsg.senderName;
-              }
-              updated.set(chatMsg.sessionId!, existing);
-              return updated;
-            });
+          if (chatMsg.sessionId) {
+            setViewerSessions(prev => appendViewerConversation(prev, chatMsg));
           }
           break;
         }
@@ -356,21 +339,7 @@ export default function AdminControl() {
           setAllMessages(messages);
           setLikeCount(msg.data.likeCount || 0);
           
-          const sessionsMap = new Map<string, ViewerSession>();
-          messages.forEach((m: ChatMessage & { sessionId?: string }) => {
-            if (m.sessionId && m.senderType === "viewer") {
-              const existing = sessionsMap.get(m.sessionId) || {
-                sessionId: m.sessionId,
-                nickname: m.senderName,
-                messages: [],
-                lastActivity: new Date(m.sentAt || Date.now())
-              };
-              existing.messages.push(m);
-              existing.nickname = m.senderName;
-              sessionsMap.set(m.sessionId, existing);
-            }
-          });
-          setViewerSessions(sessionsMap);
+          setViewerSessions(groupViewerConversations(messages));
           break;
         }
       }

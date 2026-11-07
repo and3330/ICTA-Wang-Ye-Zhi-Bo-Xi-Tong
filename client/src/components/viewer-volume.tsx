@@ -13,15 +13,21 @@ type VolumePlayer = {
 export function ViewerVolumeControl({
   playerRef,
   className = "",
+  muted: controlledMuted,
+  onMutedChange,
 }: {
   playerRef: MutableRefObject<VolumePlayer | null>;
   className?: string;
+  muted?: boolean;
+  onMutedChange?: (muted: boolean) => void;
 }) {
-  const [muted, setMuted] = useState(false);
+  const [localMuted, setLocalMuted] = useState(false);
+  const muted = controlledMuted ?? localMuted;
   const [volume, setVolume] = useState(100);
 
   const applyMuted = (next: boolean) => {
-    setMuted(next);
+    setLocalMuted(next);
+    onMutedChange?.(next);
     void playerRef.current?.setMuted(next).catch(() => {});
   };
 

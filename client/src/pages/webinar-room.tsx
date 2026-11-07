@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Heart, Send, Users, Loader2, ExternalLink, X, Star, Play, MessageCircleQuestion } from "lucide-react";
+import { Heart, Send, Loader2, ExternalLink, X, Star, Play, MessageCircleQuestion } from "lucide-react";
 import type { Webinar, ChatMessage, CtaButton, Poll, ScheduledMessage, Tip, FakeUser, FeedbackSurvey } from "@shared/schema";
 import { WebinarTrackingProvider, type TrackingWebinar } from "@/components/webinar-tracking-provider";
 import { fetchWatchState, getWatchToken, type WatchState } from "@/lib/watch-access";
@@ -35,6 +35,7 @@ import { useChatPolls } from "@/hooks/use-chat-polls";
 import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
+import { autoplayRoomMuted } from "@/lib/room-autoplay";
 
 interface WebSocketMessage {
   type: string;
@@ -65,6 +66,8 @@ export default function WebinarRoom() {
   const [videoEnded, setVideoEnded] = useState(false);
   const playerRef = useRef<any>(null);
   const [playerReady, setPlayerReady] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const playbackAllowedRef = useRef(false);
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [aiThinking, setAiThinking] = useAiThinking();
@@ -82,7 +85,6 @@ export default function WebinarRoom() {
   
   const wsRef = useRef<WebSocket | null>(null);
   const [chatConnected, setChatConnected] = useState(true);
-  const [viewerCount, setViewerCount] = useState(1);
   
   const shownMessagesRef = useRef<Set<string>>(new Set());
   
@@ -127,6 +129,7 @@ export default function WebinarRoom() {
     scheduledStart: webinar?.startTime,
   });
   const canWatch = isPlaybackPermitted(accessKind);
+  playbackAllowedRef.current = canWatch && isJoined;
   // The room opens 30 minutes early as a countdown lobby.
   const lobbyStartsAt = watchState?.waitUntil || watchState?.selectedSession || webinar?.startTime || null;
   const lobbyOpen = useRoomOpenSoon(lobbyStartsAt, false);
@@ -345,9 +348,6 @@ export default function WebinarRoom() {
           setLikeCount(msg.data.count);
           setShowLikeAnimation(true);
           setTimeout(() => setShowLikeAnimation(false), 300);
-          break;
-        case "viewerCount":
-          setViewerCount(msg.data.count);
           break;
         case "poll":
           // Pushed by the host from the control room.
@@ -592,7 +592,13 @@ export default function WebinarRoom() {
   const handlePlayerReady = (player: any) => {
     playerRef.current = player;
     setPlayerReady(true);
-    if (!resumeKey) return;
+    setIsMuted(true);
+    const startPlayback = () => autoplayRoomMuted(player,
+      () => playbackAllowedRef.current && playerRef.current === player);
+    if (!resumeKey) {
+      void startPlayback();
+      return;
+    }
     let local = 0;
     try {
       Object.keys(localStorage).filter((key) => key.startsWith(`liveStart_${id}_`)).forEach((key) => localStorage.removeItem(key)); // old wall-clock model
@@ -609,7 +615,8 @@ export default function WebinarRoom() {
         const position = pickResumePosition({ local, server, duration: Number(duration) || 0 });
         if (position > 0) return player.setCurrentTime(position);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .then(startPlayback);
   };
 
   const handlePlayerPlay = () => {
@@ -831,6 +838,7 @@ export default function WebinarRoom() {
                   // calls can lose browser playback permission.
                   void player.play().then(() => {
                     void player.setMuted(false).catch(() => {});
+                    setIsMuted(false);
                     void player.setVolume(1).catch(() => {});
                   }).catch(() => {
                     toast({ title: "影片無法播放", description: "請再次點擊播放；若仍失敗，請確認影片的嵌入權限或稍後重試。", variant: "destructive" });
@@ -891,7 +899,7 @@ export default function WebinarRoom() {
                 <div className="w-2 h-2 rounded-full bg-red-500 mr-1.5 animate-pulse" />
                 LIVE
               </Badge>
-              {playerReady && <ViewerVolumeControl playerRef={playerRef} />}
+              {playerReady && <ViewerVolumeControl playerRef={playerRef} muted={isMuted} onMutedChange={setIsMuted} />}
             </div>
             
 
@@ -933,10 +941,6 @@ export default function WebinarRoom() {
           <div className="px-4 py-3 border-b flex items-center justify-between gap-2 bg-card">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm">即時聊天</span>
-              <Badge variant="secondary" className="text-[10px]">
-                <Users className="w-3 h-3 mr-1" />
-                {viewerCount}
-              </Badge>
             </div>
             <div className="flex items-center gap-1">
               {watchToken && (

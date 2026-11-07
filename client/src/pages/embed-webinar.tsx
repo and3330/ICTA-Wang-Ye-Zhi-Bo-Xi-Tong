@@ -29,6 +29,7 @@ import { DEFAULT_POLL_SECONDS } from "@/lib/timed-interactions";
 import { ViewerVolumeControl } from "@/components/viewer-volume";
 import { viewerCheckoutError } from "@/lib/viewer-messages";
 import { pickResumePosition, resumeStorageKey } from "@/lib/resume-position";
+import { autoplayRoomMuted } from "@/lib/room-autoplay";
 
 export default function EmbedWebinar() {
   const { id } = useParams<{ id: string }>();
@@ -68,7 +69,8 @@ export default function EmbedWebinar() {
   const wsRef = useRef<WebSocket | null>(null);
   const [chatConnected, setChatConnected] = useState(true);
   const [chatNotice, setChatNotice] = useState("");
-  const [viewerCount, setViewerCount] = useState(1);
+  const [isMuted, setIsMuted] = useState(true);
+  const playbackAllowedRef = useRef(false);
   const shownMessagesRef = useRef<Set<string>>(new Set());
 
   const [videoEnded, setVideoEnded] = useState(false);
@@ -97,6 +99,7 @@ export default function EmbedWebinar() {
     scheduledStart: webinar?.startTime,
   });
   const canWatch = isPlaybackPermitted(accessKind);
+  playbackAllowedRef.current = canWatch && isJoined;
   const effectiveVimeoUrl = canWatch ? (watchToken ? watchState?.vimeoUrl : webinar?.vimeoUrl) : undefined;
   const effectivePlayback = canWatch && watchToken ? watchState?.playback : undefined;
   const hasPlayback = !!(effectivePlayback?.url || effectivePlayback?.embedUrl || effectiveVimeoUrl);
@@ -149,7 +152,10 @@ export default function EmbedWebinar() {
     return () => { clearInterval(timer); window.removeEventListener("pagehide", onHide); };
   }, [isPlaying, watchToken, id, progressSessionId]);
   const resumeEmbedPlayer = (player: any) => {
-    if (!resumeKey) return;
+    setIsMuted(true);
+    const startPlayback = () => autoplayRoomMuted(player,
+      () => playbackAllowedRef.current && playerRef.current === player);
+    if (!resumeKey) { void startPlayback(); return; }
     let local = 0;
     try { local = Number(localStorage.getItem(resumeKey) || 0); } catch {}
     const serverPosition = watchToken
@@ -163,7 +169,8 @@ export default function EmbedWebinar() {
         const position = pickResumePosition({ local, server, duration: Number(duration) || 0 });
         if (position > 0) return player.setCurrentTime(position);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .then(startPlayback);
   };
 
   const { data: ctas } = useQuery<CtaButton[]>({
@@ -259,9 +266,6 @@ export default function EmbedWebinar() {
         }
         case "like":
           setLikeCount(msg.data.count);
-          break;
-        case "viewerCount":
-          setViewerCount(msg.data.count);
           break;
         case "liveCta": {
           const cta = { ...msg.data, startTime: 0, endTime: null } as CtaButton;
@@ -560,6 +564,7 @@ export default function EmbedWebinar() {
                 setPlayError("");
                 void player.play().then(() => {
                   void player.setMuted(false).catch(() => {});
+                  setIsMuted(false);
                   void player.setVolume(1).catch(() => {});
                 }).catch(() => setPlayError("影片無法播放，請再次點擊；若仍失敗，請確認影片嵌入權限。"));
               }}
@@ -568,7 +573,7 @@ export default function EmbedWebinar() {
               {playError && <span role="alert" className="max-w-sm px-4 text-sm">{playError}</span>}
             </button>
           )}
-          {canWatch && playerReady && <ViewerVolumeControl playerRef={playerRef} className="absolute top-2 left-2 z-10" />}
+          {canWatch && playerReady && <ViewerVolumeControl playerRef={playerRef} className="absolute top-2 left-2 z-10" muted={isMuted} onMutedChange={setIsMuted} />}
         </div>
         {(visibleCtas.length > 0 || liveCtas.length > 0) && (
         <div className="absolute bottom-2 left-2 right-2 z-10 flex flex-col items-center gap-1.5">
@@ -612,7 +617,7 @@ export default function EmbedWebinar() {
       <div className="flex-1 flex flex-col min-h-0 border-t">
         <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className="text-xs">{viewerCount} 人觀看</Badge>
+            <span className="text-sm font-medium">即時聊天</span>
           </div>
           <div className="flex items-center gap-1">
             {videoEnded && feedbackSurvey?.isActive && !surveySubmitted && (

@@ -64,7 +64,7 @@ export function normalizeVimeoEmbedUrl(value?: string) {
       return "";
     }
   }
-  const params = new URLSearchParams({ autoplay: "0", title: "0", byline: "0", portrait: "0", controls: "0" });
+  const params = new URLSearchParams({ autoplay: "0", playsinline: "1", title: "0", byline: "0", portrait: "0", controls: "0" });
   if (hash) params.set("h", hash);
   return `https://player.vimeo.com/video/${encodeURIComponent(videoId)}?${params.toString()}`;
 }
