@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { PlaybackSource } from "@/lib/media";
 
 export type PlayerAdapter = {
@@ -204,7 +204,7 @@ export function ProviderPlayer({ source, className, testId = "video-player", ren
 
   return (
     <>
-      {frame.src && <iframe key={frame.generation} ref={iframeRef} src={frame.src} className={className} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen data-testid={testId} />}
+      {frame.src && <iframe key={frame.generation} ref={iframeRef} src={frame.src} className={className} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen referrerPolicy={source.provider === "vimeo" ? "origin" : undefined} data-testid={testId} />}
       {loadError && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/90 p-4 text-center text-sm text-white" role="alert" data-testid={`${testId}-error`}>
           <p>{loadError}</p>

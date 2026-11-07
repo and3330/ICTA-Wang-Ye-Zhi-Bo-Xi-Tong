@@ -429,13 +429,11 @@ export default function EmbedWebinar() {
     return true;
   };
 
-  const getVimeoEmbedUrl = (url: string) => {
-    const match = url.match(/vimeo\.com\/(\d+)/);
-    return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1` : url;
-  };
   const playbackSource: PlaybackSource | undefined = effectivePlayback || (effectiveVimeoUrl ? {
     provider: "vimeo",
-    url: getVimeoEmbedUrl(effectiveVimeoUrl),
+    // ProviderPlayer validates/normalizes this URL and retains Vimeo's unlisted
+    // hash; rebuilding from only the numeric ID silently loses that authority.
+    url: effectiveVimeoUrl,
   } : undefined);
 
   if (isLoading) {

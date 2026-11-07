@@ -37,3 +37,4 @@
 - [Pinned DNS lookup contract](pinned-dns-lookup-contract.md) — Node HTTPS 的 all-address lookup 需要陣列格式；格式不符會誤報 Invalid IP address: undefined。
 - [Build-time assets](build-time-assets.md) — small built-in brand assets must be tracked; uploaded attachments are globally ignored and may disappear during merges.
 - [Correlated SELECT expressions](drizzle-correlated-selects.md) — Drizzle can strip outer-column qualification inside projected scalar subqueries; verify correlations against real rows.
+- [Vimeo embed privacy](vimeo-embed-privacy.md) — Vimeo privacy errors can come from missing origin or stripped unlisted hashes, not autoplay; never weaken access controls to fix them.
