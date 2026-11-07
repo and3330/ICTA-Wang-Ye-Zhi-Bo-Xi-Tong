@@ -26,9 +26,3 @@ Treat server redirects as separate egress boundaries during browser acceptance t
 **Why:** A permitted development URL can redirect to a real checkout; Playwright may follow that request's redirect chain without re-running the route handler for the new host. Blocking later advertising assets does not undo visiting the external HTML.
 
 **How to apply:** Capture and validate redirect responses without following them when proving attribution. A first-party allowlist alone is not sufficient evidence that the browser never contacted a real destination.
-
-Strict browser egress guards must account for development authentication handshakes without weakening the production-domain block.
-
-**Why:** Fetching an intercepted DEV document manually can trigger a development Clerk handshake. Treating every redirect as a final denial prevents the real page from loading and invalidates tracking evidence.
-
-**How to apply:** Inspect each redirect with automatic following disabled. Permit only the verified DEV host and its exact configured development-auth host, with a hop limit; block all other targets before sending. Do not bypass authentication or report a stopped handshake page as a successful real-page test.
